@@ -1,0 +1,31 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Large model checkpoints and weights
+checkpoints/
+*.pt
+*.bin
+*.onnx
+*.safetensors
+*.ckpt
+
+# Heavy data directories and caches
+data/
+archive/
+.hf_cache/
+*.zip
+*.tar.gz
+*.tar
+
+# Environments
+.env
+.venv/
+venv/
+ENV/
+
+# IDE / System
+.DS_Store
+.idea/
+.vscode/
