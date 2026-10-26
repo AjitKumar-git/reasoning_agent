@@ -4,7 +4,7 @@
 **Version**: 1.0.0-concentric (Archival Release)  
 **Date**: October 18, 2026  
 **Hardware Profile**: NVIDIA GeForce RTX 3050 Laptop GPU (3.73 GB VRAM) & Cloud T4/A100  
-**Core Checkpoint**: `checkpoints/cerebro_spheroid_1m_best.pt` (Loss: 5.4002 / 6.4043)
+**Core Checkpoint**: `checkpoints/cerebro_spheroid_1m_best.pt` (documented Loss 5.4002 / 6.4043 — neither is reproducible; the file measures 7.5468 against the objective that trained it, and section 20.12 dates its run to tens of steps)
 
 ---
 
@@ -598,6 +598,796 @@ Probed the actively pulsating 100M background daemon at 2.0 Hz:
    *"Horizontal reflection flips rows Because vertically. 2 has' row ' every, every row the line vertical remains in column 2 and is unchanged."*
 
 **Outcome**: **6/6 Target Probes Hit (100.0%)** with mean latency under $105\text{ ms}$!
+
+---
+
+## 19. Real-Time Live Output Architecture & Dynamic Wave Streaming
+
+### 19.1 Design & Invariants
+To provide immediate visibility into the physical biological dynamics and motor pole readouts of the 100M organoid core:
+1. **Zero External Feedback Invariant Preserved**:
+   At no point is the generated motor efferent fed back into the sensory input stream ($x_{t+1} \neq [x, y]$). Instead, as each token is read out from Hemisphere B, the internal corollary discharge vector is projected into subcortical core shells ($k=0, 1$), driving the internal biological wave step.
+2. **Generator Streaming Engine (`stream_query`)**:
+   `LivingOrganoidHost.stream_query` yields real-time structured telemetry events:
+   - `stimulus_ingested`: Prompt token count and gated thalamic sensory norm ($||\Psi_{\text{sens}}||$).
+   - `deliberation_cycle`: Continuous biological wave pulsation across the 8 Riemannian shells ($\mathcal{B}^3$), reporting instantaneous kinetic energy $E_k$ and cycle latency.
+   - `token`: Yielded per motor pole readout step with instantaneous token string, confidence, corollary discharge norm, and step latency.
+   - `done`: Final summary containing complete string, token count, and total milliseconds.
+3. **Live Animated Shell Equalizer & Spontaneous Murmur Monitor (`training/live_organoid_stream.py`)**:
+   - Displays real-time multi-level ASCII energy bars across the 8 concentric Riemannian shells:
+     `Shell 0 [Core Latent r=0.12] : [████████████████░░░░░░░░░] 0.4215`
+     `Shell 7 [Poles S^2   r=1.00] : [██████████████████████░░░] 0.5620`
+   - Streams spontaneous Default Mode Network (DMN) resting-state murmurs directly from resting continuous wave activations in Hemisphere B at 2.0 Hz.
+
+### 19.2 Live Streaming Empirical Verification
+Running `python3 training/live_organoid_stream.py --sample`:
+- **Deductive Syllogism**:
+  - Prompt: *"All quadrupedal mammals produce milk for their young. A platypus lays eggs but nurses its young with milk. Is a platypus a mammal? Answer yes or no and state why."*
+  - Sensory Ingest: 40 prompt tokens ingested into Hemisphere A (Sensory Norm: 79.27).
+  - Deliberation: 3 cycles ($E_k: 0.246 \to 0.433 \to 0.362$). Total deliberation latency: $41.8\text{ ms}$.
+  - Streaming Motor Readout: *"Yes, because nurses plat its offspringyp with milk aus plat with classified a as mammal."*
+  - Motor pole generation: 19 tokens in $217.6\text{ ms}$ (**$11.5\text{ ms/token}$**).
+- **Multi-Hop Transitivity**:
+  - Prompt: *"Iron is denser than Aluminium. Platinum is denser than Iron. Lithium is lighter than Aluminium. Which of these four metals is the densest?"*
+  - Deliberation latency: $11.0\text{ ms}$.
+  - Streaming Motor Readout: *"Tracing the density chain: >,uminium Al Ironium > Lithuminium. is, Platinum the isest metal"*
+  - Motor pole generation: 23 tokens in $93.3\text{ ms}$ (**$4.1\text{ ms/token}$**).
+- **Counterfactual Physics**:
+  - Prompt: *"If hot air were denser than cold air, in what direction would hot smoke from a chimney move? State the direction clearly."*
+  - Deliberation latency: $9.6\text{ ms}$.
+  - Streaming Motor Readout: *"Because dens fluidser sink under smoke gravity would, the move toward the ground."*
+  - Motor pole generation: 16 tokens in $62.9\text{ ms}$ (**$3.9\text{ ms/token}$**).
+- **Multi-Step Arithmetic**:
+  - Prompt: *"Maya buys 6 notebooks priced at $4 each. Maya pays with a $50 bill. Exactly how much change does Maya receive?"*
+  - Deliberation latency: $9.7\text{ ms}$.
+  - Streaming Motor Readout: *"6 notebooks $ at each * 64 $ = *. Sub. $tracting50 $ from $10050 $ - $ =245026 $ =. Maya receives26 $ change"*
+  - Motor pole generation: 39 tokens in $135.3\text{ ms}$ (**$3.5\text{ ms/token}$**).
+
+### 19.3 Live Daemon Operating State (`task-997`)
+The 100M living organoid daemon is continuously active at 2.0 Hz on **210.8 MB VRAM** with live ASCII telemetry:
+```text
+[Tick # 70 | 2.0Hz] E_k: 0.5577 | Shells [████████] 0.55→0.61 | VRAM: 211MB | 💭 "is answerin"
+[Tick # 75 | 2.0Hz] E_k: 0.3144 | Shells [▄▄▄▄▄▄▄▄] 0.31→0.34 | VRAM: 211MB | 💭 "is air an"
+[Tick # 80 | 2.0Hz] E_k: 0.3010 | Shells [▂▂▂▂▄▂▄▄] 0.30→0.32 | VRAM: 211MB | 💭 ": is an"
+```
+The system achieves real-time interactive terminal streaming, live animated shell telemetry, and spontaneous resting-state thought monitoring while strictly preserving the zero-feedback physical invariant.
+
+---
+
+## 20. Refinement Pass: Diagnose $\to$ Rebuild $\to$ Measure ($`src/spheroid_v3.py`$)
+
+This pass started from measurements rather than from an architecture idea, and it ended
+by overturning its own first conclusion. Recorded in full because the reversal is the
+interesting part.
+
+### 20.1 Three measured defects in V2
+
+All three figures are from `cerebro_spheroid_1m_best.pt` (146.6M parameters, checkpoint
+covers the model completely — 0 untrained tensors) under the seeded instrument:
+
+| Defect | Instrument | V2 measurement |
+|---|---|---|
+| Order blindness | `diagnose_spheroid.py`: $1-\cos(\text{logits})$ over 16 permutations | **0.000276** |
+| Order blindness | `ab_refine_spheroid.py`: KL(original ‖ permuted), small config | **0.0644** nats |
+| Deliberation erases the question | cosine to post-ingestion state | crosses 0.5 at **$\approx$4.7 cycles** |
+| Not fluent | held-out cross-entropy, 64 batches, seed 1337 | **7.6506** (PPL 2102) |
+
+That last row is wrong in four ways at once and section 20.10 replaces it. Worse, the
+artifact it was measured on is a snapshot from roughly the twentieth training step, which
+section 20.12 establishes from the archive's own metric table and the checkpoint timestamps.
+
+These are the three that motivated V3. Running the model end to end afterwards surfaced two
+more, which are reported in section 20.9 because they reframe everything above.
+
+`training/diagnose_spheroid.py` reproduces all three directly. Its per-cycle table is the
+clearest statement of the second defect:
+
+```
+cycles |      0      1      2      4      8     16     32
+cosine |  1.000  0.993  0.957  0.702 -0.399  0.411 -0.058
+norm   | 25.298 25.298 25.298 25.298 25.298 25.298 25.298
+```
+
+The norm column is pinned at exactly $\sqrt{640} = 25.2982$ for every cycle: that is
+`RMSNorm` re-normalising the entire state each step, independent of the prompt. The
+question is still partially present at cycle 4 and inverted by cycle 8.
+
+Order blindness is structural: `SensoryInputDNN` has no positional signal at all, so a
+prompt and any permutation of it produce nearly the same boundary flux. Memory collapse
+is also structural: `S^{t+1} = RMSNorm(γS^t + (1-γ)tanh(Flow))` normalises the *whole*
+state every cycle, pinning shell RMS to $\sqrt{D}$ (measured exactly 25.2982 for $D=640$)
+regardless of what the prompt asked.
+
+#### The instrument was not reproducible, and that took a while to notice
+
+Cross-checking the numbers in this section against a fresh run exposed three defects in
+`diagnose_spheroid.py` itself, which were fixed before the figures above were recorded:
+
+1. **Unseeded data stream.** `get_specialized_cognitive_stream` calls `random.shuffle`
+   with no seed, so each run scored a different 8-batch subset. Consecutive runs reported
+   CE of 6.67, 7.06 and 7.70 for the *same* checkpoint — a 1-nat swing that dwarfs every
+   effect the ablation was measuring.
+2. **Unseeded permutations.** `order_sensitivity` drew 5 `torch.randperm` shuffles with no
+   seed; the per-shuffle spread was large relative to the effect, so the 5-sample estimate
+   was mostly estimator noise. Now seeded and averaged over 16 permutations.
+3. **Probes disagreeing about the model configuration.** The CE probe ingested with
+   `living=True` (the training default, via `ingest_stimulus_with_memory`) while the
+   retention and order probes passed `living=False`. The three numbers described two
+   different regimes. They now share one `--living` / `--quiescent` flag, defaulting to
+   `living=True` to match how the model is actually trained and deployed.
+
+With those fixed the instrument is bit-reproducible across runs at a given seed, and CE is
+stable in the seed it uses: 7.6960 at 8 batches, 7.6506 at 64 batches. Residual seed-to-seed
+spread at 8 batches is still $\pm$0.2 nats, which is why the documented figure uses 64.
+
+The lesson generalises: an architectural claim of the form "$X$ costs $<$1% on held-out CE"
+is unmeasurable unless the evaluation data is frozen. Every number in 20.4 and 20.5 that
+follows is reproducible only because `ab_refine_spheroid.py` seeds both `random` and
+`torch` and shares one batch order across arms.
+
+### 20.2 What V3 changes
+
+- **`TemporalSensoryEncoder`** — causal depthwise wavelets ($k=3$, $k=5$, left-padded) plus a
+  learned position embedding, returning both a working-memory field and an attention-pooled gist.
+- **`ResidualVolumetricCore`** — replaces the contraction with a leaky residual potential
+  $S \leftarrow (1-\lambda)S + \alpha\tanh(\text{Flow})$, per-shell `log_write`/`log_leak`, a wide
+  homeostatic energy clamp instead of a hard RMS pin, and a gated thalamic injection.
+- **`PremotorMotorDecoder`** — 5-channel fused trunk `[surface, core, resonance, shell_pool, plan]`
+  (V2's three are kept as a **prefix** so the trunk can be widened without reordering), a learned
+  softmax tap across all shells, and a premotor plan buffer driven by corollary discharge.
+
+The design rule is that **every added branch is zero-gated at init** — `conv_scale`,
+`pos_embed`, `gist_scale`, `packet_mix`, `shell_scale`, `plan_write`. This is what makes a
+warm start a *no-op* rather than a random perturbation, and it is the property that the
+verification harness now enforces.
+
+### 20.3 Four initialization defects, and why they survived review
+
+The first real finding was that warm-starting produced noise. Four separate causes:
+
+1. **Inverted RMSNorm gain in the width lift.** Appending $N$ dead channels to the fused
+   trunk leaves the sum of squares unchanged while raising the divisor by $d_{new}/d_{old}$,
+   so $\text{RMS}_{new} = \text{RMS}_{old}\sqrt{d_{old}/d_{new}}$ and the gain must be scaled by
+   the *same* factor. The lift used `sqrt(d_new/d_old)` — the inverse — inflating the decoder
+   pre-activation by $5/3$. Measured: `max|V2 − V3| = 2.89` on a logit scale of 1.92.
+2. **RMSNorm of the whole embedding stream.** `TemporalSensoryEncoder` normalised its trunk
+   before the SwiGLU gate. A 0.02-std embedding became unit RMS — a ~50× rescale into a
+   nonlinear gate, destroying any transplanted encoder. Fixed by normalising only the
+   wavelet *increment* and rescaling it back into the trunk's RMS.
+3. **Ungated gist injection.** A random-init `gist_key` pooled the prompt into a unit-RMS
+   vector added straight into shell 0 — a state distribution V2's decoder never trained on.
+   Now gated by `gist_scale`, init 0.
+4. **Over-inertial core seed.** `log_write`/`log_leak` were seeded to a 95/22 blend, so the
+   living resting state swamped the prompt. Re-seeded from V2's *actual learned* blend
+   ($\gamma=\sigma(0.80)$, i.e. 69/31) and made load-time adaptive via `set_blend_from_gate`.
+
+Defects 1–3 all passed the four purely structural checks (coverage, transplant, silence,
+retention) that existed at the time. That is the lesson: **structural assertions cannot
+detect numerical corruption.** Check 5 was added specifically because every other gate was
+green while the model was emitting noise.
+
+### 20.4 Verification: five gates (`training/verify_warmstart.py`)
+
+| Gate | Assertion | Measured |
+|---|---|---|
+| 1 STRUCTURE | every V2 parameter has a V3 slot | 37 tensors: 34 as-is, 3 lifted, **0 lost** |
+| 2 TRANSPLANT | a real checkpoint loads with nothing unrecoverable | 27 tensors: 24 as-is, 3 lifted, **0 lost**, 25/25 live |
+| 3 SILENCE | zero-gated branches are exactly inert | `max|dlogit| = 0.000e+00` |
+| 4 RETENTION | same weights, different integration law | half-life 4.3 V2 vs 5.4 V3 cycles (1.3×) |
+| 5 FIDELITY | warm-started V3 *is* V2 numerically | encoder 0.0, state 1.1e-06, logits 2.3e-06 |
+
+Gate 4 pins the comparison properly: both arms are seeded from V2's full state, not the
+checkpoint, so `max|V2 − V3| = 0.0` across 34 shared tensors before the run. Earlier
+retention figures were partly measuring RNG luck, because older checkpoints predate the
+motor cross-attention and ~10 tensors — including `rhythm_freq`, which drives the resting
+rhythm both arms deliberate against — were drawn independently per arm.
+
+### 20.5 Ablation, 1500 steps, equal budget, identical batch order
+
+Corrected model (small config, seed 1337, 256 train / 16 held-out batches, all arms
+identical batch order and init seed):
+
+| arm | held-out CE | vs V2 | train recall | order KL | ret@32 | params | peak VRAM |
+|---|---|---|---|---|---|---|---|
+| V2 | 2.5961 | — | 1.9288 | 0.0644 | 0.9414 | 31,165,895 | 328 MB |
+| **V3 (shipped)** | **2.5938** | **−0.09%** | 1.9261 | **0.1726** | 0.7773 | 32,814,628 | 460 MB |
+| V3, `use_residual_core=False` | 2.6193 | +0.89% | 1.9001 | 0.0579 | 0.9375 | 32,740,500 | 585 MB |
+
+This table was reproduced from a second full run at the same seed: every CE, recall,
+order-KL, retention and parameter figure came back bit-identical. Wallclock is the only
+column that moves between runs (V3 measured at 479 s and 613 s on two runs of the same
+seed), so it is deliberately not tabulated — it depends on what else is using the laptop.
+
+For contrast, the *same* arms before the four initialization fixes
+(`checkpoints/ab_refinement_v3.json`): V3 with the residual core was **+4.89%** on
+held-out CE and *below* V2 on order sensitivity (0.0911), which is what produced the
+wrong conclusion that the core should be removed.
+
+A 500-step run preceded these and is discarded: at $\approx 4.0$ nats everything was in
+the noise floor and the arm ordering did not reproduce at 1500 steps.
+
+**Artifact naming.** Arm labels changed meaning partway through this pass, so the JSONs
+in `checkpoints/` must be read with care: in `ab_refinement.json`, `ab_refinement_v2.json`
+and `ab_refinement_v3.json` the key `v3` means *with* the residual core, while in
+`ab_refinement_v4.json` the key `v3` means the opposite (`use_residual_core=False`) and the
+shipped stack is under `v3_core`. `ab_refinement_final.json` is the artifact the table above
+is taken from and uses the current names, where `v3` is the shipped default.
+
+### 20.6 What the numbers actually say
+
+- **V3 reaches cross-entropy parity with V2.** The 0.09% gap is inside single-seed noise,
+  at a cost of ~40% more peak VRAM (460 MB vs 328 MB on the 4 GB laptop GPU) and ~5.3% more
+  parameters. Wallclock rose on both runs but is too load-dependent to quote precisely.
+- **Order sensitivity rises 2.7×** (0.0644 $\to$ 0.1726 nats), which is the defect the
+  refinement exists to fix.
+- **The gain is in the core, not the encoder.** Disabling the residual core drops order KL
+  to 0.0579 — statistically indistinguishable from V2. With `pos_embed` and the wavelet
+  gate both zero-initialised, the encoder's contribution at this budget is negligible;
+  what preserves token order is the leaky residual core failing to erase it each cycle.
+  This contradicts the earlier guess that "the cheap `pos_embed` carries the gain".
+- **Memory is traded for motion.** `ret@32` falls from 0.941 to 0.777. That metric measures
+  cosine similarity to the post-ingestion state, so a lower value also means the state
+  moved further while deliberating; it is not unambiguously worse, and gate 4 (which
+  measures the half-life crossing, not cycle-32 similarity) still favours V3 at 1.3×.
+- **Honest limits.** One seed, one config, 1500 steps. Absolute CE $\approx 2.6$ is still
+  far from fluent, and no downstream accuracy benchmark (GSM8K / SVAMP) was run, so this
+  says nothing yet about reasoning *correctness* — only about the two measured defects.
+
+### 20.7 Warm-start caveat
+
+A V2 checkpoint hands V3 valid *weights* but not a valid *contract*. Gate 5 proves numerical
+parity only with `use_residual_core=False`; with the shipped residual core the state reaches
+V2's trained decoder through a different integration law, so parity is not claimed and the
+shipped configuration should be trained from scratch.
+
+**One claim here was retracted.** An earlier version of this section stated that
+warm-started V3 generation "degrades" — measured as V3 emitting 3 tokens while V2 rambled.
+That was measured against `cerebro_spheroid_100m.pt`, which §20.8(b) later showed leaves 13
+tensors random per process. Re-measured on `cerebro_spheroid_1m_best.pt`, which covers the
+architecture completely, both arms behave the same:
+
+```
+V2: "the, by"          V3: ",. the $"        (--max_tokens 48, thinking_cycles 4)
+```
+
+Both stop at the 3-token EOS floor. The divergence was the randomly-initialised motor head
+of the old checkpoint, not the residual core. So the effect of the shipped core on a
+V2-trained decoder is **unmeasured**, not demonstrated harmful — settling it needs a V3
+checkpoint trained from scratch, which does not yet exist.
+
+This is the second time in this pass that a qualitative generation claim turned out to be
+measuring the evaluation harness rather than the model (the first being §20.8(a)).
+
+### 20.8 Two reproducibility defects found while checking this write-up
+
+Every number above was re-derived from a fresh run before it was recorded. Doing that
+surfaced two defects that had nothing to do with the architecture but had been quietly
+undermining every qualitative claim in the project.
+
+**(a) The diagnostic was not reproducible.** Consecutive runs of `training/diagnose_spheroid.py`
+on the *same* checkpoint reported held-out CE of 6.67, 7.06 and 7.70 — a 1-nat swing that is
+five times larger than the entire effect the ablation was chasing. Three causes, all fixed:
+the data stream calls `random.shuffle` unseeded, so each run scored a different 8-batch
+subset; `order_sensitivity` drew 5 unseeded `torch.randperm` shuffles, so the estimate was
+mostly sampling noise; and the CE probe ingested with `living=True` (the training default)
+while the retention and order probes passed `living=False`, meaning the three numbers
+described two different regimes. All three now share one seeded RNG and one `--living` /
+`--quiescent` flag. At a fixed seed the instrument is bit-reproducible and CE is stable in
+the batch count (7.6960 at 8 batches, 7.6506 at 64); the documented figure uses 64 because
+the residual seed-to-seed spread at 8 batches is still $\pm$0.2 nats.
+
+**(b) The default CLI checkpoint does not cover the default CLI model.** Three identical
+`python3 main.py infer` invocations returned three unrelated answers:
+
+```
+run 1: "baker is 22 left dues Enlightagonal incendiaryodynam arteryovation600olitical new 65 o"
+run 2: "(80 made bewild square game as56 103 preliminaryThirty wait poisonous crowd196 Wrong"
+run 3: "startKick From respectivealigned earthquake 42provided Brewer unnaturalolsinatedCAST answer slices CC"
+```
+
+Greedy decoding at `temperature=0.0` should be deterministic, and the GPU path *is* stable
+within a process (four identical forward passes gave `max|\Delta logit| = 0.000e+00`, so
+CUDA's non-associative `index_add_` in the axonal shortcut tracts was ruled out by
+measurement, not assumed). The divergence is across processes.
+
+`src/model.py:load_compatible_checkpoint` silently skips any tensor whose name is absent
+*or whose shape disagrees*, leaving it at the constructor's random initialisation. PyTorch
+seeds its default generator from OS entropy per process, so those tensors are re-rolled
+every launch. For `cerebro_spheroid_100m.pt` — the CLI default — 13 tensors covering
+7,621,125 values were being re-rolled, split into two distinct failure modes:
+
+- **10 tensors absent** from the checkpoint, all of them later additions to the model:
+  `volumetric_core.rhythm_freq` and `spontaneous_amp` (the resting rhythm),
+  `motor_dnn.refractory_strength` and `refractory_decay`,
+  `motor_dnn.motor_phase_embed.weight` (the premotor phase clock), the Arcuate Fasciculus
+  `q_proj` / `k_proj` / `v_proj`, `motor_dnn.resonance_norm.weight` and
+  `motor_dnn.efference_proj.weight`.
+- **3 tensors present but discarded on shape**: `motor_dnn.fused_norm.weight (1280,) →
+  (1920,)` and `motor_dnn.fc_gate.weight` / `fc_val.weight (1280,1280) → (1280,1920)`.
+  $1280 = 2D$ and $1920 = 3D$, so this checkpoint was trained before the sensory-resonance
+  channel was added to the fused motor trunk. **The entire trained output projection was
+  being thrown away and replaced with random weights at every launch.**
+
+Both failure modes have the same origin: the 100M checkpoint predates the resonance and
+Arcuate additions, and the widened trunk that went with them.
+
+`cerebro_spheroid_1m_best.pt` covers all 146,618,503 values with nothing skipped, and is now
+the default for `infer`, `benchmark`, `interactive` and `living`. With it, generation is
+bit-reproducible across processes — three runs all returned `"the by,"`.
+
+Two things follow that are worth keeping. First, the shape-mismatch branch is the more
+dangerous of the two: an absent tensor is a missing feature, but a mis-shaped tensor means
+trained weights were computed, saved, and then silently dropped — the model looks loaded
+(`loaded=True`) and isn't. The loader now reports both cases separately, with shapes. Second,
+any qualitative sample quoted against `cerebro_spheroid_100m.pt` — including the streaming
+readouts in section 19 — describes one draw from a 7.6M-value random distribution, not a
+property of the checkpoint.
+
+### 20.9 Running the model: the readout is almost a constant function of the input
+
+With the reproducibility defects fixed, `main.py benchmark` on `cerebro_spheroid_1m_best.pt`
+(4 thinking cycles, greedy, 64-token cap) returns:
+
+```
+[1] "Maya has 8 markers. She buys 4 more and gives 3 away..."  -> "the, by"
+[2] "A train travels 60 miles in 1 hour. How many in 3 hours?"  -> ". the by,"
+[3] "If 1 book costs $5, how much do 4 books cost?"             -> ". the,"
+[4] "There are 20 apples in a box. You take 6..."               -> "the, by"
+[5] "How can identity protection services help..."              -> "the, by"
+```
+
+A math word problem and a customer-service question produce the same string. Two new
+measurements in `diagnose_spheroid.py` turn that anecdote into numbers.
+
+**Readout input-dependence (section [4]).** Mean KL between the emission distributions of
+*different* questions, against the mean KL between one question and a *scramble of its own
+words* — which holds the token bag fixed and varies only order:
+
+```
+mean KL(question_a || question_b)     0.1221 nats
+mean KL(question || its own anagram)  0.0999 nats
+```
+
+Same order of magnitude. Asking a different question moves the readout about as much as
+reordering the words of the one you asked.
+
+**Verbal report (section [5]).** Best rank of the correct answer token among the 50,257
+vocab entries, at three deliberation budgets:
+
+```
+answer | rank @ cycles 0, 4, 16   (top-100 searched)
+     9 | 29, 78, 30
+   180 | out, out, out
+    20 | out, out, out
+```
+
+The top-5 readout for every prompt is function words drawn from the corpus marginal —
+`" the"`, `","`, `"."`, `" by"`, `" is"`, `" $"` — with peak probability about 0.065, i.e.
+the distribution is nearly flat. This localises the failure rather usefully: a single digit
+is *reachable* at all, so the vocabulary head and the widened motor trunk are not broken;
+the state simply does not carry the answer, which is defect 2 and defect 3 seen from the
+other end. Multi-digit answers, which need the arithmetic result rather than a marginal
+frequency, are unreachable.
+
+One caution about the rank table. Read as a trend it says deliberation helps (29 → 78 → 30),
+but the same measurement on CPU float32 gave 91 → 77 → 30 for the "9". Inside a 0.1-nat ball
+the ordering is not robust even to arithmetic precision, so no inference should be drawn from
+the direction of those numbers. Getting them at all cost two more bugs, both worth naming:
+
+1. **`F.kl_div` on a 1-D vocab vector.** With `log_target=True, batchfirst=True` the leading
+   dimension *is* the vocabulary, so the result is divided by 50,257. The first version of
+   this measurement reported cross-prompt KL of exactly `0.0000` for distributions that
+   visibly differ; the divide-by-batch behaviour is silent. `input_dependence` computes KL by
+   hand now.
+2. **A missing `torch.no_grad()`.** `readout_logprobs` built autograd graphs through the
+   volumetric core, and OOMed the 4 GB card partway through the report. Sections [1]–[3] are
+   bit-unchanged after the fix, so the earlier figures stand.
+
+The blunt summary of this section: at 146.6M parameters on this curriculum, V2's readout is
+close to the training corpus's unconditional token marginal. No generation result here
+supports a reasoning claim, and the CE parity in section 20.5 should be read against that
+floor rather than as evidence the architecture works.
+
+### 20.10 The loss figure in section 20.1 was wrong three ways, and the corrected number loses to counting
+
+Section 20.1 lists a held-out cross-entropy of 7.6506. Chasing why that sits so close to the
+vocabulary's uniform floor ($\log 50257 = 10.82$) turned up three errors in how the number was
+produced, and then a fourth in what it was compared against. The first three are mechanical.
+The fourth reverses this section's first conclusion.
+
+**1. The rollout did not match the trained objective.** `diagnose_spheroid.py` rebuilt the
+emission loop by hand instead of using `training_rollout`, re-passing the same
+post-deliberation state at every step with a fresh refractory trace. The trained path carries
+*both* the trace and the evolving state across steps. Scoring the untrained variant inflated
+the loss; matching the objective moves 7.6506 to **7.4684** per-batch / **7.5468**
+token-weighted.
+
+**2. The two numbers being compared used different weightings.** Per-batch mean CE weights a
+2-token response the same as an 82-token one, which reads optimistically against a
+token-weighted baseline. Every figure below is token-weighted over the same 6,705 scored
+tokens.
+
+**3. Neither "held out" nor "in-set" describes what happened, and the difference is not cosmetic.**
+
+The first draft of this correction read the pipeline and concluded the number could not be
+held out: `train_scale_1m.py` defaults to `--dataset specialized` and reads
+`data/cerebro_cognitive/cerebro_cognitive_train.parquet` — the same path the diagnostic reads.
+True of the pipeline, false of the artifact, because the file changed underneath it:
+
+| file | rows | unique stimuli | md5 |
+|---|---|---|---|
+| archived copy, written 2026-10-18 19:23 alongside the checkpoints | 30,000 | 11,827 | `019b9e5b…` |
+| `data/cerebro_cognitive/…`, written 2026-10-19 01:14 | 50,000 | 20,467 | `e16c6f47…` |
+
+432 stimuli appear in both. `generate_specialized_dataset.py` draws names, items and
+quantities from `random` with no seed, so every invocation yields a different pool
+(`training/probe_dataset_provenance.py` reproduces the comparison). The checkpoints predate
+the regeneration, so the losses below are measured on a draw all but disjoint from the one
+trained on: out-of-sample in records, in-distribution in template.
+
+That is still not a holdout in any usable sense. There is no train/val split anywhere in the
+design, the split that exists is an accident of file timing, it cannot be recreated, and both
+`data/` and `archive/` are gitignored — the pool the model actually trained on no longer
+exists. Anyone who regenerates the dataset gets a third, different pool and a different
+number. **"No designed holdout"** is the honest label for the protocol.
+
+**4. The baseline was too weak to detect what the model had learned.** A global unigram is the
+best *input-independent* predictor, but it is not the best predictor that ignores the
+*question*. It cannot express "slot 0 is nearly always a space", because that is a property of
+the answer template rather than of the input. A position-wise marginal can, and costs one more
+`bincount`. With the objective matched, the weighting fixed, and the stronger floor added, the
+ladder is:
+
+```
+predictor                                     CE (nats)     PPL
+uniform over vocab                              10.8249    50,257
+global unigram                                   7.8244      2,501
+position-wise unigram                            7.7165      2,245   <- knows the slot, not the question
+cerebro_spheroid_1m_best (shipped default)        7.5468      1,895
+cerebro_spheroid_1m_latest                        7.3595      1,571
+```
+
+Against the global unigram the shipped model wins $+0.2776$ nats. A large part of that is not
+thinking: $0.1079$ of it — 39% — is absorbed by the position-wise marginal on its own,
+leaving $+0.1697$ attributable to anything prompt-specific. On the better checkpoint the
+residue is $+0.3570$.
+
+The residue is not an artefact of a starved floor, which was worth checking, because the
+articulations are chain-of-thought — the numeric answer is at the *end* of an 82-token
+response, and the tail is exactly where a position-wise marginal has the least fitting data:
+
+```
+slots                          count   tokens   model   floor    gain
+well-fitted (>=100 fit tokens)     68    6,650   7.553   7.707   +0.154
+under-fitted                       14       55   6.839   8.862   +2.023
+```
+
+The under-fitted slots hold 0.8% of the scored tokens and move the aggregate by roughly
+0.02 nats, so the $+0.154$ earned over 6,650 well-fitted tokens stands.
+
+What does not stand is the first draft's reading of *where* the model's advantage lives. It
+said the gain over counting was "earned on late filler positions rather than on the answer",
+comparing against the global unigram. Against the position-wise floor the picture is sharper
+and worse — the shipped checkpoint, slot by slot:
+
+```
+ pos |   model  unigram positionwise |    gain
+  t0 |   8.179    8.511      6.882   |  -1.297
+  t1 |   8.621    8.217      7.163   |  -1.458
+  t2 |   8.141    7.961      7.014   |  -1.128
+  t3 |   7.735    8.045      7.375   |  -0.360
+  t4 |   8.202    8.239      7.506   |  -0.696
+  t5 |   7.209    7.819      7.344   |  +0.134
+```
+
+The model is *behind* a per-slot token counter at each of the first five slots, by 0.36 to
+1.46 nats, and only overtakes it after slot 5. The better checkpoint repeats the pattern at
+five of the first six slots ($-0.647$ at t0, $+0.216$ at t5). A 146.6M-parameter model is less
+certain about how an answer begins than a histogram of what begins answers.
+
+So section 20.9's flat readout and this ladder are the same fact measured two ways: perplexity
+1,895 (`best`) and 1,571 (`latest`) against 2,245 for a bag of word frequencies that knows
+which slot it is reading. What the model has learned beyond that bag is worth 0.15–0.35 nats,
+and none of the measurements in this section support calling it reasoning. Section 20.12
+accounts for why the number is as high as it is: these weights are a snapshot from roughly the
+twentieth step, not a converged model.
+
+The one earlier conclusion that survives intact: the V3 order-sensitivity gain in section 20.5
+is a valid controlled comparison between two undertrained models, and says nothing about
+whether either can reason.
+
+### 20.11 Overfit sanity check: the zero-feedback objective is not the bottleneck
+
+Underfitting at 7.55 nats leaves three candidate causes — broken gradients, an
+objective the architecture cannot express, or optimisation failing at scale. The first two
+are testable cheaply with `training/overfit_sanity.py`: train a fresh small model (31.2M
+params) on a *fixed* two-example set and see whether the loss reaches zero. It also runs a
+control that costs nothing to obtain, because `CerebroSpheroid.forward()` already injects
+each real token's flux at its own step — a teacher-forced path where position *t* sees
+response tokens $< t$:
+
+```
+arm        what predicts response position t                          final CE   verdict
+lm         the real preceding tokens (ordinary language-model mode)    0.0001    FIT
+emission   the deliberated state alone, nothing emitted fed back       0.0001    FIT
+```
+
+Both reach PPL 1.00. Gradient flow is fine, the motor readout can express a memorised
+answer, and — the thing worth knowing — **the zero-feedback invariant does not prevent
+learning**. The project's central design constraint costs convergence speed rather than
+attainability: emission needed roughly 360 steps to fall under 0.01 nats where the LM arm
+needed about 120.
+
+That closes off the hypothesis this section was written to test, namely that predicting a
+whole answer from one static state is unlearnable and therefore the flat readout of section
+20.9 was structural. It is not structural.
+
+Two examples are a weak test of capacity, and the two-example result says little about the
+shipped run's mixed precision, so the emission arm was rerun on 32 batches — 64 fixed
+stimulus/answer pairs — under both dtypes:
+
+```
+run                                              final CE on the fixed set
+64 pairs, emission arm, float32                                          0.0213
+64 pairs, emission arm, bfloat16 (what the trainer uses)                 0.0230
+64 pairs, unigram floor on the same 64 pairs                              8.0843
+```
+
+Both start at 10.96, sit at 4.31–4.46 by step 250, and end at 0.0020 by step 2,500. Capacity
+holds at 64 pairs, and bf16 lands 0.0017 nats from fp32 on an identical configuration, so the
+autocast in the shipped run is not what stalled it either.
+
+Gradient flow, capacity at that scale, the zero-feedback invariant and training precision are
+all ruled out by measurement. What is left is the question this section could not answer, and
+section 20.12 shows it was never asked of the real run: how long the shipped checkpoint
+actually trained.
+
+### 20.12 How long did the shipped run train, and why "best" names the worse checkpoint
+
+Every section above treats `cerebro_spheroid_1m_best.pt` as a converged model that failed.
+It has had no chance to succeed.
+
+**The step count is not recoverable from the artifact.** `train_scale_1m.py` saves
+`model.state_dict()` and nothing else — 37 keys, all tensors, 181,242,583 values, no step,
+no config, no RNG state (`training/probe_checkpoint_provenance.py`). No training log survived,
+and `data/` and `archive/` are both gitignored. What is left is file metadata and the
+archive's own metric table.
+
+**The archive says the runs were tens of steps long.** Section 3.3 of these notes is titled
+"Training Metric Trajectory (100-Step & 50-Step Runs)":
+
+```
+step  1   loss 9.7281   PPL 16,783.23
+step 20   loss 7.5383   PPL  1,878.62
+step 40   loss 5.4002   PPL    221.46   (specialized dataset)
+```
+
+Measured against the reproduced objective, `cerebro_spheroid_1m_best.pt` scores **7.5468**
+PPL **1,894.6** — within 0.01 nats of the logged step-20 value, and 2.1 nats from the 5.4002
+that the header of this document attributes to the same file. Its `latest` sibling scores
+7.3595. Timestamps agree with a short run: the dataset directory was touched at 18:55,
+`best.pt` written 18:58:08, `latest.pt` 18:58:46, the archive copy of the data made at 19:23.
+A three-minute window between data generation and both checkpoint writes is not
+`--max_steps 1,000,000`; at 16 records per step it is on the order of $10^2$–$10^3$ records
+seen from a 30,000-record pool.
+
+This refutes the argument section 20.10 first made in its own defence. It claimed that because
+`best_loss` is selected on training loss and the diagnostic reproduces that objective, 7.55
+nats "is at or near the value training itself plateaued at", so the epoch count did not matter.
+The run never reached a plateau. No conclusion of the form "the optimiser cannot drive this
+objective below 7.5" is supported by this artifact, and **the architecture has never been
+trained at scale on this dataset** — that experiment has not failed, it has not been run.
+
+**The better checkpoint on disk is not the one named best.** On the identical 6,705-token
+evaluation set:
+
+| checkpoint | CE | PPL | gain over global unigram | gain over position-wise floor | answer-slot t0 vs that floor |
+|---|---|---|---|---|---|
+| `cerebro_spheroid_1m_best.pt` | 7.5468 | 1,895 | +0.2776 | +0.1697 | $-1.297$ |
+| `cerebro_spheroid_1m_latest.pt` | **7.3595** | **1,571** | +0.4649 | +0.3570 | $-0.647$ |
+
+`latest` is 0.187 nats better, and two independent samples of the trainer's own estimator
+agree on the ordering (mean `loss_val` 7.2460 for `best`, 7.0141 for `latest`). Their weights
+differ by a mean $4.6\times10^{-4}$ per value and at most 0.0028 (`motor_dnn.head.weight`),
+about one Adam displacement at `--lr 3e-4`, so the two files are near neighbours in training
+and the later one is the better one. Everything from section 20.9 onward — the flat readout,
+the KL ratios, the answer ranks — reproduces on both, so the diagnosis does not depend on
+which of them is loaded.
+
+**Why the rule that chose the name cannot see a 0.187-nat difference.** Section [6] of the
+diagnostic forms `loss_val` exactly as the trainer does — mean CE over `grad_accum=8`
+micro-batches of `batch_size=2`, 16 records — against **frozen** weights, so nothing can
+improve:
+
+```
+checkpoint   mean    std     range              0.005 as % of std   false "New Best" / 24 evals
+best       7.2460  0.3402   [6.3464, 8.0941]              1.5%                    4  (16.7%)
+latest     7.0141  0.3771   [5.9949, 7.9287]              1.3%                    4  (16.7%)
+```
+
+A 16-record draw has a standard deviation near 0.35 nats and a spread over 1.7 nats, while the
+save rule fires on a 0.005-nat improvement — about 1.4% of one $\sigma$. On weights that
+cannot change, `★ [New Best Checkpoint]` prints on roughly one eval in six. So `best.pt` is not
+the lowest-loss model; it is the step whose draw happened to look easiest, and `best_loss` is a
+record minimum of a lottery, biased downward against the model it is meant to certify. The same
+draws reset `patience_counter`, so this noise governs when a run stops as well as which weights
+it keeps — and with `--patience 100`, a run ends only after 100 consecutive evals fail to win
+the lottery, which is why a stalled-looking curve can also just be a short one.
+
+The fix is ordinary: score the selection quantity on a fixed set of thousands of tokens, or
+average `loss_val` across an interval, instead of on the current step's 16 records. Until then
+no run using `train_scale_1m.py` can distinguish "plateaued" from "still descending" — the
+exact distinction section 20.11's closing "what remains is scale" leaned on, and the one that
+had to be reconstructed here from file timestamps instead of from the trainer's output.
+Section 20.13 implements that fix.
+
+### 20.13 The selection rule is now a holdout rule, and the curriculum has a real split
+
+Everything above is a post-mortem on a run that could not report what it was doing. This
+section changes the instruments so the next one can.
+
+**`src/generate_specialized_dataset.py` is seeded and split.** `python3 src/generate_specialized_dataset.py`
+now draws under `--seed 1337`, folds exact repeats, drops any stimulus that was drawn twice
+with two different answers, and writes `cerebro_cognitive_train.parquet` (19,339 rows) and
+`cerebro_cognitive_val.parquet` (1,018 rows) plus a manifest carrying both md5s. Two things fell
+out of running it once:
+
+```
+draws                        50,000
+exact repeats folded         29,643   (59.3% of draws)
+repeats with a DIFFERENT answer, dropped   0
+distinct stimuli            20,357
+train / val rows           19,339 / 1,018
+train md5  777126b6ba48163af19f8bce5d026ebb
+val   md5  b0c5190761a9736c5b5e0824c20f1b1b
+```
+
+The curriculum was never 50,000 records. It was about 20,400 questions, each replayed roughly
+2.4 times per pass — which inflates the weight of whatever got duplicated and biases any token
+frequency table built from the rows. The second number matters more for the standing question
+of whether 7.55 nats is a data floor: **not one stimulus in 20,357 carries two different
+answers**, so the target is a well-defined function of the input and label noise is ruled out as
+the reason the loss sat where it did. (The 4 answer disagreements reported in section 20.12
+between the archived and live files were therefore not intra-file conflicts; they came from the
+generator having been revised between 18 and 19 October, which is also why the two files share
+only 432 stimuli.)
+
+**The old pool is frozen, not overwritten.** The dataset on disk when sections 20.10 and 20.12
+were written is preserved as `data/cerebro_cognitive/legacy_train_unseeded_e16c6f47.parquet`,
+and `diagnose_spheroid.py` gained a `--parquet` flag to score against it. Without that, the
+regeneration above would have destroyed the only copy of the pool those figures describe.
+
+**`train_scale_1m.py` selects on a frozen held-out set.** At startup it materialises
+`--eval_batches 128` batches (≈12,000 scored tokens) from the val parquet, clones them into a
+list, and never redraws. Every evaluation scores exactly those tensors, token-weighted, under
+`training_rollout` — the trained objective, not a re-implementation of it. A recorded drop is
+now a property of the weights. Refusals are built in: the run aborts if the set freezes under
+8 batches or 2,000 tokens, warns under 5,000, aborts if `--parquet` and `--eval_parquet` hash
+the same, and the loader raises rather than inventing samples when the eval file is missing
+(`allow_synthesis_fallback=False`), because a validation set that silently synthesises is not
+validating anything. `--select_on train_loss` restores the old rule for datasets with no
+holdout, labelled `NOISY` in every line it prints.
+
+One subtlety worth keeping: `model.eval()` is used for these evaluations, and that is safe here
+rather than by luck. V2 has no dropout or batchnorm, and its only training-mode branches are the
+gradient-checkpointing path in `circulate_mid_tensors` (same arithmetic) and `spontaneous_noise`,
+which nothing in the repository ever passes as `True`. An eval-mode measurement would otherwise
+have been a different function from the one being optimised.
+
+**Provenance is written beside the weights.** The tensor payload stays a bare `state_dict()` —
+seven call sites `torch.load(..., weights_only=True)` it and changing the format would break
+them all — but each save now emits `<ckpt>.meta.json` with step, seed, held-out CE, eval token
+count, both dataset md5s, dtype and the full config. Reading it back gives a real resume: step
+numbering continues, the best-loss record carries over, and `--save_optimizer` (a separate
+`*_optim.pt`, ≈586 MB) restores Adam moments and the scheduler. Without that file the run says
+so out loud instead of letting a restarted optimiser masquerade as a continuation.
+
+**Verified on a throwaway prefix, not on the shipped artifacts.** Four smoke runs, all under
+`--save_prefix smoke_1m`, then deleted:
+
+```
+step 2  held-out CE 7.1936   ★ first best
+step 4  held-out CE 7.0400   ★ improvement -0.1536
+step 6  held-out CE 6.9155   (resumed at step 6 from the sidecar, best record carried over)
+step 8  held-out CE 6.8799   ★ optimizer and scheduler state restored
+```
+
+Two reporting bugs were caught by reading that output rather than trusting the diff: the
+interval log was accumulating the *gradient-scaled* loss, so a 7.09-nat step printed as 0.89 —
+which is exactly the kind of plausible-looking wrong number this project has now documented
+three times — and the "first best" branch was dead code because `best_loss` was overwritten
+before it was tested.
+
+**What this does not do.** It does not train the model. It does not make the shipped
+checkpoints any better, and the new val split is not a holdout *for them* in the useful sense:
+they were fitted to a different pool, so their 7.5468 cannot be re-scored on the val file and
+compared to the ladder in section 20.10. It only means the next run reports a number that means
+what it says.
+
+And the next run has a hard budget, which is the reason this section exists instead of a
+training curve. Measured on the RTX 3050 4 GB at `--thinking_cycles 1`, one optimizer step
+(8 micro-batches of 2) costs about 14 s; the default `--thinking_cycles 3` costs more. So
+1,000 steps is roughly 4–6 hours and `--max_steps 1,000,000` is on the order of five months —
+a target that should be replaced by a step count the hardware can actually reach, or the job
+moved to a cloud GPU.
+
+### 20.14 Reproduce
+
+```bash
+# Rebuild the seeded curriculum and its held-out split. Deterministic: same seed, same md5s
+# printed in 20.13. Writes train (19,339) / val (1,018) parquets plus a manifest.
+PYTHONPATH=. python3 src/generate_specialized_dataset.py --seed 1337
+
+# Loss against two input-independent floors, retention, order sensitivity, input-dependence,
+# verbal report, and the selection-criterion noise measurement. The diagnostic now defaults to
+# the HELD-OUT val file; to reproduce the 7.5468 / 7.8244 / 7.7165 ladder in 20.10 and 20.12
+# exactly, point it at the frozen pool those figures were measured on.
+PYTHONPATH=. python3 training/diagnose_spheroid.py --batches 64 \
+    --parquet data/cerebro_cognitive/legacy_train_unseeded_e16c6f47.parquet
+PYTHONPATH=. python3 training/diagnose_spheroid.py --batches 64          # true holdout, new default
+
+# Guards that the loader's seeded shuffle is the same permutation the recorded figures used.
+PYTHONPATH=. python3 training/check_eval_stream_determinism.py
+
+# The same instrument on the other shipped snapshot, which measures better than the one
+# named best. Both runs share a seed, so sections [1]-[5] are comparable token for token.
+bash training/run_both_checkpoints.sh          # -> /tmp/v2_best.txt, /tmp/v2_latest.txt
+
+# Overfit sanity check. --arms lm,emission runs the teacher-forced control alongside the
+# production objective on identical examples. --examples 32 is 64 pairs, not one.
+PYTHONPATH=. python3 training/overfit_sanity.py --steps 1200 --examples 1
+PYTHONPATH=. python3 training/overfit_sanity.py --steps 2500 --examples 32 --arms emission
+PYTHONPATH=. python3 training/overfit_sanity.py --steps 2500 --examples 32 --arms emission \
+    --dtype bfloat16
+
+# What produced the shipped weights: step count is absent from both files, and the dataset
+# on disk is not the dataset they were trained on.
+PYTHONPATH=. python3 training/probe_checkpoint_provenance.py
+PYTHONPATH=. python3 training/probe_dataset_provenance.py
+
+# Trainer smoke test on a throwaway prefix: freezes the eval set, selects on held-out CE,
+# writes a provenance sidecar, and resumes from it. Use a few hundred steps at most; a single
+# optimizer step costs ~14 s on a laptop RTX 3050 (see 20.13).
+PYTHONPATH=. python3 training/train_scale_1m.py --dataset specialized \
+    --save_prefix smoke_1m --max_steps 8 --eval_interval 4 --eval_batches 48 \
+    --thinking_cycles 1 --save_optimizer
+python3 main.py train-1m --patience 20 --max_steps 2000 --save_optimizer   # real run
+
+# Warm-start contract, five gates.
+PYTHONPATH=. python3 training/verify_warmstart.py --checkpoint checkpoints/cerebro_spheroid_100m.pt
+
+# Equal-budget ablation. Pass every arm you intend to compare; the arms share one
+# batch order and one init seed, so the table is reproducible from the seed alone.
+PYTHONPATH=. python3 training/ab_refine_spheroid.py --steps 1500 --config small \
+    --train_batches 256 --variants v2,v3,v3_no_core \
+    --out checkpoints/ab_refinement_final.json
+
+# Generation, reproducible only with a checkpoint that covers the architecture. Loading a
+# partial one prints which tensors were skipped and why.
+python3 main.py infer --checkpoint checkpoints/cerebro_spheroid_1m_best.pt --prompt "..."
+```
+
+`--quiescent` on the diagnostic switches ingestion off the living resting state; the
+retention curve changes with it, so keep the flag fixed when comparing across runs.
+`--thinking_cycles` must match the checkpoint's training config (3), and `--noise_trials`
+scales the cost of section [6], which pays for `grad_accum` rollouts per trial.
+
+**Reproducibility now has two different answers, and conflating them is how section 20.10
+was written wrong twice.** `generate_specialized_dataset.py` is seeded, so the pool itself is
+reproducible — rerun it and you get the same md5s. What is *not* reproducible is the pool
+behind the shipped checkpoints: that file was drawn before seeding existed, and only its
+md5-frozen copy (`legacy_train_unseeded_e16c6f47.parquet`, 50,000 rows, 20,467 distinct) still
+exists, because it was copied aside before the split overwrote the canonical path. Sections
+[1]-[5] of the diagnostic reproduce bit-exactly run to run — the seed pins the shuffle and the
+permutation draws, which is why `--batches 64` covers all of them in one pass — and the
+ablation and overfit tables regenerate from the command alone regardless of the pool. The
+figures in 20.10 and 20.12 reproduce only with the `--parquet` flag above.
+
+The result JSONs live under `checkpoints/`, which is gitignored, so they are not version
+controlled. Checkpoint sidecars (`*.meta.json`) are new with section 20.13 and carry the step
+count, seed, held-out CE and dataset md5s that the shipped artifacts are missing.
+
+
 
 
 

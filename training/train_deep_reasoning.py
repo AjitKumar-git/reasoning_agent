@@ -32,6 +32,7 @@ from src.multimodal_layers import build_multimodal_organoid_core
 from src.tightened_curriculum import get_tightened_stream
 from src.data_loaders import get_cerebro_cognitive_stream
 from src.advanced_datasets import get_multimodal_organoid_stream
+from src.frontier_reasoning_loaders import get_frontier_reasoning_stream
 from training.tightened_agi_benchmark import run_tightened_benchmark
 
 
@@ -161,6 +162,7 @@ def main():
     print("Initializing Multi-Source Reasoning Streams...")
     cog_stream = get_cerebro_cognitive_stream(tokenizer, batch_size=args.batch_size, max_prompt_len=256, max_resp_len=56)
     tight_stream = get_tightened_stream(tokenizer, batch_size=args.batch_size, max_prompt_len=256, max_resp_len=56)
+    frontier_stream = get_frontier_reasoning_stream(tokenizer, batch_size=args.batch_size, max_prompt_len=256, max_resp_len=56)
     mm_stream = get_multimodal_organoid_stream(tokenizer, batch_size=args.batch_size, max_prompt_len=256, max_resp_len=56)
 
     t_start = time.time()
@@ -182,12 +184,15 @@ def main():
             r = random.random()
             images, audio = None, None
 
-            if r < 0.45:
-                # 45% Cerebro-Cognitive Parquet (50,000 real problems)
-                prompts, targets = next(cog_stream)
-            elif r < 0.90:
-                # 45% Tightened Procedural Proofs
+            if r < 0.35:
+                # 35% Tightened Procedural Proofs (Syllogisms, Posets, Counterfactuals)
                 prompts, targets = next(tight_stream)
+            elif r < 0.70:
+                # 35% Frontier Reasoning Stream (NuminaMath-CoT, ProofWriter, BBH)
+                prompts, targets = next(frontier_stream)
+            elif r < 0.90:
+                # 20% Cerebro-Cognitive Parquet (50,000 real problems)
+                prompts, targets = next(cog_stream)
             else:
                 # 10% Multimodal Cross-Modal Binding
                 if args.model_type == "multimodal":

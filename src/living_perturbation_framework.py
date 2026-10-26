@@ -30,7 +30,7 @@ import json
 import random
 import threading
 from dataclasses import dataclass, field, asdict
-from typing import Optional, List, Dict, Tuple, Any
+from typing import Optional, List, Dict, Tuple, Any, Generator
 
 import torch
 import torch.nn.functional as F
@@ -39,7 +39,9 @@ from transformers import AutoTokenizer
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
-os.environ.setdefault("HF_HOME", os.path.join(ROOT_DIR, ".hf_cache"))
+os.environ["HF_HOME"] = os.path.join(ROOT_DIR, ".hf_cache")
+os.environ["TRANSFORMERS_CACHE"] = os.path.join(ROOT_DIR, ".hf_cache")
+os.environ["HF_HUB_CACHE"] = os.path.join(ROOT_DIR, ".hf_cache")
 
 from src.organoid_layers import build_enhanced_organoid_spheroid, EnhancedOrganoidSpheroid
 from src.multimodal_layers import build_multimodal_organoid_core, MultimodalOrganoidCore
@@ -551,7 +553,7 @@ class LivingOrganoidHost:
             "num_echo_tokens": len(out_tokens),
         }
 
-    def query(
+    def stream_query(
         self,
         prompt: str,
         thinking_cycles: int = 3,
@@ -561,14 +563,24 @@ class LivingOrganoidHost:
         inject_at_cycle: int = 1,
         temperature: float = 0.5,
         fresh_state: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> Generator[Dict[str, Any], None, None]:
         """
         Executes zero-feedback live inference on the continuous living manifold,
-        optionally under an active transient or persistent perturbation.
+        yielding real-time telemetry events for each deliberation cycle and token.
         """
         device = self.device
         dtype = self.dtype
+        t_start = time.time()
         q_toks = self.tokenizer.encode(prompt, return_tensors="pt").to(device)
+
+        yield {
+            "event": "start",
+            "prompt": prompt,
+            "thinking_cycles": thinking_cycles,
+            "max_tokens": max_answer_tokens,
+            "perturbation": active_perturbation.name if active_perturbation else "Clean Baseline",
+            "timestamp": t_start,
+        }
 
         with torch.no_grad():
             with torch.amp.autocast(device_type="cuda" if device.type == "cuda" else "cpu", dtype=dtype):
@@ -602,10 +614,18 @@ class LivingOrganoidHost:
                     gated_sens = self.model.thalamus(sens_field.to(dtype), core_0)
                     working_state[:, -1, nodes, :] += gated_sens
 
+                    yield {
+                        "event": "stimulus_ingested",
+                        "prompt_tokens": q_toks.shape[1],
+                        "gated_sensory_norm": round(gated_sens.norm().item(), 4),
+                        "initial_kinetic_energy": round((working_state ** 2).mean().item(), 5),
+                    }
+
                     # Deliberation with optional continuous perturbation
                     past_states: List[torch.Tensor] = []
 
                     for cycle in range(thinking_cycles):
+                        t_cyc_start = time.time()
                         if active_perturbation:
                             p = active_perturbation
                             if p.perturb_type == "thermal":
@@ -641,6 +661,17 @@ class LivingOrganoidHost:
                         else:
                             working_state, past_states = self.model.core.pulse_wave_step(working_state, past_states)
 
+                        cyc_shell_e = [round((working_state[:, k, :, :] ** 2).mean().item(), 4) for k in range(working_state.shape[1])]
+                        cyc_e_k = round((working_state ** 2).mean().item(), 5)
+                        yield {
+                            "event": "deliberation_cycle",
+                            "cycle": cycle + 1,
+                            "total_cycles": thinking_cycles,
+                            "kinetic_energy": cyc_e_k,
+                            "shell_energies": cyc_shell_e,
+                            "cycle_time_ms": round((time.time() - t_cyc_start) * 1000, 2),
+                        }
+
                     # Readout from motor pole
                     out_tokens = []
                     motor_nodes = getattr(self.model, "motor_nodes", getattr(self.model.core, "motor_nodes", None))
@@ -651,6 +682,7 @@ class LivingOrganoidHost:
                         corollary_scale = active_perturbation.intensity
 
                     for t in range(max_answer_tokens):
+                        t_tok_start = time.time()
                         hemi_b_field = working_state[:, -1, motor_nodes, :]
                         logits, refractory_trace, corollary_vector = self.model.motor_pole.forward_readout(
                             hemi_b_field, sensory_memory, refractory_trace, step_idx=t
@@ -662,15 +694,21 @@ class LivingOrganoidHost:
                             for prev_tok in set(out_tokens[-4:]):
                                 logits[:, prev_tok] -= 1.8
 
+                        probs = torch.nn.functional.softmax(logits, dim=-1)
                         if temperature > 0:
-                            probs = torch.nn.functional.softmax(logits / max(temperature, 0.1), dim=-1)
-                            next_tok = torch.multinomial(probs, num_samples=1).item()
+                            probs_sample = torch.nn.functional.softmax(logits / max(temperature, 0.1), dim=-1)
+                            next_tok = torch.multinomial(probs_sample, num_samples=1).item()
                         else:
                             next_tok = torch.argmax(logits, dim=-1).item()
+
+                        conf = probs[0, next_tok].item()
 
                         if next_tok == self.tokenizer.eos_token_id:
                             break
                         out_tokens.append(next_tok)
+
+                        tok_text = self.tokenizer.decode([next_tok])
+                        corr_norm = corollary_vector.norm().item()
 
                         # Corollary discharge into core
                         corr_eff = PerturbationInjector.apply_corollary_ablation(corollary_vector, corollary_scale)
@@ -678,17 +716,69 @@ class LivingOrganoidHost:
                         working_state[:, 1, :, :] += corr_eff.unsqueeze(1) * 0.10
                         working_state, past_states = self.model.core.pulse_wave_step(working_state, past_states)
 
+                        tok_time_ms = round((time.time() - t_tok_start) * 1000, 2)
+                        yield {
+                            "event": "token",
+                            "step": t + 1,
+                            "token_id": next_tok,
+                            "token_text": tok_text,
+                            "confidence": round(conf, 4),
+                            "corollary_norm": round(corr_norm, 4),
+                            "latency_ms": tok_time_ms,
+                        }
+
                     # Homeostatic residual update back into living state
                     if not fresh_state:
                         self.state_3d = (0.95 * self.state_3d + 0.05 * working_state).detach()
 
+        total_ms = round((time.time() - t_start) * 1000, 1)
         response_text = self.tokenizer.decode(out_tokens).strip() if out_tokens else "<empty>"
-        return {
+        yield {
+            "event": "done",
             "prompt": prompt,
             "response": response_text,
             "tokens_generated": len(out_tokens),
             "perturbation": active_perturbation.name if active_perturbation else "Clean Baseline",
             "thinking_cycles": thinking_cycles,
+            "total_ms": total_ms,
+        }
+
+    def query(
+        self,
+        prompt: str,
+        thinking_cycles: int = 3,
+        max_answer_tokens: int = 48,
+        active_perturbation: Optional[PerturbationConfig] = None,
+        mid_thought_tokens: Optional[str] = None,
+        inject_at_cycle: int = 1,
+        temperature: float = 0.5,
+        fresh_state: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Executes zero-feedback live inference on the continuous living manifold,
+        optionally under an active transient or persistent perturbation.
+        """
+        gen = self.stream_query(
+            prompt=prompt,
+            thinking_cycles=thinking_cycles,
+            max_answer_tokens=max_answer_tokens,
+            active_perturbation=active_perturbation,
+            mid_thought_tokens=mid_thought_tokens,
+            inject_at_cycle=inject_at_cycle,
+            temperature=temperature,
+            fresh_state=fresh_state,
+        )
+        last_event: Dict[str, Any] = {}
+        for event in gen:
+            if event.get("event") == "done":
+                last_event = event
+        return {
+            "prompt": prompt,
+            "response": last_event.get("response", ""),
+            "tokens_generated": last_event.get("tokens_generated", 0),
+            "perturbation": last_event.get("perturbation", "Clean Baseline"),
+            "thinking_cycles": thinking_cycles,
+            "latency_ms": last_event.get("total_ms", 0.0),
         }
 
 
@@ -698,9 +788,10 @@ def main():
     parser.add_argument("--checkpoint", type=str, default="checkpoints/multimodal_organoid_best.pt")
     parser.add_argument("--heartbeat", type=float, default=2.0, help="Heartbeat frequency in Hz")
     parser.add_argument("--duration", type=int, default=86400, help="Running duration in seconds")
+    parser.add_argument("--live", action="store_true", help="Print real-time animated shell wave output & spontaneous thoughts")
     args = parser.parse_args()
 
-    host = LivingOrganoidHost(checkpoint_path=args.checkpoint, heartbeat_hz=args.heartbeat)
+    host = LivingOrganoidHost(checkpoint_path=args.checkpoint, heartbeat_hz=args.heartbeat, live_output=args.live)
     host.start()
 
     print("\n" + "=" * 80)
@@ -709,6 +800,7 @@ def main():
     print(f"Model       : {host.model_type.upper()} ({sum(p.numel() for p in host.model.parameters())/1e6:.2f}M parameters)")
     print(f"Checkpoint  : {args.checkpoint}")
     print(f"Frequency   : {args.heartbeat} Hz continuous biological pacemaker")
+    print(f"Live Output : {'Enabled (real-time stream)' if args.live else 'Disabled'}")
     print(f"Status Log  : {host.status_file}")
     print(f"IPC Queue   : {host.ipc_file}")
     print("Commands    : Write JSON to IPC file to inject live perturbations or queries")
@@ -718,7 +810,7 @@ def main():
     try:
         while time.time() < t_end:
             time.sleep(5.0)
-            if os.path.exists(host.status_file):
+            if not args.live and os.path.exists(host.status_file):
                 with open(host.status_file, "r") as f:
                     stat = json.load(f)
                 div_str = f" | Div: {stat.get('trajectory_divergence', 0):.4f}" if stat.get('active_perturbation') else ""

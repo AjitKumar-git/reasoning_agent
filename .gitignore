@@ -11,10 +11,15 @@ checkpoints/
 *.safetensors
 *.ckpt
 
+# IDE agent cache
+.qoder/
+
 # Heavy data directories and caches
 data/
 archive/
 .hf_cache/
+chat_logs/
+*.parquet
 *.zip
 *.tar.gz
 *.tar

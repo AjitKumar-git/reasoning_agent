@@ -9,6 +9,7 @@ os.environ.setdefault("HF_HOME", os.path.abspath(os.path.join(os.path.dirname(__
 
 import re
 import random
+from typing import Optional
 import pyarrow.parquet as pq
 import torch
 from datasets import load_dataset
@@ -219,6 +220,8 @@ def get_specialized_cognitive_stream(
     parquet_path: str = None,
     max_prompt_len: int = 1024,
     max_resp_len: int = 128,
+    shuffle_seed: Optional[int] = None,
+    allow_synthesis_fallback: bool = True,
 ):
     """
     Streams from the specialized continuous cognitive reasoning dataset.
@@ -227,6 +230,16 @@ def get_specialized_cognitive_stream(
     2. Causal physics, thermodynamics, optics, and biochemistry mechanisms.
     3. Formal transitive logic and algorithmic sequence tracking.
     4. Infinite on-the-fly synthesis fallback so training never terminates prematurely.
+
+    `shuffle_seed` draws epoch orderings from a private `random.Random` instead of the global
+    one, so constructing the stream neither depends on nor disturbs process RNG state, and the
+    first batches it yields are reproducible from the seed alone. Leave it None for training
+    (fresh ordering every run) and set it for anything whose number is going to be compared
+    across evaluations -- an unseeded eval stream measures a different set each time.
+
+    `allow_synthesis_fallback=False` makes a missing file an error rather than an infinite
+    stream of freshly invented samples. A validation set that silently synthesises is not
+    validating the file it claims to.
     """
     from src.generate_specialized_dataset import generate_single_cognitive_sample
 
@@ -241,12 +254,19 @@ def get_specialized_cognitive_stream(
         stimuli = table["stimulus"].to_pylist()
         articulations = table["articulation"].to_pylist()
         records = list(zip(stimuli, articulations))
+    elif not allow_synthesis_fallback:
+        raise FileNotFoundError(
+            f"no curriculum file at {parquet_path}; synthesis fallback is disabled because "
+            f"this stream is meant to be a fixed evaluation set"
+        )
+
+    shuffle_rng = random.Random(shuffle_seed) if shuffle_seed is not None else random
 
     batch_p, batch_t = [], []
 
     while True:
         if records:
-            random.shuffle(records)
+            shuffle_rng.shuffle(records)
             for q, a in records:
                 prompt_text = q
                 resp_text = f" {a}"
@@ -327,3 +347,216 @@ def get_cognitive_and_language_stream(
             yield next(cognitive_stream)
         else:
             yield next(lmsys_stream)
+
+
+def get_world_knowledge_stream(
+    tokenizer,
+    batch_size: int = 2,
+    parquet_path: Optional[str] = None,
+    max_prompt_len: int = 1024,
+    max_resp_len: int = 256,
+    shuffle_seed: Optional[int] = None,
+):
+    """
+    Streams high-density world knowledge, factual QA, geography, capitals, and science facts.
+    """
+    if parquet_path is None:
+        parquet_path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "data", "general_knowledge", "world_knowledge_train.parquet")
+        )
+
+    if not os.path.exists(parquet_path):
+        from src.generate_world_knowledge import main as gen_main
+        gen_main()
+
+    table = pq.read_table(parquet_path)
+    stimuli = table["stimulus"].to_pylist()
+    articulations = table["articulation"].to_pylist()
+    records = list(zip(stimuli, articulations))
+
+    shuffle_rng = random.Random(shuffle_seed) if shuffle_seed is not None else random
+    batch_p, batch_t = [], []
+
+    while True:
+        shuffle_rng.shuffle(records)
+        for q, a in records:
+            p_toks = tokenizer.encode(q.strip(), max_length=max_prompt_len, truncation=True)
+            resp_text = f" {a.strip()}"
+            t_toks = tokenizer.encode(resp_text, max_length=max_resp_len - 1, truncation=True) + [tokenizer.eos_token_id]
+
+            if len(p_toks) >= 2 and len(t_toks) >= 2:
+                batch_p.append(p_toks)
+                batch_t.append(t_toks)
+
+                if len(batch_p) == batch_size:
+                    max_p = max(len(p) for p in batch_p)
+                    max_t = max(len(t) for t in batch_t)
+                    p_pad = [p + [tokenizer.eos_token_id] * (max_p - len(p)) for p in batch_p]
+                    t_pad = [t + [-100] * (max_t - len(t)) for t in batch_t]
+                    yield (
+                        torch.tensor(p_pad, dtype=torch.long),
+                        torch.tensor(t_pad, dtype=torch.long),
+                    )
+                    batch_p, batch_t = [], []
+
+
+def get_openhermes_stream(
+    tokenizer,
+    parquet_path: Optional[str] = None,
+    batch_size: int = 1,
+    max_prompt_len: int = 512,
+    max_resp_len: int = 192,
+    shuffle_seed: Optional[int] = None,
+):
+    """
+    Data-Level Distillation Stream from Teknium OpenHermes-2.5 (1M high-quality distilled traces).
+    Extracts direct reasoning traces:
+      Stimulus      -> {human instruction}
+      Articulation  -> {distilled frontier model response}
+    Zero chatbot boilerplate, pure cognitive distillation.
+    """
+    if parquet_path is None:
+        parquet_path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "data", "openhermes", "openhermes_2_5.parquet")
+        )
+
+    if not os.path.exists(parquet_path):
+        raise FileNotFoundError(f"OpenHermes parquet not found at: {parquet_path}")
+
+    parquet_file = pq.ParquetFile(parquet_path)
+    num_row_groups = parquet_file.num_row_groups
+    shuffle_rng = random.Random(shuffle_seed)
+
+    while True:
+        group_indices = list(range(num_row_groups))
+        shuffle_rng.shuffle(group_indices)
+
+        for rg_idx in group_indices:
+            rg = parquet_file.read_row_group(rg_idx)
+            cols = rg.column_names
+
+            # Extract conversations / instructions
+            rows = []
+            if "conversations" in cols:
+                convs_col = rg["conversations"].to_pylist()
+                for conv in convs_col:
+                    if not conv or not isinstance(conv, list):
+                        continue
+                    # Find human -> gpt turn
+                    for i in range(len(conv) - 1):
+                        msg_u = conv[i]
+                        msg_a = conv[i + 1]
+                        u_role = msg_u.get("from") or msg_u.get("role")
+                        a_role = msg_a.get("from") or msg_a.get("role")
+                        if u_role in ("human", "user") and a_role in ("gpt", "assistant", "model"):
+                            u_text = msg_u.get("value") or msg_u.get("content") or ""
+                            a_text = msg_a.get("value") or msg_a.get("content") or ""
+                            if u_text.strip() and a_text.strip():
+                                rows.append((u_text.strip(), a_text.strip()))
+            elif "instruction" in cols and "output" in cols:
+                inst_col = rg["instruction"].to_pylist()
+                out_col = rg["output"].to_pylist()
+                in_col = rg["input"].to_pylist() if "input" in cols else [""] * len(inst_col)
+                for inst, inp, out in zip(inst_col, in_col, out_col):
+                    p = f"{inst.strip()} {inp.strip()}".strip() if inp else inst.strip()
+                    if p and out and out.strip():
+                        rows.append((p, out.strip()))
+
+            shuffle_rng.shuffle(rows)
+            batch_p, batch_t = [], []
+
+            for q, a in rows:
+                clean_a = clean_organism_response(a)
+                if not clean_a:
+                    continue
+
+                p_toks = tokenizer.encode(q, max_length=max_prompt_len, truncation=True)
+                resp_text = f" {clean_a}"
+                t_toks = tokenizer.encode(resp_text, max_length=max_resp_len - 1, truncation=True) + [tokenizer.eos_token_id]
+
+                if len(p_toks) >= 4 and len(t_toks) >= 4:
+                    batch_p.append(p_toks)
+                    batch_t.append(t_toks)
+
+                    if len(batch_p) == batch_size:
+                        max_p = max(len(p) for p in batch_p)
+                        max_t = max(len(t) for t in batch_t)
+                        p_pad = [p + [tokenizer.eos_token_id] * (max_p - len(p)) for p in batch_p]
+                        t_pad = [t + [-100] * (max_t - len(t)) for t in batch_t]
+                        yield (
+                            torch.tensor(p_pad, dtype=torch.long),
+                            torch.tensor(t_pad, dtype=torch.long),
+                        )
+                        batch_p, batch_t = [], []
+
+
+def get_general_llm_stream(
+    tokenizer,
+    batch_size: int = 2,
+    max_prompt_len: int = 1024,
+    max_resp_len: int = 256,
+    lmsys_dir: Optional[str] = None,
+    openhermes_path: Optional[str] = None,
+    lmsys_ratio: float = 0.45,
+    knowledge_ratio: float = 0.35,
+    shuffle_seed: Optional[int] = None,
+):
+    """
+    Unified General LLM + World Knowledge Curriculum Stream:
+    1. 45% LMSYS-Chat-1M / OpenHermes real human-LLM conversational discourse
+    2. 35% World Knowledge & Factual QA (geography, capitals, landmarks, science, nature)
+    3. 20% Specialized Cognitive Reasoning (cerebro_cognitive + GSM8K)
+    Guarantees both encyclopedic factual knowledge (e.g. Paris as capital of France) and deep logic.
+    """
+    if openhermes_path is None:
+        openhermes_path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "data", "openhermes", "openhermes_2_5.parquet")
+        )
+
+    # Use OpenHermes if downloaded, else fallback to LMSYS
+    if os.path.exists(openhermes_path):
+        llm_stream = get_openhermes_stream(
+            tokenizer,
+            parquet_path=openhermes_path,
+            batch_size=batch_size,
+            max_prompt_len=max_prompt_len,
+            max_resp_len=max_resp_len,
+            shuffle_seed=shuffle_seed,
+        )
+    else:
+        if lmsys_dir is None:
+            lmsys_dir = os.path.abspath(
+                os.path.join(os.path.dirname(__file__), "..", "data", "lmsys_chat_1m", "data")
+            )
+        llm_stream = get_lmsys_stream(
+            lmsys_dir, tokenizer, batch_size=batch_size, max_prompt_len=max_prompt_len, max_resp_len=max_resp_len
+        )
+
+    knowledge_stream = get_world_knowledge_stream(
+        tokenizer, batch_size=batch_size, max_prompt_len=max_prompt_len, max_resp_len=max_resp_len, shuffle_seed=shuffle_seed
+    )
+    cognitive_stream = get_specialized_cognitive_stream(
+        tokenizer, batch_size=batch_size, max_prompt_len=max_prompt_len, max_resp_len=max_resp_len
+    )
+
+    while True:
+        r = random.random()
+        if r < lmsys_ratio:
+            yield next(llm_stream)
+        elif r < (lmsys_ratio + knowledge_ratio):
+            yield next(knowledge_stream)
+        else:
+            yield next(cognitive_stream)
+
+
+# Re-export frontier reasoning loaders
+try:
+    from src.frontier_reasoning_loaders import (
+        get_numinamath_stream,
+        get_proofwriter_stream,
+        get_bbh_stream,
+        get_frontier_reasoning_stream,
+    )
+except ImportError:
+    pass
+

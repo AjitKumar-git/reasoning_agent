@@ -20,6 +20,7 @@ import os
 os.environ.setdefault("HF_HOME", os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".hf_cache")))
 
 import math
+import sys
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -51,13 +52,28 @@ class SensoryInputDNN(nn.Module):
         self.norm_out = nn.RMSNorm(surface_dim)
         self.residual_proj = nn.Linear(hidden_dim, surface_dim, bias=False) if hidden_dim != surface_dim else nn.Identity()
 
-    def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
+    def forward(self, token_ids: torch.Tensor, start_pos: int = 0) -> torch.Tensor:
+        is_1d = (token_ids.ndim == 1)
+        if is_1d:
+            token_ids = token_ids.unsqueeze(0)
+        batch, seq_len = token_ids.shape
         x = self.embedding(token_ids)
+
+        # Sinusoidal Positional Encoding (Fixed deterministic geometry, zero parameter overhead)
+        dim = x.shape[-1]
+        pos = torch.arange(start_pos, start_pos + seq_len, device=token_ids.device, dtype=torch.float32).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, dim, 2, device=token_ids.device, dtype=torch.float32) * (-math.log(10000.0) / dim))
+        pe = torch.zeros(seq_len, dim, device=token_ids.device, dtype=x.dtype)
+        pe[:, 0::2] = torch.sin(pos * div_term).to(x.dtype)
+        pe[:, 1::2] = torch.cos(pos * div_term).to(x.dtype)
+        x = x + pe.unsqueeze(0)
+
         gate = F.silu(self.fc1_gate(x))
         val = self.fc1_val(x)
         h = self.norm1(gate * val)
         flux = self.fc2(h) + self.residual_proj(x)
-        return self.norm_out(flux)
+        out = self.norm_out(flux)
+        return out.squeeze(0) if is_1d else out
 
     # Compatibility alias for legacy scripts
     def ingest_sensory_input(self, token_ids: torch.Tensor) -> torch.Tensor:
@@ -115,6 +131,15 @@ class MotorOutputDNN(nn.Module):
         self.refractory_strength = nn.Parameter(torch.tensor(1.2))
         self.refractory_decay = nn.Parameter(torch.tensor(0.75))
 
+        # Auditory Re-afference (Broca-Wernicke Feedback): Incorporates previously spoken keyword/token
+        self.auditory_proj = nn.Linear(surface_dim, surface_dim, bias=False)
+        nn.init.normal_(self.auditory_proj.weight, mean=0.0, std=0.02)
+        self.auditory_gate = nn.Parameter(torch.tensor(0.5))
+
+        # Associative Fast-Weight Synaptic Memory (O(1) Inter-Token Relations)
+        from src.fast_weight_memory import AssociativeFastWeightMemory
+        self.fast_weight_memory = AssociativeFastWeightMemory(dim=surface_dim, num_heads=4)
+
         # Internal Corollary Discharge (Efference Copy Projection to Subcortical Core)
         self.efference_proj = nn.Linear(hidden_dim, surface_dim, bias=False)
         nn.init.normal_(self.efference_proj.weight, mean=0.0, std=0.01)
@@ -126,7 +151,10 @@ class MotorOutputDNN(nn.Module):
         sensory_memory: Optional[torch.Tensor] = None,
         refractory_trace: Optional[torch.Tensor] = None,
         step_idx: int = 0,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        auditory_feedback: Optional[torch.Tensor] = None,
+        fast_weight_memory: Optional[torch.Tensor] = None,
+        prompt_len: Optional[int] = None,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], torch.Tensor, Optional[torch.Tensor]]:
         if core_state is None:
             core_state = surface_state
 
@@ -136,15 +164,44 @@ class MotorOutputDNN(nn.Module):
         phase_vec = self.motor_phase_embed(phase_t).to(surface_state.dtype)
         motor_surface = surface_state + phase_vec
 
-        # Arcuate Fasciculus Cross-Resonance with question's sensory working memory
+        # Incorporate Auditory Re-afference (hearing previously articulated token/keyword)
+        if auditory_feedback is not None:
+            if hasattr(self, "auditory_proj"):
+                gate = torch.tanh(self.auditory_gate) if hasattr(self, "auditory_gate") else 1.0
+                motor_surface = motor_surface + gate * self.auditory_proj(auditory_feedback.to(motor_surface.dtype))
+            else:
+                motor_surface = motor_surface + auditory_feedback.to(motor_surface.dtype)
+
+        # Query & Update Associative Fast-Weight Synaptic Memory
+        next_fast_weight = fast_weight_memory
+        if hasattr(self, "fast_weight_memory"):
+            assoc_context, next_fast_weight = self.fast_weight_memory(motor_surface, memory=fast_weight_memory)
+            motor_surface = motor_surface + assoc_context
+
+        # Arcuate Fasciculus Multi-Head Cross-Resonance (4 Heads with Dedicated Prompt Locking)
         if sensory_memory is not None and sensory_memory.ndim == 3:
-            q = self.q_proj(motor_surface).unsqueeze(1)   # [B, 1, D]
-            k = self.k_proj(sensory_memory)               # [B, L, D]
-            v = self.v_proj(sensory_memory)               # [B, L, D]
-            scale = 1.0 / math.sqrt(self.surface_dim)
-            attn_scores = torch.bmm(q, k.transpose(1, 2)) * scale
+            B, L, _ = sensory_memory.shape
+            num_heads = 4
+            head_dim = self.surface_dim // num_heads
+
+            q = self.q_proj(motor_surface).view(B, 1, num_heads, head_dim).transpose(1, 2)  # [B, H, 1, D_h]
+            k = self.k_proj(sensory_memory).view(B, L, num_heads, head_dim).transpose(1, 2)  # [B, H, L, D_h]
+            v = self.v_proj(sensory_memory).view(B, L, num_heads, head_dim).transpose(1, 2)  # [B, H, L, D_h]
+
+            scale = 1.0 / math.sqrt(head_dim)
+            attn_scores = torch.matmul(q, k.transpose(-2, -1)) * scale  # [B, H, 1, L]
+
+            # Dedicated Prompt Locking:
+            # Heads 0 and 1 are permanently locked onto the prompt tokens (0..prompt_len-1)
+            # so the question entity (e.g. 'France') is NEVER drowned out by emitted tokens.
+            if prompt_len is not None and L > prompt_len:
+                mask = torch.zeros_like(attn_scores)
+                mask[:, :2, :, prompt_len:] = -1e4
+                attn_scores = attn_scores + mask
+
             attn_weights = F.softmax(attn_scores, dim=-1)
-            resonance = torch.bmm(attn_weights, v).squeeze(1)  # [B, D]
+            resonance = torch.matmul(attn_weights, v)  # [B, H, 1, D_h]
+            resonance = resonance.transpose(1, 2).contiguous().view(B, self.surface_dim)
             resonance = self.resonance_norm(resonance)
         else:
             resonance = torch.zeros_like(surface_state)
@@ -162,9 +219,9 @@ class MotorOutputDNN(nn.Module):
             decay = torch.sigmoid(self.refractory_decay)
             current_prob = F.softmax(raw_logits, dim=-1).detach()
             next_trace = (decay * refractory_trace + (1.0 - decay) * current_prob).detach()
-            return adapted_logits, next_trace, efference_copy
+            return adapted_logits, next_trace, efference_copy, next_fast_weight
 
-        return raw_logits, None, efference_copy
+        return raw_logits, None, efference_copy, next_fast_weight
 
     # Compatibility alias for legacy scripts
     def emit_motor_output(self, surface_state: torch.Tensor) -> torch.Tensor:
@@ -388,7 +445,13 @@ class CerebroSpheroid(nn.Module):
         return self.volumetric_core.tick_living_dynamics(state, t_step=t_step)
 
     def load_compatible_checkpoint(self, checkpoint_path: str, device: torch.device = torch.device('cpu')) -> bool:
-        """Loads state_dict skipping any parameters with mismatched shapes across architectural upgrades."""
+        """Loads state_dict skipping any parameters with mismatched shapes across architectural upgrades.
+
+        Skipped tensors stay at their constructor's random initialisation, so a checkpoint
+        written before an architectural addition silently yields a *partly random model*.
+        PyTorch's default RNG seed differs per process, which makes every inference run a
+        different network. That is reported here instead of being swallowed.
+        """
         if not os.path.exists(checkpoint_path):
             return False
         state_dict = torch.load(checkpoint_path, map_location=device, weights_only=True)
@@ -398,6 +461,27 @@ class CerebroSpheroid(nn.Module):
             if k in model_dict and v.shape == model_dict[k].shape:
                 compatible_dict[k] = v
         self.load_state_dict(compatible_dict, strict=False)
+
+        left_random = [k for k in model_dict if k not in compatible_dict]
+        if left_random:
+            absent = [k for k in left_random if k not in state_dict]
+            misshaped = [k for k in left_random if k in state_dict]
+            n = sum(int(model_dict[k].numel()) for k in left_random)
+            parts = []
+            if absent:
+                parts.append(f"{len(absent)} not present in the checkpoint "
+                             f"({', '.join(absent[:4])}{' ...' if len(absent) > 4 else ''})")
+            if misshaped:
+                detail = ", ".join(f"{k} {tuple(state_dict[k].shape)}->{tuple(model_dict[k].shape)}"
+                                   for k in misshaped[:4])
+                parts.append(f"{len(misshaped)} present but shape-incompatible and discarded "
+                             f"({detail}{' ...' if len(misshaped) > 4 else ''})")
+            print(
+                f"[WARNING] {len(left_random)} tensor(s) ({n:,} values) were NOT restored from "
+                f"{os.path.basename(checkpoint_path)} and are left at random initialisation. "
+                f"Output will differ on every run. " + "; ".join(parts),
+                file=sys.stderr,
+            )
         return True
 
     def ingest_stimulus(
@@ -413,6 +497,7 @@ class CerebroSpheroid(nn.Module):
         Optionally returns (state, sensory_memory) for Arcuate Fasciculus motor resonance.
         """
         batch_size, seq_len = token_ids.shape
+        self.current_prompt_len = seq_len
         if state is None:
             state = self.init_brain_state(batch_size, token_ids.device, living=living)
 
@@ -450,23 +535,44 @@ class CerebroSpheroid(nn.Module):
         refractory_trace: Optional[torch.Tensor] = None,
         return_trace: bool = False,
         step_idx: int = 0,
+        auditory_feedback: Optional[torch.Tensor] = None,
+        fast_weight_memory: Optional[torch.Tensor] = None,
+        return_fast_weight: bool = False,
+        prompt_len: Optional[int] = None,
     ):
         """
-        Reads out next-token distribution and advances manifold state (Zero Feedback).
-        Uses Arcuate Fasciculus sensory memory resonance and Premotor Temporal Phase Clock.
+        Reads out next-token distribution and advances manifold state.
+        Uses Arcuate Fasciculus sensory memory resonance, Premotor Temporal Phase Clock,
+        Auditory Re-afference, and Associative Fast-Weight Synaptic Memory.
         """
         surface_efferent, core_attractor = self.volumetric_core.tap_efferents(state)
-        logits, next_trace, efference_copy = self.motor_dnn(
+        res = self.motor_dnn(
             surface_efferent,
             core_attractor,
             sensory_memory=sensory_memory,
             refractory_trace=refractory_trace,
             step_idx=step_idx,
+            auditory_feedback=auditory_feedback,
+            fast_weight_memory=fast_weight_memory,
+            prompt_len=prompt_len or getattr(self, "current_prompt_len", None),
         )
+        if len(res) == 4:
+            logits, next_trace, efference_copy, next_fast_weight = res
+        else:
+            logits, next_trace, efference_copy = res
+            next_fast_weight = fast_weight_memory
+
+        # Autoregressive Sensory Ingestion into Thinking Manifold:
+        # Ingest the articulated token's sensory flux into the outer cortical shell (Shell K-1)
+        if auditory_feedback is not None:
+            state = self.volumetric_core.inject_sensory_flux(state, auditory_feedback)
+
         # Advance manifold internally with Corollary Discharge in Deep Subcortical Core (Shell 0)
         state_with_efference = self.volumetric_core.inject_efference_copy(state, efference_copy)
         next_state = self.volumetric_core.circulate_mid_tensors(state_with_efference, num_cycles=1)
 
+        if return_fast_weight:
+            return logits, next_state, next_trace, next_fast_weight
         if return_trace or refractory_trace is not None:
             return logits, next_state, next_trace
         return logits, next_state
@@ -516,9 +622,17 @@ class CerebroSpheroid(nn.Module):
 
         ceiling = max_answer_tokens if max_answer_tokens is not None else 4096
         generated = []
+        auditory_feedback = None
+        fast_weight_mem = None
         for step_idx in range(ceiling):
-            logits, state, refractory_trace = self.emit_next_token(
-                state, sensory_memory=sensory_memory, refractory_trace=refractory_trace, step_idx=step_idx
+            logits, state, refractory_trace, fast_weight_mem = self.emit_next_token(
+                state,
+                sensory_memory=sensory_memory,
+                refractory_trace=refractory_trace,
+                step_idx=step_idx,
+                auditory_feedback=auditory_feedback,
+                fast_weight_memory=fast_weight_mem,
+                return_fast_weight=True,
             )
 
             # Suppress premature EOS in first 3 tokens
@@ -538,6 +652,12 @@ class CerebroSpheroid(nn.Module):
                 probs = F.softmax(logits / max(temperature, 1e-5), dim=-1)
                 next_tok = torch.multinomial(probs, num_samples=1)
             generated.append(next_tok)
+
+            # Autoregressive Sensory & Thinking Ingestion for step t+1:
+            prompt_len = prompt_tokens.shape[1]
+            auditory_feedback = self.sensory_dnn(next_tok.squeeze(-1), start_pos=prompt_len + step_idx)
+            if sensory_memory is not None:
+                sensory_memory = torch.cat([sensory_memory, auditory_feedback.unsqueeze(1)], dim=1)
 
             if eos_token_id is not None and (next_tok == eos_token_id).all():
                 break

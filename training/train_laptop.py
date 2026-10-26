@@ -7,7 +7,9 @@ Supports multi-domain datasets:
 """
 
 import os
-os.environ["HF_HOME"] = "/home/ajit/Documents/Startup/reasoning_agent/.hf_cache"
+os.environ.setdefault(
+    "HF_HOME", os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".hf_cache"))
+)
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 import sys
@@ -21,6 +23,7 @@ import torch.nn as nn
 from transformers import AutoTokenizer
 
 from src.model import CerebroSpheroid
+from src.spheroid_v3 import CerebroSpheroidV3, training_rollout
 from src.data_loaders import get_lmsys_stream, get_gsm8k_stream, get_svamp_stream
 from src.inference import ReasoningAgent
 
@@ -36,6 +39,7 @@ def main():
     parser.add_argument("--lr", type=float, default=None, help="Learning rate (default: 3e-4 for AdamW, 0.015 for SGD)")
     parser.add_argument("--resume", type=str, default=None, help="Explicit checkpoint path to resume")
     parser.add_argument("--save_name", type=str, default=None, help="Custom checkpoint name")
+    parser.add_argument("--arch", type=str, default="v2", choices=["v2", "v3"], help="Manifold generation to train")
     args = parser.parse_args()
 
     if args.lr is None:
@@ -58,10 +62,12 @@ def main():
     print(f"Planned Steps      : {args.steps} steps | Batch Size: {args.batch_size}")
     print(f"Optimizer          : {args.optimizer.upper()} (lr={args.lr:.2e})")
     print(f"Thinking Latency   : {args.thinking_cycles} cycles (Subconscious deliberation)")
+    print(f"Manifold           : {args.arch.upper()}")
     print("=" * 80)
 
     # 1. Instantiate Model Architecture
-    model = CerebroSpheroid(
+    model_cls = CerebroSpheroidV3 if args.arch == "v3" else CerebroSpheroid
+    model = model_cls(
         vocab_size=vocab_size,
         surface_dim=640,
         num_shells=16,
@@ -137,16 +143,10 @@ def main():
             ans_len = targets.shape[1]
 
             with torch.amp.autocast(device_type="cuda" if device.type == "cuda" else "cpu", dtype=dtype):
-                state, sensory_memory = model.ingest_stimulus_with_memory(prompts)
-                state = model.deliberate(state, thinking_cycles=args.thinking_cycles)
-
-                logits_list = []
-                for t in range(ans_len):
-                    logits_t, state = model.emit_next_token(state, sensory_memory=sensory_memory, step_idx=t)
-                    logits_list.append(logits_t)
-
-                predicted_logits = torch.stack(logits_list, dim=1)
-                loss = criterion(predicted_logits.view(-1, vocab_size), targets.view(-1))
+                predicted_logits = training_rollout(
+                    model, prompts, ans_len, thinking_cycles=args.thinking_cycles
+                )
+                loss = criterion(predicted_logits.reshape(-1, vocab_size), targets.reshape(-1))
                 scaled_loss = loss / args.grad_accum
 
             scaled_loss.backward()

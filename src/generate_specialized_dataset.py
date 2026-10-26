@@ -8,7 +8,11 @@ Expands curriculum across:
 """
 
 import os
+import json
 import random
+import hashlib
+import argparse
+from typing import Optional
 import pyarrow as pa
 import pyarrow.parquet as pq
 
@@ -453,16 +457,153 @@ def generate_single_cognitive_sample():
     return func()
 
 
-def build_specialized_parquet(output_path: str, num_samples: int = 50000):
+def _draw_corpus(num_samples: int, seed: Optional[int]):
+    """Generates records under an explicit seed, folding away exact repeats.
+
+    Without a seed this module is irreproducible: every invocation draws a different pool,
+    which silently invalidates any metric ever recorded against a previously written file.
+    Duplication is also far higher than it looks -- 50,000 draws land on roughly 20,000
+    distinct stimuli -- and a repeated record is sampled proportionally more often during
+    training and again in the baseline histograms, so it biases both sides of any comparison.
+
+    Returns (order, stimulus -> answer, repeats folded, ambiguous stimuli). A stimulus is
+    ambiguous when it was drawn twice with different articulations; each generator derives its
+    answer from the numbers it prints, so a conflict means the printed prose does not determine
+    the answer and that record teaches the model an unsolvable problem.
+    """
+    if seed is not None:
+        random.seed(seed)
+    seen = {}
+    order = []
+    duplicates = 0
+    ambiguous = set()
+    for _ in range(num_samples):
+        q, a = generate_single_cognitive_sample()
+        if q in seen:
+            duplicates += 1
+            if seen[q] != a:
+                ambiguous.add(q)
+            continue
+        seen[q] = a
+        order.append(q)
+    return order, seen, duplicates, ambiguous
+
+
+def _md5_of(path: str) -> str:
+    h = hashlib.md5()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _write_pairs(path: str, keys, lookup) -> None:
+    table = pa.Table.from_arrays(
+        [pa.array([k for k in keys], type=pa.string()),
+         pa.array([lookup[k] for k in keys], type=pa.string())],
+        names=["stimulus", "articulation"],
+    )
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    pq.write_table(table, path, compression="zstd")
+
+
+def audit_empty_answers(keys, lookup):
+    """Stimuli whose generated answer is blank -- these would train the model to emit EOS."""
+    return sum(1 for q in keys if not lookup[q])
+
+
+def build_specialized_split(
+    train_path: str,
+    val_path: str,
+    num_samples: int = 50000,
+    val_fraction: float = 0.05,
+    seed: int = 1337,
+    manifest_path: Optional[str] = None,
+):
+    """Writes a seeded, deduplicated, disjoint train/val pair plus a provenance manifest.
+
+    The split unit is the distinct stimulus, not the row, so no question can appear on both
+    sides. It is not a template-disjoint split: two records can share a template with
+    different numbers. That is deliberate -- the answer is a function of the quantities in the
+    question, so memorising the sentence shape does not yield the right tokens, and splitting
+    by template would starve the val set of coverage the training pool can never supply.
+
+    Stimuli that were drawn twice with two different answers are dropped from both sides. No
+    mapping can be correct for both labels, so keeping one would put an irreducible floor under
+    the loss and blur exactly the signal this split exists to measure.
+    """
+    keys, lookup, duplicates, ambiguous = _draw_corpus(num_samples, seed=seed)
+    keys = [q for q in keys if q not in ambiguous]
+    if len(keys) < 20:
+        raise RuntimeError(f"only {len(keys)} usable stimuli from {num_samples:,} draws")
+
+    rng = random.Random(seed)
+    rng.shuffle(keys)
+    n_val = max(1, int(round(len(keys) * val_fraction)))
+    val_keys, train_keys = keys[:n_val], keys[n_val:]
+
+    _write_pairs(train_path, train_keys, lookup)
+    _write_pairs(val_path, val_keys, lookup)
+
+    manifest = {
+        "seed": seed,
+        "draws": num_samples,
+        "exact_duplicate_draws_folded": duplicates,
+        "ambiguous_stimuli_dropped": len(ambiguous),
+        "distinct_stimuli": len(keys),
+        "train_rows": len(train_keys),
+        "val_rows": len(val_keys),
+        "train_parquet": os.path.relpath(train_path, os.path.join(os.path.dirname(__file__), "..")),
+        "val_parquet": os.path.relpath(val_path, os.path.join(os.path.dirname(__file__), "..")),
+        "train_md5": _md5_of(train_path),
+        "val_md5": _md5_of(val_path),
+        "empty_answers": audit_empty_answers(keys, lookup),
+    }
+    if manifest_path:
+        with open(manifest_path, "w") as fh:
+            json.dump(manifest, fh, indent=2, sort_keys=True)
+    print("=" * 78)
+    print(f"  seed                    {manifest['seed']}")
+    print(f"  draws                   {manifest['draws']:,}")
+    print(f"  exact repeats folded    {manifest['exact_duplicate_draws_folded']:,} "
+          f"({manifest['exact_duplicate_draws_folded'] / max(num_samples, 1):.1%} of draws)")
+    print(f"  repeats with a DIFFERENT answer, dropped from both splits: "
+          f"{manifest['ambiguous_stimuli_dropped']:,}")
+    print(f"  distinct stimuli        {manifest['distinct_stimuli']:,}")
+    print(f"  train / val rows        {manifest['train_rows']:,} / {manifest['val_rows']:,}")
+    print(f"  train md5               {manifest['train_md5']}")
+    print(f"  val md5                 {manifest['val_md5']}")
+    print("=" * 78)
+    return manifest
+
+
+def build_specialized_parquet(output_path: str, num_samples: int = 50000,
+                              seed: Optional[int] = None, dedupe: bool = False):
+    """Writes the single-file curriculum.
+
+    `seed=None` keeps the historical unseeded behaviour. Pass a seed for anything whose
+    metrics are going to be written down, and prefer `build_specialized_split` when a
+    selection signal is needed -- this file has no held-out portion by construction.
+    """
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     stimuli = []
     articulations = []
 
     print(f"Synthesizing {num_samples:,} rich multi-domain cognitive reasoning records...")
-    for i in range(num_samples):
-        q, a = generate_single_cognitive_sample()
-        stimuli.append(q)
-        articulations.append(a)
+    if dedupe:
+        keys, lookup, duplicates, ambiguous = _draw_corpus(num_samples, seed=seed)
+        print(f"  {duplicates:,} exact repeats folded; {len(ambiguous):,} ambiguous stimuli dropped")
+        keys = [q for q in keys if q not in ambiguous]
+        print(f"  {duplicates:,} exact repeats folded; {len(keys):,} distinct stimuli kept")
+        stimuli = list(keys)
+        articulations = [lookup[k] for k in stimuli]
+    else:
+        if seed is not None:
+            random.seed(seed)
+        for i in range(num_samples):
+            q, a = generate_single_cognitive_sample()
+            stimuli.append(q)
+            articulations.append(a)
 
     table = pa.Table.from_arrays(
         [pa.array(stimuli, type=pa.string()), pa.array(articulations, type=pa.string())],
@@ -470,10 +611,33 @@ def build_specialized_parquet(output_path: str, num_samples: int = 50000):
     )
     pq.write_table(table, output_path, compression="zstd")
     file_mb = os.path.getsize(output_path) / (1024 ** 2)
-    print(f"Successfully compiled {num_samples:,} diverse cognitive records to {output_path} ({file_mb:.2f} MB)")
+    print(f"Successfully compiled {len(stimuli):,} diverse cognitive records to {output_path} ({file_mb:.2f} MB)")
+    print(f"  md5 {_md5_of(output_path)}")
 
 
 if __name__ == "__main__":
-    out_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "cerebro_cognitive"))
-    out_file = os.path.join(out_dir, "cerebro_cognitive_train.parquet")
-    build_specialized_parquet(out_file, num_samples=50000)
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    out_dir = os.path.join(root, "data", "cerebro_cognitive")
+    parser = argparse.ArgumentParser(description="Build the cognitive curriculum (seeded, split)")
+    parser.add_argument("--seed", type=int, default=1337,
+                        help="Generator seed. Recorded in the manifest; re-running reproduces both files byte for byte")
+    parser.add_argument("--num_samples", type=int, default=50000, help="Draws before deduplication")
+    parser.add_argument("--val_fraction", type=float, default=0.05, help="Share of distinct stimuli held out")
+    parser.add_argument("--legacy_single_file", action="store_true",
+                        help="Write only cerebro_cognitive_train.parquet, with no holdout (the historical layout)")
+    args = parser.parse_args()
+
+    if args.legacy_single_file:
+        build_specialized_parquet(
+            os.path.join(out_dir, "cerebro_cognitive_train.parquet"),
+            num_samples=args.num_samples, seed=args.seed, dedupe=True,
+        )
+    else:
+        build_specialized_split(
+            train_path=os.path.join(out_dir, "cerebro_cognitive_train.parquet"),
+            val_path=os.path.join(out_dir, "cerebro_cognitive_val.parquet"),
+            num_samples=args.num_samples,
+            val_fraction=args.val_fraction,
+            seed=args.seed,
+            manifest_path=os.path.join(out_dir, "cerebro_cognitive_manifest.json"),
+        )
