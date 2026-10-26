@@ -306,6 +306,14 @@ def save_state(prefix: str, model, optimizer, scheduler, step: int, best: float,
     torch.save(payload, pt_path)
     write_json(json_path, {k: v for k, v in payload.items() if not k.endswith("rng") and k != "model"
                            and k != "optimizer" and k != "scheduler"})
+    drive_dir = getattr(args, "drive_dir", None)
+    if drive_dir and os.path.exists(drive_dir):
+        import shutil
+        try:
+            shutil.copy2(pt_path, os.path.join(drive_dir, os.path.basename(pt_path)))
+            shutil.copy2(json_path, os.path.join(drive_dir, os.path.basename(json_path)))
+        except Exception as e:
+            print(f"  [warn] failed to mirror state to drive_dir: {e}", flush=True)
 
 
 def load_state(path: str, model, optimizer, scheduler, device, args) -> Optional[dict]:
@@ -495,6 +503,8 @@ def main():
     parser.add_argument("--save_every", type=int, default=200, help="Steps between state writes")
     parser.add_argument("--log_every", type=int, default=10, help="Steps between progress lines")
     parser.add_argument("--save_prefix", default="cerebro_spheroid_v3full")
+    parser.add_argument("--drive_dir", default=None,
+                        help="Optional Google Drive directory to continuously mirror best checkpoints and state to")
     parser.add_argument("--resume", default="auto",
                         help="'auto' (default), 'none', or a path to a *_state.pt")
     parser.add_argument("--init_from", default="none",
@@ -612,6 +622,16 @@ def main():
         print("resume skipped (--dry_run)")
     elif args.resume == "auto":
         candidate, _ = state_paths(args.save_prefix)
+        if not os.path.exists(candidate) and getattr(args, "drive_dir", None):
+            drive_cand = os.path.join(args.drive_dir, os.path.basename(candidate))
+            if os.path.exists(drive_cand):
+                import shutil
+                print(f"Found saved state in Google Drive: {drive_cand}. Restoring locally...")
+                os.makedirs(CKPT_DIR, exist_ok=True)
+                shutil.copy2(drive_cand, candidate)
+                drive_json = drive_cand.replace("_state.pt", "_state.json")
+                if os.path.exists(drive_json):
+                    shutil.copy2(drive_json, candidate.replace("_state.pt", "_state.json"))
         state_file = candidate if os.path.exists(candidate) else None
     elif args.resume != "none":
         state_file = args.resume
@@ -795,6 +815,17 @@ def main():
                 })
                 print(f"  new best ({args.select_on}: {score:.4f}) -> "
                       f"{os.path.relpath(ckpt_best, ROOT_DIR)}", flush=True)
+                drive_dir = getattr(args, "drive_dir", None)
+                if drive_dir and os.path.exists(drive_dir):
+                    import shutil
+                    try:
+                        shutil.copy2(ckpt_best, os.path.join(drive_dir, os.path.basename(ckpt_best)))
+                        meta_p = meta_path_for(ckpt_best)
+                        if os.path.exists(meta_p):
+                            shutil.copy2(meta_p, os.path.join(drive_dir, os.path.basename(meta_p)))
+                        print(f"  mirrored best checkpoint to {drive_dir}", flush=True)
+                    except Exception as e:
+                        print(f"  [warn] failed to mirror best to drive_dir: {e}", flush=True)
             else:
                 patience += 1
                 print(f"  no improvement for {patience}/{args.patience} evals "
