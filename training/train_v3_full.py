@@ -316,7 +316,7 @@ def save_state(prefix: str, model, optimizer, scheduler, step: int, best: float,
             print(f"  [warn] failed to mirror state to drive_dir: {e}", flush=True)
 
 
-def load_state(path: str, model, optimizer, scheduler, device, args) -> Optional[dict]:
+def load_state(path: str, model, optimizer, scheduler, device, dtype, args) -> Optional[dict]:
     print(f"  resuming from {os.path.relpath(path, ROOT_DIR)}")
     # Load to host memory, not to `device`. With map_location=device the payload itself keeps a
     # second copy of every weight and optimizer buffer resident on the GPU for the rest of the
@@ -329,6 +329,7 @@ def load_state(path: str, model, optimizer, scheduler, device, args) -> Optional
         raise SystemExit(f"state file holds an {stored_arch} run but --arch is {args.arch}")
 
     model.load_state_dict(payload.pop("model"))
+    model.to(device=device, dtype=dtype)
     stored_optimizer = payload.get("args", {}).get("optimizer", "adamw")
     if stored_optimizer != args.optimizer:
         # The parameter groups differ (AdamW stores betas/eps, SGD stores momentum), and
@@ -422,7 +423,7 @@ BYTES_PER_PARAM = {"sgd": 8, "adamw": 16}
 
 
 def memory_preflight(device, param_count: int, optimizer_name: str, window: int,
-                     batch_size: int) -> None:
+                     batch_size: int, dtype: torch.dtype = torch.float32) -> None:
     """Prints the static cost before it turns into an OOM at step 2.
 
     Weights and gradients are fp32 and resident for the whole run: 4 bytes each, plus 4 per
@@ -441,11 +442,8 @@ def memory_preflight(device, param_count: int, optimizer_name: str, window: int,
         return
     free, total = (x / gib for x in torch.cuda.mem_get_info())
     headroom = free - static
-    # Measured on a 4 GB card: at window 64, batch 1 a step peaks about 1.0 GiB above the static
-    # cost (2233 MiB total against 1238 MiB of weights and gradients under SGD). The estimate
-    # below anchors on that number and scales with the per-micro-batch tensor volume. It is an
-    # estimate; a shortfall is fatal only when it is structural, which is the AdamW case.
-    need = 0.6 + 0.55 * batch_size * (window / 64.0)
+    dtype_scale = 0.5 if dtype in (torch.bfloat16, torch.float16) else 1.0
+    need = 0.6 + (0.55 * dtype_scale) * batch_size * (window / 64.0)
     print(f"       {free:.2f} GiB free of {total:.2f} GiB | headroom {headroom:.2f} GiB | "
           f"estimated need {need:.2f} GiB at window {window}, batch {batch_size}")
     if headroom >= need:
@@ -589,10 +587,10 @@ def main():
         from src.model import CerebroSpheroid
         model = CerebroSpheroid(vocab_size=tokenizer.vocab_size, surface_dim=640, num_shells=16,
                                 radial_dim=256, num_shortcut_tracts=40)
-    model.to(device)
+    model.to(device=device, dtype=dtype)
     param_count = sum(p.numel() for p in model.parameters())
     print(f"model  {type(model).__name__} | {param_count:,} parameters")
-    memory_preflight(device, param_count, args.optimizer, args.window, args.batch_size)
+    memory_preflight(device, param_count, args.optimizer, args.window, args.batch_size, dtype)
 
     # Optimizer: decay matrices only. Norms, biases and embeddings take none, which is the
     # usual split and keeps the 380-answer knowledge table from being shrunk toward zero.
@@ -638,7 +636,7 @@ def main():
 
     payload = None
     if state_file:
-        payload = load_state(state_file, model, optimizer, scheduler, device, args)
+        payload = load_state(state_file, model, optimizer, scheduler, device, dtype, args)
     else:
         if args.init_from != "none":
             init_path = args.init_from
