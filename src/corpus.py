@@ -218,16 +218,18 @@ class Mixture:
             self._factories[name] = factory
             self._iterators[name] = factory()
 
-        for name, iterator in self._iterators.items():
-            for _ in range(self.consumed[name]):
+        for name in self.names:
+            count = self.consumed[name]
+            for _ in range(count):
                 try:
-                    next(iterator)
+                    next(self._iterators[name])
                 except StopIteration:
-                    raise RuntimeError(
-                        f"state file says {self.consumed[name]:,} records were consumed from "
-                        f"{name!r}, but the source holds fewer today. The corpus changed since "
-                        f"that state was written; start a fresh run."
-                    )
+                    # When a finite source finishes an epoch, loop it exactly as next() does
+                    self._iterators[name] = self._factories[name]()
+                    try:
+                        next(self._iterators[name])
+                    except StopIteration:
+                        raise RuntimeError(f"source {name!r} is completely empty")
         # Replaying the recorded number of draws reproduces the exact source sequence, so a
         # resumed run sees the same interleaving an uninterrupted run would have seen.
         self._rng = random.Random(seed * 31 + 17)
