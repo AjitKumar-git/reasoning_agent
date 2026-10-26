@@ -15,16 +15,20 @@ zip -q -r "$OUT_ZIP" \
     training/ \
     colab/ \
     data/corpus/ \
-    data/general_knowledge/ \
     data/cerebro_cognitive/cerebro_cognitive_manifest.json \
     main.py \
     chat_session.py \
     chat_web.py \
     test_v3_trained.py \
+    probe_reasoning.py \
     README.md \
+    RESEARCH_NOTES.md \
     -x "*.pt" \
     -x "*.bin" \
-    -x "*.parquet" \
+    -x "data/openhermes/*" \
+    -x "data/lmsys_chat_1m/*" \
+    -x "data/cerebro_cognitive/*.parquet" \
+    -x "data/general_knowledge/*.parquet" \
     -x "*.log" \
     -x "*__pycache__*" \
     -x "*.hf_cache*" \
