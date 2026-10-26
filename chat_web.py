@@ -9,6 +9,7 @@ import os
 os.environ.setdefault("HF_HOME", os.path.abspath(os.path.join(os.path.dirname(__file__), ".hf_cache")))
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
+import argparse
 import sys
 import time
 import json
@@ -26,11 +27,36 @@ DEFAULT_CKPT = os.path.join(ROOT_DIR, "checkpoints", "cerebro_spheroid_distill_v
 if not os.path.exists(DEFAULT_CKPT):
     DEFAULT_CKPT = os.path.join(ROOT_DIR, "checkpoints", "cerebro_spheroid_locked_best.pt")
 
+parser = argparse.ArgumentParser(description="CerebroSpheroid Interactive Web Chat")
+parser.add_argument("--checkpoint", default=None, help="Path to model checkpoint")
+parser.add_argument("--arch", default=None, choices=["v2", "v3"], help="Architecture version")
+parser.add_argument("--share", action="store_true", help="Generate public shareable link")
+parser.add_argument("--port", type=int, default=7860, help="Server port")
+cli_args, _ = parser.parse_known_args()
+
+ckpt = cli_args.checkpoint
+if not ckpt:
+    for cand in [
+        os.path.join(ROOT_DIR, "checkpoints", "cerebro_spheroid_v3_colab_best.pt"),
+        "/content/drive/MyDrive/cerebro_checkpoints/cerebro_spheroid_v3_colab_best.pt",
+        os.path.join(ROOT_DIR, "checkpoints", "cerebro_spheroid_v3_full_best.pt"),
+        os.path.join(ROOT_DIR, "checkpoints", "cerebro_spheroid_distill_v2_best.pt"),
+    ]:
+        if os.path.exists(cand):
+            ckpt = cand
+            break
+if not ckpt:
+    ckpt = DEFAULT_CKPT
+
+arch = cli_args.arch
+if not arch:
+    arch = "v3" if "v3" in os.path.basename(ckpt or "") else "v2"
+
 from src.inference import ReasoningAgent
 
-print("Loading CerebroSpheroid Reasoning Engine...")
-agent = ReasoningAgent(checkpoint_path=DEFAULT_CKPT, arch="v2")
-print(f"Loaded: {DEFAULT_CKPT} on {agent.device}")
+print(f"Loading CerebroSpheroid Reasoning Engine ({arch})...")
+agent = ReasoningAgent(checkpoint_path=ckpt, arch=arch)
+print(f"Loaded: {ckpt} on {agent.device}")
 
 
 def append_to_logs(entry):
@@ -167,4 +193,4 @@ with gr.Blocks(title="CerebroSpheroid Reasoning Agent") as demo:
     clear_btn.click(lambda: [], None, chatbot, queue=False)
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860, share=False, css=custom_css)
+    demo.launch(server_name="0.0.0.0", server_port=cli_args.port, share=cli_args.share, css=custom_css)

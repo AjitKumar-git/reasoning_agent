@@ -52,10 +52,26 @@ def run_probe(ckpt_path: str, label: str):
     agent.stop_living_heartbeat()
 
 if __name__ == "__main__":
-    ckpts = [
-        ("checkpoints/cerebro_spheroid_v3_full_best.pt", "V3 Full Corpus (Best Held-out Checkpoint)"),
-        ("checkpoints/cerebro_spheroid_v3_full_step4000.pt", "V3 Full Corpus (Step 4,000 Checkpoint)"),
-    ]
-    for path, label in ckpts:
-        if os.path.exists(path):
-            run_probe(path, label)
+    import glob
+    custom_target = sys.argv[1] if len(sys.argv) > 1 else None
+    if custom_target and os.path.exists(custom_target):
+        run_probe(custom_target, f"Target Checkpoint [{os.path.basename(custom_target)}]")
+    else:
+        ckpts = [
+            ("checkpoints/cerebro_spheroid_v3_colab_best.pt", "V3 Colab (Best Held-out Checkpoint)"),
+            ("/content/drive/MyDrive/cerebro_checkpoints/cerebro_spheroid_v3_colab_best.pt", "V3 Colab Google Drive (Best)"),
+            ("checkpoints/cerebro_spheroid_v3_full_best.pt", "V3 Full Corpus (Best Held-out Checkpoint)"),
+            ("checkpoints/cerebro_spheroid_v3_full_step4000.pt", "V3 Full Corpus (Step 4,000 Checkpoint)"),
+        ]
+        found = False
+        for path, label in ckpts:
+            if os.path.exists(path):
+                found = True
+                run_probe(path, label)
+        if not found:
+            # Fallback search for any .pt
+            any_pt = glob.glob("checkpoints/*.pt") + glob.glob("/content/drive/MyDrive/cerebro_checkpoints/*.pt")
+            if any_pt:
+                run_probe(any_pt[0], f"Auto-detected Checkpoint [{os.path.basename(any_pt[0])}]")
+            else:
+                print("No checkpoints found in checkpoints/ or Google Drive.")
