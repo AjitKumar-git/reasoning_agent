@@ -34,6 +34,8 @@ import json
 import os
 import random
 import re
+import subprocess
+import sys
 from collections import Counter, defaultdict
 
 import pyarrow as pa
@@ -103,6 +105,12 @@ def main():
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--dry_run", action="store_true", help="Print the plan without writing files")
     args = parser.parse_args()
+
+    if not os.path.exists(args.source):
+        print(f"Source file {os.path.relpath(args.source, ROOT_DIR)} not found.")
+        print("Auto-generating raw world knowledge corpus via src/generate_world_knowledge.py...")
+        gen_script = os.path.join(ROOT_DIR, "src", "generate_world_knowledge.py")
+        subprocess.run([sys.executable, gen_script], check=True)
 
     table = pq.read_table(args.source)
     pairs = list(zip(table["stimulus"].to_pylist(), table["articulation"].to_pylist()))

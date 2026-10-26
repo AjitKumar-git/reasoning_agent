@@ -525,6 +525,19 @@ def main():
 
     args.mix = parse_mix(args.mix)
     args.paths = default_paths()
+
+    available_mix = []
+    for name, weight in args.mix:
+        path = args.paths.get(name)
+        if path and os.path.exists(path):
+            available_mix.append((name, weight))
+        else:
+            print(f"[corpus notice] source {name!r} not found at {path}; omitting from mix")
+    if not available_mix:
+        raise FileNotFoundError(f"None of the sources in mix were found on disk: {args.paths}")
+    total_w = sum(w for _, w in available_mix)
+    args.mix = [(n, w / total_w) for n, w in available_mix]
+    print("Active training mix:", ", ".join(f"{n}={w:.2f}" for n, w in args.mix))
     if args.lr is None:
         args.lr = 0.015 if args.optimizer == "sgd" else 3e-4
     if args.window < 8:
