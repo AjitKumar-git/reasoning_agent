@@ -280,7 +280,13 @@ class ReasoningAgent:
 
                 # Autoregressive Sensory & Thinking Ingestion for step t+1:
                 prompt_len = prompt_tensor.shape[1]
-                auditory_feedback = self.model.sensory_dnn(next_tok.squeeze(-1), start_pos=prompt_len + step_idx)
+                if hasattr(self.model.sensory_dnn, "embedding"):
+                    auditory_feedback = self.model.sensory_dnn.embedding(next_tok.squeeze(-1))
+                else:
+                    try:
+                        auditory_feedback = self.model.sensory_dnn(next_tok.squeeze(-1), start_pos=prompt_len + step_idx)
+                    except TypeError:
+                        auditory_feedback = self.model.sensory_dnn(next_tok.squeeze(-1))
                 if sensory_memory is not None:
                     sensory_memory = torch.cat([sensory_memory, auditory_feedback.unsqueeze(1)], dim=1)
 
@@ -358,7 +364,13 @@ class ReasoningAgent:
                 yield current_text
 
                 prompt_len = prompt_tensor.shape[1]
-                auditory_feedback = self.model.sensory_dnn(next_tok.squeeze(-1), start_pos=prompt_len + step_idx)
+                if hasattr(self.model.sensory_dnn, "embedding"):
+                    auditory_feedback = self.model.sensory_dnn.embedding(next_tok.squeeze(-1))
+                else:
+                    try:
+                        auditory_feedback = self.model.sensory_dnn(next_tok.squeeze(-1), start_pos=prompt_len + step_idx)
+                    except TypeError:
+                        auditory_feedback = self.model.sensory_dnn(next_tok.squeeze(-1))
                 if sensory_memory is not None:
                     sensory_memory = torch.cat([sensory_memory, auditory_feedback.unsqueeze(1)], dim=1)
 

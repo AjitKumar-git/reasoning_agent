@@ -753,6 +753,9 @@ class CerebroSpheroidV3(CerebroSpheroid):
         return_trace: bool = False,
         step_idx: int = 0,
         auditory_feedback: Optional[torch.Tensor] = None,
+        fast_weight_memory: Optional[torch.Tensor] = None,
+        return_fast_weight: bool = False,
+        prompt_len: Optional[int] = None,
     ):
         """V2-compatible adapter (derives the K/V cache when only raw memory is supplied)."""
         sensory_kv = self.motor_dnn.prime_sensory(sensory_memory) if sensory_memory is not None else None
@@ -763,6 +766,8 @@ class CerebroSpheroidV3(CerebroSpheroid):
             step_idx=step_idx,
             auditory_feedback=auditory_feedback,
         )
+        if return_fast_weight:
+            return logits, next_state, next_trace, None
         if return_trace or refractory_trace is not None:
             return logits, next_state, next_trace
         return logits, next_state

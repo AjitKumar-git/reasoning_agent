@@ -21,9 +21,18 @@ SESSION_HISTORY_FILE = os.path.join(LOG_DIR, "session_history.json")
 SESSION_LOG_MD = os.path.join(LOG_DIR, "chat_session.md")
 SESSION_LOG_JSONL = os.path.join(LOG_DIR, "chat_session.jsonl")
 
-DEFAULT_CKPT = os.path.join(ROOT_DIR, "checkpoints", "cerebro_spheroid_distill_v2_best.pt")
-if not os.path.exists(DEFAULT_CKPT):
-    DEFAULT_CKPT = os.path.join(ROOT_DIR, "checkpoints", "cerebro_spheroid_locked_best.pt")
+DEFAULT_CKPT = None
+for cand in [
+    os.path.join(ROOT_DIR, "checkpoints", "cerebro_spheroid_v3_kaggle_best.pt"),
+    os.path.join(ROOT_DIR, "checkpoints", "cerebro_spheroid_v3_colab_best.pt"),
+    os.path.join(ROOT_DIR, "checkpoints", "cerebro_spheroid_v3full_best.pt"),
+    os.path.join(ROOT_DIR, "checkpoints", "cerebro_spheroid_distill_v2_best.pt"),
+]:
+    if os.path.exists(cand):
+        DEFAULT_CKPT = cand
+        break
+if not DEFAULT_CKPT:
+    DEFAULT_CKPT = os.path.join(ROOT_DIR, "checkpoints", "cerebro_spheroid_v3_colab_best.pt")
 
 from src.inference import ReasoningAgent
 
@@ -125,6 +134,7 @@ def main():
     parser.add_argument("--message", type=str, default=None, help="Send a single message turn")
     parser.add_argument("--reset", action="store_true", help="Reset chat history")
     parser.add_argument("--checkpoint", type=str, default=DEFAULT_CKPT, help="Path to checkpoint")
+    parser.add_argument("--arch", default=None, choices=["v2", "v3"], help="Architecture version (auto-detected if omitted)")
     parser.add_argument("--cycles", type=int, default=1, help="Thinking cycles (default: 1)")
     parser.add_argument("--max_tokens", type=int, default=64, help="Max tokens (default: 64)")
     parser.add_argument("--temp", type=float, default=0.0, help="Sampling temperature")
@@ -137,7 +147,11 @@ def main():
         if not args.message:
             return
 
-    agent = ReasoningAgent(checkpoint_path=args.checkpoint, arch="v2")
+    arch = args.arch
+    if not arch:
+        arch = "v3" if "v3" in os.path.basename(args.checkpoint or "") else "v2"
+
+    agent = ReasoningAgent(checkpoint_path=args.checkpoint, arch=arch)
 
     if args.message:
         print(f"User: {args.message}")
