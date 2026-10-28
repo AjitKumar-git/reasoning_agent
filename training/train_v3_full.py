@@ -549,13 +549,26 @@ def main():
         if target_gpus > 1 and num_avail >= target_gpus:
             print(f"[multi-gpu] Detected {num_avail} GPUs. Auto-launching torch.distributed.run with {target_gpus} GPUs...\n", flush=True)
             import subprocess
+            clean_args = []
+            skip_next = False
+            for a in sys.argv[1:]:
+                if skip_next:
+                    skip_next = False
+                    continue
+                if a == "--gpus":
+                    skip_next = True
+                    continue
+                if a.startswith("--gpus="):
+                    continue
+                clean_args.append(a)
+
             cmd = [
                 sys.executable,
                 "-m",
                 "torch.distributed.run",
                 f"--nproc_per_node={target_gpus}",
                 os.path.abspath(__file__),
-            ] + [a for a in sys.argv[1:] if not a.startswith("--gpus")] + [f"--gpus={target_gpus}"]
+            ] + clean_args + [f"--gpus={target_gpus}"]
             ret = subprocess.call(cmd)
             sys.exit(ret)
 
