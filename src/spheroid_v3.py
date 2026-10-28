@@ -947,11 +947,26 @@ class CerebroSpheroidV3(CerebroSpheroid):
                     sensory_kv = (torch.cat([sensory_kv[0], new_k], dim=1), torch.cat([sensory_kv[1], new_v], dim=1))
         return torch.stack(logits, dim=1)
 
-    def forward(self, input_ids: torch.Tensor, response_steps: Optional[int] = None) -> torch.Tensor:
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        response_steps: Optional[int] = None,
+        thinking_cycles: int = 3,
+        pad_token_id: Optional[int] = None,
+        targets: Optional[torch.Tensor] = None,
+        feedback_tokens: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """Emission-time logits. V2 emitted one row per prompt token, which could not be
         scored against response targets; V3 requires an explicit response horizon."""
         steps = response_steps if response_steps is not None else input_ids.shape[1]
-        return self.training_logits(input_ids, steps)
+        return self.training_logits(
+            input_ids,
+            response_steps=steps,
+            thinking_cycles=thinking_cycles,
+            pad_token_id=pad_token_id,
+            targets=targets,
+            feedback_tokens=feedback_tokens,
+        )
 
 
 def apply_repetition_penalty(logits: torch.Tensor, emitted: list, penalty: float) -> torch.Tensor:
@@ -983,15 +998,20 @@ def training_rollout(
     `feedback_tokens[b, j]` overrides the token heard at step j, which lets windowed training
     condition on a token outside the scored window. Omitted, the channel behaves as before.
     """
-    if isinstance(model, CerebroSpheroidV3):
-        return model.training_logits(
-            prompts, response_steps, thinking_cycles=thinking_cycles, pad_token_id=pad_token_id,
-            targets=targets, feedback_tokens=feedback_tokens,
+    raw_model = model.module if hasattr(model, "module") else model
+    if isinstance(raw_model, CerebroSpheroidV3):
+        return model(
+            prompts,
+            response_steps=response_steps,
+            thinking_cycles=thinking_cycles,
+            pad_token_id=pad_token_id,
+            targets=targets,
+            feedback_tokens=feedback_tokens,
         )
-    state, sensory_memory = model.ingest_stimulus_with_memory(prompts, living=True)
-    state = model.deliberate(state, thinking_cycles=thinking_cycles)
+    state, sensory_memory = raw_model.ingest_stimulus_with_memory(prompts, living=True)
+    state = raw_model.deliberate(state, thinking_cycles=thinking_cycles)
     refractory = torch.zeros(
-        prompts.shape[0], model.vocab_size, device=state.device, dtype=torch.float32
+        prompts.shape[0], raw_model.vocab_size, device=state.device, dtype=torch.float32
     )
     logits = []
     auditory_feedback = None
@@ -1006,7 +1026,7 @@ def training_rollout(
     feed_reps = None
     feed_masks = None
     if feed is not None:
-        feed_reps = model.sensory_dnn(feed.clamp(min=0), start_pos=prompt_len - 1)
+        feed_reps = raw_model.sensory_dnn(feed.clamp(min=0), start_pos=prompt_len - 1)
         feed_masks = (feed != -100).unsqueeze(-1)
 
     for step in range(response_steps):
@@ -1019,11 +1039,11 @@ def training_rollout(
             sensory_memory = torch.cat([sensory_memory, auditory_feedback.unsqueeze(1)], dim=1)
         elif step > 0 and auditory_feedback is None and len(logits) > 0:
             prev_tok = torch.argmax(logits[-1], dim=-1)
-            auditory_feedback = model.sensory_dnn(prev_tok, start_pos=prompt_len + step - 1)
+            auditory_feedback = raw_model.sensory_dnn(prev_tok, start_pos=prompt_len + step - 1)
             # Autoregressive Working Memory Expansion
             sensory_memory = torch.cat([sensory_memory, auditory_feedback.unsqueeze(1)], dim=1)
 
-        step_logits, state, refractory, fast_weight_mem = model.emit_next_token(
+        step_logits, state, refractory, fast_weight_mem = raw_model.emit_next_token(
             state,
             sensory_memory=sensory_memory,
             refractory_trace=refractory,
@@ -1036,7 +1056,7 @@ def training_rollout(
         logits.append(step_logits)
         if targets is None:
             prev_tok = torch.argmax(step_logits, dim=-1)
-            auditory_feedback = model.sensory_dnn(prev_tok, start_pos=prompt_len + step)
+            auditory_feedback = raw_model.sensory_dnn(prev_tok, start_pos=prompt_len + step)
             sensory_memory = torch.cat([sensory_memory, auditory_feedback.unsqueeze(1)], dim=1)
     return torch.stack(logits, dim=1)
 

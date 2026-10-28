@@ -283,10 +283,11 @@ def state_paths(prefix: str) -> Tuple[str, str]:
 def save_state(prefix: str, model, optimizer, scheduler, step: int, best: float, patience: int,
                consumed: Dict[str, int], elapsed: float, history: List[dict], args,
                kind: str) -> None:
+    raw_model = model.module if hasattr(model, "module") else model
     pt_path, json_path = state_paths(prefix)
     os.makedirs(CKPT_DIR, exist_ok=True)
     payload = {
-        "model": model.state_dict(),
+        "model": raw_model.state_dict(),
         "optimizer": optimizer.state_dict(),
         "scheduler": scheduler.state_dict(),
         "step": step,
@@ -355,7 +356,10 @@ def load_state(path: str, model, optimizer, scheduler, device, dtype, args) -> O
         torch.set_rng_state(payload.pop("torch_rng").detach().cpu().to(torch.uint8))
     cuda_rng = payload.pop("cuda_rng", None)
     if cuda_rng and torch.cuda.is_available():
-        torch.cuda.set_rng_state_all([s.detach().cpu().to(torch.uint8) for s in cuda_rng])
+        if len(cuda_rng) == torch.cuda.device_count():
+            torch.cuda.set_rng_state_all([s.detach().cpu().to(torch.uint8) for s in cuda_rng])
+        elif len(cuda_rng) > 0:
+            torch.cuda.set_rng_state(cuda_rng[0].detach().cpu().to(torch.uint8))
     python_rng = payload.pop("python_rng", None)
     if python_rng:
         random.setstate(tuple(python_rng))
@@ -511,6 +515,9 @@ def main():
                         help="Create this file to stop cleanly; it is consumed (deleted) on pause")
     parser.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
     parser.add_argument("--dtype", default="auto", choices=["auto", "bf16", "fp16", "fp32"])
+    parser.add_argument("--gpus", default="auto",
+                        help="Number of GPUs to use: 'auto' (all available if > 1), 'all', '1', '2', etc. "
+                             "Automatically launches torch.distributed.run when > 1 GPU.")
     # eval sizing
     parser.add_argument("--eval_batch_size", type=int, default=8)
     parser.add_argument("--eval_window", type=int, default=128,
@@ -527,42 +534,97 @@ def main():
     parser.add_argument("--dry_run", action="store_true", help="Build the eval set and exit")
     args = parser.parse_args()
 
+    # Multi-GPU auto-launcher: if multiple GPUs are available and requested,
+    # and we are not already inside torch.distributed.run, launch it automatically.
+    if "LOCAL_RANK" not in os.environ and not getattr(args, "dry_run", False) and torch.cuda.is_available():
+        num_avail = torch.cuda.device_count()
+        target_gpus = 1
+        if args.gpus in ("auto", "all"):
+            target_gpus = num_avail
+        else:
+            try:
+                target_gpus = int(args.gpus)
+            except ValueError:
+                target_gpus = 1
+        if target_gpus > 1 and num_avail >= target_gpus:
+            print(f"[multi-gpu] Detected {num_avail} GPUs. Auto-launching torch.distributed.run with {target_gpus} GPUs...\n", flush=True)
+            import subprocess
+            cmd = [
+                sys.executable,
+                "-m",
+                "torch.distributed.run",
+                f"--nproc_per_node={target_gpus}",
+                os.path.abspath(__file__),
+            ] + [a for a in sys.argv[1:] if not a.startswith("--gpus")] + [f"--gpus={target_gpus}"]
+            ret = subprocess.call(cmd)
+            sys.exit(ret)
+
     install_signal_handlers()
+
+    # Distributed environment setup
+    is_distributed = int(os.environ.get("WORLD_SIZE", 1)) > 1
+    if is_distributed:
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        rank = int(os.environ.get("RANK", 0))
+        world_size = int(os.environ.get("WORLD_SIZE", 1))
+        torch.cuda.set_device(local_rank)
+        device = torch.device(f"cuda:{local_rank}")
+        if not torch.distributed.is_initialized():
+            torch.distributed.init_process_group(backend="nccl")
+    else:
+        local_rank = 0
+        rank = 0
+        world_size = 1
+        if args.device == "auto":
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        else:
+            device = torch.device(args.device)
+
+    def rank_print(*p_args, **p_kwargs):
+        if rank == 0:
+            print(*p_args, **p_kwargs)
 
     args.mix = parse_mix(args.mix)
     args.paths = default_paths()
 
+    # Download / build missing sources safely on rank 0
+    if rank == 0:
+        for name, weight in args.mix:
+            path = args.paths.get(name)
+
+            if name == "knowledge" and (not path or not os.path.exists(path)):
+                print("[corpus notice] 'knowledge' split not found on disk; auto-building via training/build_corpus.py...")
+                import subprocess
+                build_script = os.path.join(ROOT_DIR, "training", "build_corpus.py")
+                subprocess.run([sys.executable, build_script], check=True)
+                path = args.paths.get(name)
+
+            if name == "openhermes" and (not path or not os.path.exists(path)):
+                print("[corpus notice] 'openhermes' not found on disk; auto-downloading directly from Hugging Face (~759 MB)...")
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                oh_url = "https://huggingface.co/api/datasets/teknium/OpenHermes-2.5/parquet/default/train/0.parquet"
+                ret = os.system(f'curl -L --create-dirs -o "{path}" "{oh_url}"')
+                if ret != 0 or not os.path.exists(path) or os.path.getsize(path) < 100_000_000:
+                    import urllib.request
+                    print("[corpus notice] downloading via urllib fallback...")
+                    urllib.request.urlretrieve(oh_url, path)
+                print(f"[corpus notice] Downloaded openhermes: {os.path.getsize(path) / (1024**2):.1f} MB")
+
+    if is_distributed:
+        torch.distributed.barrier()
+
     available_mix = []
     for name, weight in args.mix:
         path = args.paths.get(name)
-
-        if name == "knowledge" and (not path or not os.path.exists(path)):
-            print("[corpus notice] 'knowledge' split not found on disk; auto-building via training/build_corpus.py...")
-            import subprocess
-            build_script = os.path.join(ROOT_DIR, "training", "build_corpus.py")
-            subprocess.run([sys.executable, build_script], check=True)
-            path = args.paths.get(name)
-
-        if name == "openhermes" and (not path or not os.path.exists(path)):
-            print("[corpus notice] 'openhermes' not found on disk; auto-downloading directly from Hugging Face (~759 MB)...")
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            oh_url = "https://huggingface.co/api/datasets/teknium/OpenHermes-2.5/parquet/default/train/0.parquet"
-            ret = os.system(f'curl -L --create-dirs -o "{path}" "{oh_url}"')
-            if ret != 0 or not os.path.exists(path) or os.path.getsize(path) < 100_000_000:
-                import urllib.request
-                print("[corpus notice] downloading via urllib fallback...")
-                urllib.request.urlretrieve(oh_url, path)
-            print(f"[corpus notice] Downloaded openhermes: {os.path.getsize(path) / (1024**2):.1f} MB")
-
         if path and os.path.exists(path):
             available_mix.append((name, weight))
         else:
-            print(f"[corpus notice] source {name!r} not found at {path}; omitting from mix")
+            rank_print(f"[corpus notice] source {name!r} not found at {path}; omitting from mix")
     if not available_mix:
         raise FileNotFoundError(f"None of the sources in mix were found on disk: {args.paths}")
     total_w = sum(w for _, w in available_mix)
     args.mix = [(n, w / total_w) for n, w in available_mix]
-    print("Active training mix:", ", ".join(f"{n}={w:.2f}" for n, w in args.mix))
+    rank_print("Active training mix:", ", ".join(f"{n}={w:.2f}" for n, w in args.mix))
     if args.lr is None:
         args.lr = 0.015 if args.optimizer == "sgd" else 3e-4
     if args.window < 8:
@@ -571,17 +633,17 @@ def main():
         raise SystemExit("--eval_window must be at least 8 scored tokens")
     os.makedirs(CKPT_DIR, exist_ok=True)
 
-    random.seed(args.seed)
-    torch.manual_seed(args.seed)
+    random.seed(args.seed + rank)
+    torch.manual_seed(args.seed + rank)
     if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(args.seed)
+        torch.cuda.manual_seed_all(args.seed + rank)
 
-    if args.device == "auto":
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    else:
-        device = torch.device(args.device)
     if args.dtype == "auto":
-        dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
+        if device.type == "cuda":
+            # T4 (sm_75 Turing) does not have native bf16 hardware; fp16 uses high-speed tensor cores
+            dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        else:
+            dtype = torch.float32
     else:
         dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}[args.dtype]
 
@@ -589,15 +651,15 @@ def main():
     tokenizer.pad_token = tokenizer.eos_token
     pad_token_id = tokenizer.eos_token_id
 
-    print("=" * 88)
-    print("  CEREBRO-SPHEROID V3  |  FULL-CORPUS TRAINER  |  PAUSE / RESUME")
-    print("=" * 88)
-    print(f"device {device} | dtype {dtype} | arch {args.arch} | seed {args.seed}")
+    rank_print("=" * 88)
+    rank_print("  CEREBRO-SPHEROID V3  |  FULL-CORPUS TRAINER  |  PAUSE / RESUME")
+    rank_print("=" * 88)
+    rank_print(f"device {device} ({world_size} GPU{'s' if world_size > 1 else ''}) | dtype {dtype} | arch {args.arch} | seed {args.seed}")
     weight_summary = "  ".join(f"{n}={w:.2f}" for n, w in args.mix)
-    print(f"mix    {weight_summary}")
-    print(f"window {args.window} scored tokens/record | prompt cap {args.max_prompt_len} "
-          f"| answer cap {args.max_answer_tokens}")
-    print(f"batch  {args.batch_size} x {args.grad_accum} = {args.batch_size * args.grad_accum} records/step")
+    rank_print(f"mix    {weight_summary}")
+    rank_print(f"window {args.window} scored tokens/record | prompt cap {args.max_prompt_len} "
+               f"| answer cap {args.max_answer_tokens}")
+    rank_print(f"batch  {args.batch_size} x {args.grad_accum} x {world_size} GPUs = {args.batch_size * args.grad_accum * world_size} records/step")
 
     model = build_spheroid_v3("laptop")
     if args.arch == "v2":
@@ -606,8 +668,9 @@ def main():
                                 radial_dim=256, num_shortcut_tracts=40)
     model.to(device=device, dtype=dtype)
     param_count = sum(p.numel() for p in model.parameters())
-    print(f"model  {type(model).__name__} | {param_count:,} parameters")
-    memory_preflight(device, param_count, args.optimizer, args.window, args.batch_size, dtype)
+    rank_print(f"model  {type(model).__name__} | {param_count:,} parameters")
+    if rank == 0:
+        memory_preflight(device, param_count, args.optimizer, args.window, args.batch_size, dtype)
 
     # Optimizer: decay matrices only. Norms, biases and embeddings take none, which is the
     # usual split and keeps the 380-answer knowledge table from being shrunk toward zero.
@@ -632,16 +695,14 @@ def main():
     # --- resume or fresh start -------------------------------------------------------------
     state_file = None
     if args.dry_run:
-        # A dry run only builds the eval set, so it must not depend on a state file existing,
-        # nor fail because that file was written with a different optimizer.
-        print("resume skipped (--dry_run)")
+        rank_print("resume skipped (--dry_run)")
     elif args.resume == "auto":
         candidate, _ = state_paths(args.save_prefix)
         if not os.path.exists(candidate) and getattr(args, "drive_dir", None):
             drive_cand = os.path.join(args.drive_dir, os.path.basename(candidate))
             if os.path.exists(drive_cand):
                 import shutil
-                print(f"Found saved state in Google Drive: {drive_cand}. Restoring locally...")
+                rank_print(f"Found saved state in Google Drive: {drive_cand}. Restoring locally...")
                 os.makedirs(CKPT_DIR, exist_ok=True)
                 shutil.copy2(drive_cand, candidate)
                 drive_json = drive_cand.replace("_state.pt", "_state.json")
@@ -669,16 +730,28 @@ def main():
                     init_path = "none"
             if init_path != "none" and os.path.exists(init_path):
                 loaded = model.load_compatible_checkpoint(init_path, device=device)
-                print(f"init   {os.path.relpath(init_path, ROOT_DIR)} "
-                      f"({'loaded' if loaded else 'refused; random init'})")
+                rank_print(f"init   {os.path.relpath(init_path, ROOT_DIR)} "
+                           f"({'loaded' if loaded else 'refused; random init'})")
                 if loaded and args.knowledge_val:
-                    print("       note: that checkpoint was trained on the pre-split knowledge file, "
-                          "which contained every one of the held-out entities. The knowledge eval "
-                          "will measure retention of those countries, not generalisation to them.")
+                    rank_print("       note: that checkpoint was trained on the pre-split knowledge file, "
+                               "which contained every one of the held-out entities. The knowledge eval "
+                               "will measure retention of those countries, not generalisation to them.")
             else:
-                print("init   random")
+                rank_print("init   random")
         else:
-            print("init   random (--init_from none)")
+            rank_print("init   random (--init_from none)")
+
+    # Wrap model with DistributedDataParallel if running multi-GPU
+    if is_distributed:
+        model = nn.parallel.DistributedDataParallel(
+            model,
+            device_ids=[local_rank],
+            output_device=local_rank,
+            find_unused_parameters=True,
+        )
+
+    use_scaler = (dtype == torch.float16 and device.type == "cuda")
+    scaler = torch.amp.GradScaler("cuda", enabled=use_scaler)
 
     step = int(payload["step"]) if payload else 0
     best = float(payload["best"]) if payload else float("inf")
@@ -691,39 +764,45 @@ def main():
     ckpt_latest = os.path.join(CKPT_DIR, f"{args.save_prefix}_latest.pt")
 
     # --- eval set -------------------------------------------------------------------------
-    print("-" * 88)
-    print("Freezing the held-out eval set")
+    rank_print("-" * 88)
+    rank_print("Freezing the held-out eval set")
     t0 = time.time()
     eval_batches = build_eval_set(args, tokenizer, pad_token_id)
     eval_tokens = sum(int((t != -100).sum()) for _, _, t in eval_batches)
-    print(f"  {len(eval_batches)} batches | {eval_tokens:,} scored tokens | "
-          f"{time.time() - t0:.1f}s to build")
+    rank_print(f"  {len(eval_batches)} batches | {eval_tokens:,} scored tokens | "
+               f"{time.time() - t0:.1f}s to build")
     if args.dry_run:
         for source, prompts, targets in eval_batches:
-            print(f"  {source:<10} batch {tuple(prompts.shape)} -> targets {tuple(targets.shape)}")
-        print("\n[dry_run] exiting before training")
+            rank_print(f"  {source:<10} batch {tuple(prompts.shape)} -> targets {tuple(targets.shape)}")
+        rank_print("\n[dry_run] exiting before training")
         return
 
     # --- data ----------------------------------------------------------------------------
-    print("-" * 88)
-    print("Opening the corpus")
+    rank_print("-" * 88)
+    rank_print("Opening the corpus")
     t0 = time.time()
-    mixture = Mixture(args.mix, args.paths, seed=args.seed, holdout_every=args.lm_holdout_every,
-                      want_heldout=False, consumed=consumed)
-    print(f"  positioned at {sum(mixture.consumed.values()):,} records "
-          f"({time.time() - t0:.1f}s to open)")
+    if consumed and world_size > 1:
+        rank_consumed = {n: count // world_size for n, count in consumed.items()}
+    else:
+        rank_consumed = consumed
+    rank_seed = args.seed + rank * 10007
+    mixture = Mixture(args.mix, args.paths, seed=rank_seed, holdout_every=args.lm_holdout_every,
+                      want_heldout=False, consumed=rank_consumed)
+    total_open_consumed = sum(mixture.consumed.values()) * world_size
+    rank_print(f"  positioned at {total_open_consumed:,} records "
+               f"({time.time() - t0:.1f}s to open)")
 
     criterion = nn.CrossEntropyLoss(ignore_index=-100)
     vocab_size = tokenizer.vocab_size
     session_start = time.time()
     session_base = session_start
     start_step = step
-    call_rng = random.Random(args.seed * 7 + 3)
+    call_rng = random.Random(rank_seed * 7 + 3)
 
-    print("-" * 88)
-    print(f"Training from step {step + 1:,} to {args.max_steps:,} "
-          f"| eval every {args.eval_interval} steps | pause file {os.path.relpath(args.pause_file, ROOT_DIR)}")
-    print("-" * 88)
+    rank_print("-" * 88)
+    rank_print(f"Training from step {step + 1:,} to {args.max_steps:,} "
+               f"| eval every {args.eval_interval} steps | pause file {os.path.relpath(args.pause_file, ROOT_DIR)}")
+    rank_print("-" * 88)
 
     reason = None
     while step < args.max_steps:
@@ -733,7 +812,8 @@ def main():
         step_loss, step_count = 0.0, 0
 
         oom = False
-        for _ in range(args.grad_accum):
+        accum_steps = args.grad_accum
+        for accum_idx in range(accum_steps):
             records = []
             for _ in range(args.batch_size):
                 record = mixture.next()
@@ -744,18 +824,20 @@ def main():
                 continue
             prompts, targets, feedback = (t.to(device) for t in built)
             try:
-                with autocast_ctx(device, dtype):
-                    logits = training_rollout(model, prompts, targets.shape[1],
-                                              thinking_cycles=args.thinking_cycles,
-                                              pad_token_id=pad_token_id,
-                                              targets=targets, feedback_tokens=feedback)
-                    loss = criterion(logits.reshape(-1, vocab_size), targets.reshape(-1))
-                (loss / args.grad_accum).backward()
+                sync_ctx = model.no_sync() if (is_distributed and accum_idx < accum_steps - 1 and hasattr(model, "no_sync")) else contextlib.nullcontext()
+                with sync_ctx:
+                    with autocast_ctx(device, dtype):
+                        logits = training_rollout(model, prompts, targets.shape[1],
+                                                  thinking_cycles=args.thinking_cycles,
+                                                  pad_token_id=pad_token_id,
+                                                  targets=targets, feedback_tokens=feedback)
+                        loss = criterion(logits.reshape(-1, vocab_size), targets.reshape(-1))
+                    scaler.scale(loss / accum_steps).backward()
                 step_loss += loss.detach().item()
                 step_count += 1
             except torch.OutOfMemoryError:
-                print(f"  [warn] OOM at step {step:,}; dropping this micro-batch. "
-                      f"Lower --window or --batch_size.", flush=True)
+                rank_print(f"  [warn] OOM at step {step:,}; dropping this micro-batch. "
+                           f"Lower --window or --batch_size.", flush=True)
                 oom = True
                 optimizer.zero_grad(set_to_none=True)
                 if device.type == "cuda":
@@ -765,30 +847,35 @@ def main():
                 del prompts, targets, feedback, built
 
         if oom or step_count == 0:
-            # A step that produced no gradient still has to honour a stop request. Without this
-            # check a run stuck in an OOM loop would never pause, however often the sentinel
-            # file appeared.
             reason = stop_requested(args)
             if reason:
                 break
             continue
 
-        torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
-        optimizer.step()
+        if use_scaler:
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
+            optimizer.step()
         scheduler.step()
 
         if device.type == "cuda" and step % 20 == 0:
             torch.cuda.empty_cache()
 
-        train_mean = step_loss / step_count
-        if step % args.log_every == 0 or step == start_step + 1:
+        train_mean = step_loss / max(step_count, 1)
+        if rank == 0 and (step % args.log_every == 0 or step == start_step + 1):
             lr_now = scheduler.get_last_lr()[0]
             vram = torch.cuda.max_memory_allocated() / (1024 ** 2) if device.type == "cuda" else 0.0
             sec_per_step = (time.time() - session_base) / max(step - start_step, 1)
+            total_consumed = sum(mixture.consumed.values()) * world_size
+            gpu_str = f" (x{world_size} gpus)" if world_size > 1 else ""
             print(f"step {step:6,d}/{args.max_steps:,} | loss {train_mean:6.4f} "
                   f"(ppl {math.exp(min(train_mean, 15)):7.1f}) | lr {lr_now:.2e} | "
                   f"vram {vram:5.0f} MB | {sec_per_step:5.2f}s/step | "
-                  f"corpus {sum(mixture.consumed.values()):,}", flush=True)
+                  f"corpus {total_consumed:,}{gpu_str}", flush=True)
 
         # --- evaluation -------------------------------------------------------------------
         if step % args.eval_interval == 0:
@@ -809,55 +896,68 @@ def main():
                       "train_mean": train_mean, "elapsed_minutes": elapsed / 60 + (time.time() - session_start) / 60}
             history.append(record)
 
-            print(f"  [eval {step:,}] total {total_ce:.4f} | {breakdown} | {eval_seconds:.1f}s", flush=True)
+            if rank == 0:
+                print(f"  [eval {step:,}] total {total_ce:.4f} | {breakdown} | {eval_seconds:.1f}s", flush=True)
 
-            if score < best - args.min_improvement:
-                best, patience = score, 0
-                torch.save(model.state_dict(), ckpt_best)
-                write_json(meta_path_for(ckpt_best), {
-                    "kind": "best", "step": step, "arch": args.arch,
-                    "select_on": args.select_on, "selected": score,
-                    "eval_total": total_ce, "eval_by_source": per_source,
-                    "eval_tokens": eval_tokens, "eval_batches": len(eval_batches),
-                    "train_mean_at_save": train_mean,
-                    "mix": dict(args.mix), "window": args.window, "seed": args.seed,
-                    "batch_size": args.batch_size, "grad_accum": args.grad_accum,
-                    "lr": args.lr, "thinking_cycles": args.thinking_cycles,
-                    "cursor_md5": {k: md5_of(v) for k, v in args.paths.items()
-                                   if os.path.isfile(v)},
-                    "elapsed_minutes": record["elapsed_minutes"],
-                    "saved_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                })
-                print(f"  new best ({args.select_on}: {score:.4f}) -> "
-                      f"{os.path.relpath(ckpt_best, ROOT_DIR)}", flush=True)
-                drive_dir = getattr(args, "drive_dir", None)
-                if drive_dir and os.path.exists(drive_dir):
-                    import shutil
-                    try:
-                        shutil.copy2(ckpt_best, os.path.join(drive_dir, os.path.basename(ckpt_best)))
-                        meta_p = meta_path_for(ckpt_best)
-                        if os.path.exists(meta_p):
-                            shutil.copy2(meta_p, os.path.join(drive_dir, os.path.basename(meta_p)))
-                        print(f"  mirrored best checkpoint to {drive_dir}", flush=True)
-                    except Exception as e:
-                        print(f"  [warn] failed to mirror best to drive_dir: {e}", flush=True)
-            else:
-                patience += 1
-                print(f"  no improvement for {patience}/{args.patience} evals "
-                      f"(best {best:.4f})", flush=True)
+                if score < best - args.min_improvement:
+                    best, patience = score, 0
+                    raw_model = model.module if hasattr(model, "module") else model
+                    torch.save(raw_model.state_dict(), ckpt_best)
+                    write_json(meta_path_for(ckpt_best), {
+                        "kind": "best", "step": step, "arch": args.arch,
+                        "select_on": args.select_on, "selected": score,
+                        "eval_total": total_ce, "eval_by_source": per_source,
+                        "eval_tokens": eval_tokens, "eval_batches": len(eval_batches),
+                        "train_mean_at_save": train_mean,
+                        "mix": dict(args.mix), "window": args.window, "seed": args.seed,
+                        "batch_size": args.batch_size, "grad_accum": args.grad_accum,
+                        "world_size": world_size,
+                        "lr": args.lr, "thinking_cycles": args.thinking_cycles,
+                        "cursor_md5": {k: md5_of(v) for k, v in args.paths.items()
+                                       if os.path.isfile(v)},
+                        "elapsed_minutes": record["elapsed_minutes"],
+                        "saved_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    })
+                    print(f"  new best ({args.select_on}: {score:.4f}) -> "
+                          f"{os.path.relpath(ckpt_best, ROOT_DIR)}", flush=True)
+                    drive_dir = getattr(args, "drive_dir", None)
+                    if drive_dir and os.path.exists(drive_dir):
+                        import shutil
+                        try:
+                            shutil.copy2(ckpt_best, os.path.join(drive_dir, os.path.basename(ckpt_best)))
+                            meta_p = meta_path_for(ckpt_best)
+                            if os.path.exists(meta_p):
+                                shutil.copy2(meta_p, os.path.join(drive_dir, os.path.basename(meta_p)))
+                            print(f"  mirrored best checkpoint to {drive_dir}", flush=True)
+                        except Exception as e:
+                            print(f"  [warn] failed to mirror best to drive_dir: {e}", flush=True)
+                else:
+                    patience += 1
+                    print(f"  no improvement for {patience}/{args.patience} evals "
+                          f"(best {best:.4f})", flush=True)
 
-            if args.probe_tokens > 0:
-                probe(model, tokenizer, eval_batches, device, args)
-                model.train()
+                if args.probe_tokens > 0:
+                    probe(model, tokenizer, eval_batches, device, args)
+                    model.train()
+
+            if is_distributed:
+                torch.distributed.barrier()
 
             if patience >= args.patience:
-                print(f"\n  early stopping: nothing better than {best:.4f} in "
-                      f"{args.patience} evaluations")
+                rank_print(f"\n  early stopping: nothing better than {best:.4f} in "
+                           f"{args.patience} evaluations")
                 reason = f"plateau (best {best:.4f})"
                 break
 
         # --- pause checks -----------------------------------------------------------------
         reason = stop_requested(args)
+        if is_distributed:
+            stop_val = 1 if reason else 0
+            stop_tensor = torch.tensor([stop_val], device=device)
+            torch.distributed.all_reduce(stop_tensor, op=torch.distributed.ReduceOp.MAX)
+            if stop_tensor.item() == 1 and not reason:
+                reason = "peer rank requested stop"
+
         if reason is None and args.max_minutes > 0:
             used = (time.time() - session_start) / 60
             if used >= args.max_minutes:
@@ -865,38 +965,48 @@ def main():
         if reason is None and step % args.save_every == 0:
             elapsed += time.time() - session_start
             session_start = time.time()
-            save_state(args.save_prefix, model, optimizer, scheduler, step, best, patience,
-                       mixture.state(), elapsed, history, args, "periodic")
-            print(f"  state written at step {step:,}", flush=True)
+            if rank == 0:
+                total_consumed_state = {n: count * world_size for n, count in mixture.state().items()}
+                save_state(args.save_prefix, model, optimizer, scheduler, step, best, patience,
+                           total_consumed_state, elapsed, history, args, "periodic")
+                print(f"  state written at step {step:,}", flush=True)
+            if is_distributed:
+                torch.distributed.barrier()
         if reason:
             break
 
     # --- wind down ------------------------------------------------------------------------
     elapsed += time.time() - session_start
-    torch.save(model.state_dict(), ckpt_latest)
-    last = history[-1] if history else {}
-    write_json(meta_path_for(ckpt_latest), {
-        "kind": "latest", "step": step, "arch": args.arch,
-        "eval_total": last.get("eval_total"),
-        "eval_by_source": {k[5:]: v for k, v in last.items()
-                           if k.startswith("eval_") and k not in ("eval_total", "eval_seconds")},
-        "best": best, "select_on": args.select_on, "reason": reason,
-        "mix": dict(args.mix), "window": args.window, "seed": args.seed,
-        "elapsed_minutes": elapsed / 60,
-        "saved_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-    })
-    save_state(args.save_prefix, model, optimizer, scheduler, step, best, patience,
-               mixture.state(), elapsed, history, args, "pause" if reason else "final")
+    raw_model = model.module if hasattr(model, "module") else model
+    if rank == 0:
+        torch.save(raw_model.state_dict(), ckpt_latest)
+        last = history[-1] if history else {}
+        write_json(meta_path_for(ckpt_latest), {
+            "kind": "latest", "step": step, "arch": args.arch,
+            "eval_total": last.get("eval_total"),
+            "eval_by_source": {k[5:]: v for k, v in last.items()
+                               if k.startswith("eval_") and k not in ("eval_total", "eval_seconds")},
+            "best": best, "select_on": args.select_on, "reason": reason,
+            "mix": dict(args.mix), "window": args.window, "seed": args.seed,
+            "elapsed_minutes": elapsed / 60,
+            "saved_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        })
+        total_consumed_state = {n: count * world_size for n, count in mixture.state().items()}
+        save_state(args.save_prefix, model, optimizer, scheduler, step, best, patience,
+                   total_consumed_state, elapsed, history, args, "pause" if reason else "final")
 
-    pt_path, _ = state_paths(args.save_prefix)
-    print("=" * 88)
-    print(f"stopped at step {step:,} after {elapsed / 60:.1f} minutes"
-          + (f" ({reason})" if reason else " (--max_steps reached)"))
-    print(f"best held-out {args.select_on} CE : {best:.4f}  -> "
-          f"{os.path.relpath(ckpt_best, ROOT_DIR)}")
-    print(f"resume state              : {os.path.relpath(pt_path, ROOT_DIR)}")
-    print(f"rerun the same command to continue; --resume none to start over")
-    print("=" * 88)
+        pt_path, _ = state_paths(args.save_prefix)
+        print("=" * 88)
+        print(f"stopped at step {step:,} after {elapsed / 60:.1f} minutes"
+              + (f" ({reason})" if reason else " (--max_steps reached)"))
+        print(f"best held-out {args.select_on} CE : {best:.4f}  -> "
+              f"{os.path.relpath(ckpt_best, ROOT_DIR)}")
+        print(f"resume state              : {os.path.relpath(pt_path, ROOT_DIR)}")
+        print(f"rerun the same command to continue; --resume none to start over")
+        print("=" * 88)
+
+    if is_distributed and torch.distributed.is_initialized():
+        torch.distributed.destroy_process_group()
 
 
 def lr_lambda(step: int, warmup: int, total: int, min_ratio: float) -> float:
@@ -911,7 +1021,8 @@ def lr_lambda(step: int, warmup: int, total: int, min_ratio: float) -> float:
 @torch.no_grad()
 def probe(model, tokenizer, eval_batches, device, args) -> None:
     """Generates from a few held-out prompts so the log shows behaviour, not just a number."""
-    model.eval()
+    raw_model = model.module if hasattr(model, "module") else model
+    raw_model.eval()
     shown = 0
     for source, prompts, _ in eval_batches:
         for row in range(min(2, prompts.shape[0])):
@@ -919,7 +1030,7 @@ def probe(model, tokenizer, eval_batches, device, args) -> None:
                 return
             prompt_ids = prompts[row: row + 1].to(device)
             text = tokenizer.decode(prompt_ids[0].tolist(), skip_special_tokens=True)[:70]
-            out = model.solve_with_active_thinking(
+            out = raw_model.solve_with_active_thinking(
                 prompt_ids, thinking_cycles=args.thinking_cycles,
                 max_answer_tokens=args.probe_tokens, temperature=0.0,
                 eos_token_id=tokenizer.eos_token_id, pad_token_id=tokenizer.pad_token_id,
