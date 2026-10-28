@@ -210,7 +210,7 @@ def build_eval_set(args, tokenizer, pad_token_id: int) -> List[Tuple[str, torch.
     for name, _ in args.mix:
         if name == "knowledge":
             continue
-        if name not in ("openhermes", "lmsys"):
+        if name not in ("openhermes", "lmsys", "gsm8k"):
             continue
         iterator = Mixture([(name, 1.0)], paths, seed=args.seed + 101,
                            holdout_every=args.lm_holdout_every, want_heldout=True).next
@@ -330,7 +330,8 @@ def load_state(path: str, model, optimizer, scheduler, device, dtype, args) -> O
         raise SystemExit(f"state file holds an {stored_arch} run but --arch is {args.arch}")
 
     model.load_state_dict(payload.pop("model"))
-    model.to(device=device, dtype=dtype)
+    model_param_dtype = torch.float32 if dtype == torch.float16 else dtype
+    model.to(device=device, dtype=model_param_dtype)
     stored_optimizer = payload.get("args", {}).get("optimizer", "adamw")
     if stored_optimizer != args.optimizer:
         # The parameter groups differ (AdamW stores betas/eps, SGD stores momentum), and
@@ -528,7 +529,7 @@ def main():
     parser.add_argument("--no_knowledge_val", dest="knowledge_val", action="store_false",
                         help="Skip the held-out knowledge split in eval")
     parser.set_defaults(knowledge_val=True)
-    parser.add_argument("--select_on", default="total", choices=["total", "knowledge", "openhermes"],
+    parser.add_argument("--select_on", default="total", choices=["total", "knowledge", "openhermes", "gsm8k"],
                         help="Which held-out number decides 'best'")
     parser.add_argument("--probe_tokens", type=int, default=24, help="0 disables the sample generation")
     parser.add_argument("--dry_run", action="store_true", help="Build the eval set and exit")
@@ -623,6 +624,17 @@ def main():
                     urllib.request.urlretrieve(oh_url, path)
                 print(f"[corpus notice] Downloaded openhermes: {os.path.getsize(path) / (1024**2):.1f} MB")
 
+            if name == "gsm8k" and (not path or not os.path.exists(path)):
+                print("[corpus notice] 'gsm8k' not found on disk; auto-downloading directly from Hugging Face (~2.3 MB)...")
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                gsm_url = "https://huggingface.co/api/datasets/openai/gsm8k/parquet/main/train/0.parquet"
+                ret = os.system(f'curl -L --create-dirs -o "{path}" "{gsm_url}"')
+                if ret != 0 or not os.path.exists(path) or os.path.getsize(path) < 1_000_000:
+                    import urllib.request
+                    print("[corpus notice] downloading gsm8k via urllib fallback...")
+                    urllib.request.urlretrieve(gsm_url, path)
+                print(f"[corpus notice] Downloaded gsm8k: {os.path.getsize(path) / (1024**2):.1f} MB")
+
     if is_distributed:
         torch.distributed.barrier()
 
@@ -679,7 +691,8 @@ def main():
         from src.model import CerebroSpheroid
         model = CerebroSpheroid(vocab_size=tokenizer.vocab_size, surface_dim=640, num_shells=16,
                                 radial_dim=256, num_shortcut_tracts=40)
-    model.to(device=device, dtype=dtype)
+    model_param_dtype = torch.float32 if dtype == torch.float16 else dtype
+    model.to(device=device, dtype=model_param_dtype)
     param_count = sum(p.numel() for p in model.parameters())
     rank_print(f"model  {type(model).__name__} | {param_count:,} parameters")
     if rank == 0:
@@ -910,6 +923,8 @@ def main():
                 score = per_source.get("knowledge", total_ce)
             elif args.select_on == "openhermes":
                 score = per_source.get("openhermes", total_ce)
+            elif args.select_on == "gsm8k":
+                score = per_source.get("gsm8k", total_ce)
             else:
                 score = total_ce
 

@@ -26,7 +26,7 @@ Pair = Tuple[str, str]
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 DATA_DIR = os.path.join(ROOT_DIR, "data")
 
-SOURCES = ("openhermes", "lmsys", "knowledge", "cognitive")
+SOURCES = ("openhermes", "lmsys", "knowledge", "cognitive", "gsm8k")
 
 
 # --------------------------------------------------------------------------------------------
@@ -137,10 +137,21 @@ def lmsys_pairs(data_dir: str, seed: int = 0, holdout_every: int = 0,
 
 def small_parquet_pairs(path: str, seed: int = 0, holdout_every: int = 0,
                         want_heldout: bool = False) -> Iterator[Pair]:
-    """Reader for the small curated files, split by row index."""
+    """Reader for curated files (knowledge, gsm8k, etc.), split by row index."""
     table = pq.read_table(path)
-    stimuli = table["stimulus"].to_pylist()
-    answers = table["articulation"].to_pylist()
+    cols = table.column_names
+    if "stimulus" in cols and "articulation" in cols:
+        stimuli = table["stimulus"].to_pylist()
+        answers = table["articulation"].to_pylist()
+    elif "question" in cols and "answer" in cols:
+        stimuli = table["question"].to_pylist()
+        answers = table["answer"].to_pylist()
+    elif "prompt" in cols and "response" in cols:
+        stimuli = table["prompt"].to_pylist()
+        answers = table["response"].to_pylist()
+    else:
+        raise ValueError(f"Unrecognized columns in {path}: {cols}")
+
     for idx in row_plan(len(stimuli), seed, holdout_every, want_heldout):
         q, a = stimuli[idx], answers[idx]
         if q and a and str(q).strip() and str(a).strip():
@@ -157,6 +168,7 @@ def default_paths() -> Dict[str, str]:
         "lmsys": os.path.join(DATA_DIR, "lmsys_chat_1m", "data"),
         "knowledge": os.path.join(DATA_DIR, "corpus", "world_knowledge_canonical_train.parquet"),
         "cognitive": os.path.join(DATA_DIR, "cerebro_cognitive", "cerebro_cognitive_train.parquet"),
+        "gsm8k": os.path.join(DATA_DIR, "gsm8k", "gsm8k_train.parquet"),
     }
 
 
@@ -191,7 +203,7 @@ class Mixture:
     def __init__(self, specs: List[Tuple[str, float]], paths: Dict[str, str], seed: int = 0,
                  holdout_every: int = 0, want_heldout: bool = False,
                  consumed: Dict[str, int] = None,
-                 holdout_sources: Iterable[str] = ("openhermes", "lmsys")):
+                 holdout_sources: Iterable[str] = ("openhermes", "lmsys", "gsm8k")):
         self.seed = seed
         self.names = [n for n, _ in specs]
         self.weights = [w for _, w in specs]
