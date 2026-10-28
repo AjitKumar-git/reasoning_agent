@@ -64,12 +64,22 @@ BENCHMARK_TESTS = [
 
 
 def resolve_checkpoint(path: Optional[str]) -> str:
-    """Finds the most appropriate checkpoint path."""
-    if path and os.path.exists(path):
-        return path
+    """Finds the most appropriate checkpoint path, downloading if missing."""
+    target_filename = "cerebro_spheroid_v3_colab_best.pt"
+    colab_best_path = os.path.join("checkpoints", target_filename)
+
+    if path:
+        if os.path.exists(path):
+            return path
+        if os.path.basename(path) == target_filename:
+            print(f"[notice] Specified checkpoint {path} not found on disk. Auto-downloading...")
+            from scripts.download_checkpoints import download_drive_file, CHECKPOINTS
+            download_drive_file(CHECKPOINTS["v3_colab_best"]["file_id"], path, CHECKPOINTS["v3_colab_best"]["size_bytes"])
+            if os.path.exists(path):
+                return path
 
     candidates = [
-        "checkpoints/cerebro_spheroid_v3_colab_best.pt",
+        colab_best_path,
         "/content/drive/MyDrive/cerebro_checkpoints/cerebro_spheroid_v3_colab_best.pt",
         "checkpoints/cerebro_spheroid_v3_colab_latest.pt",
         "/content/drive/MyDrive/cerebro_checkpoints/cerebro_spheroid_v3_colab_latest.pt",
@@ -84,6 +94,12 @@ def resolve_checkpoint(path: Optional[str]) -> str:
     found = glob.glob("checkpoints/*.pt") + glob.glob("/content/drive/MyDrive/cerebro_checkpoints/*.pt")
     if found:
         return sorted(found)[-1]
+
+    print(f"[notice] No checkpoint found in checkpoints/. Downloading {target_filename} from Google Drive...")
+    from scripts.download_checkpoints import download_drive_file, CHECKPOINTS
+    download_drive_file(CHECKPOINTS["v3_colab_best"]["file_id"], colab_best_path, CHECKPOINTS["v3_colab_best"]["size_bytes"])
+    if os.path.exists(colab_best_path):
+        return colab_best_path
 
     raise FileNotFoundError("No checkpoint found in checkpoints/ or Google Drive.")
 

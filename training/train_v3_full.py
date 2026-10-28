@@ -719,7 +719,8 @@ def main():
         if args.init_from != "none":
             init_path = args.init_from
             if init_path == "auto":
-                for candidate in ("cerebro_spheroid_distill_v2_best.pt",
+                for candidate in ("cerebro_spheroid_v3_colab_best.pt",
+                                  "cerebro_spheroid_distill_v2_best.pt",
                                   "cerebro_spheroid_1m_latest.pt",
                                   "cerebro_spheroid_100m.pt"):
                     full = os.path.join(CKPT_DIR, candidate)
@@ -728,8 +729,16 @@ def main():
                         break
                 else:
                     init_path = "none"
+            elif os.path.basename(init_path) == "cerebro_spheroid_v3_colab_best.pt" and not os.path.exists(init_path):
+                if rank == 0:
+                    from scripts.download_checkpoints import download_drive_file, CHECKPOINTS
+                    download_drive_file(CHECKPOINTS["v3_colab_best"]["file_id"], init_path, CHECKPOINTS["v3_colab_best"]["size_bytes"])
+                if is_distributed:
+                    torch.distributed.barrier()
+
             if init_path != "none" and os.path.exists(init_path):
-                loaded = model.load_compatible_checkpoint(init_path, device=device)
+                raw_m = model.module if hasattr(model, "module") else model
+                loaded = raw_m.load_compatible_checkpoint(init_path, device=device)
                 rank_print(f"init   {os.path.relpath(init_path, ROOT_DIR)} "
                            f"({'loaded' if loaded else 'refused; random init'})")
                 if loaded and args.knowledge_val:
