@@ -535,6 +535,25 @@ def main():
     available_mix = []
     for name, weight in args.mix:
         path = args.paths.get(name)
+
+        if name == "knowledge" and (not path or not os.path.exists(path)):
+            print("[corpus notice] 'knowledge' split not found on disk; auto-building via training/build_corpus.py...")
+            import subprocess
+            build_script = os.path.join(ROOT_DIR, "training", "build_corpus.py")
+            subprocess.run([sys.executable, build_script], check=True)
+            path = args.paths.get(name)
+
+        if name == "openhermes" and (not path or not os.path.exists(path)):
+            print("[corpus notice] 'openhermes' not found on disk; auto-downloading directly from Hugging Face (~759 MB)...")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            oh_url = "https://huggingface.co/api/datasets/teknium/OpenHermes-2.5/parquet/default/train/0.parquet"
+            ret = os.system(f'curl -L --create-dirs -o "{path}" "{oh_url}"')
+            if ret != 0 or not os.path.exists(path) or os.path.getsize(path) < 100_000_000:
+                import urllib.request
+                print("[corpus notice] downloading via urllib fallback...")
+                urllib.request.urlretrieve(oh_url, path)
+            print(f"[corpus notice] Downloaded openhermes: {os.path.getsize(path) / (1024**2):.1f} MB")
+
         if path and os.path.exists(path):
             available_mix.append((name, weight))
         else:
