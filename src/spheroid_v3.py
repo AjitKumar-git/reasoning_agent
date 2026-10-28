@@ -608,7 +608,9 @@ class CerebroSpheroidV3(CerebroSpheroid):
         """V2-aware loader: lifts width-changed motor tensors instead of dropping them."""
         if not os.path.exists(checkpoint_path):
             return False
-        state = torch.load(checkpoint_path, map_location=device, weights_only=True)
+        state = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        if isinstance(state, dict) and "model" in state:
+            state = state["model"]
         own = self.state_dict()
         accepted, lifted, dropped = {}, [], []
         for key, value in state.items():

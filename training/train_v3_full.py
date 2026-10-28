@@ -52,6 +52,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 import argparse
 import contextlib
+import glob
 import hashlib
 import json
 import math
@@ -325,12 +326,34 @@ def load_state(path: str, model, optimizer, scheduler, device, dtype, args) -> O
     # OOMs on its first forward pass.
     payload = torch.load(path, map_location="cpu", weights_only=False)
 
+    model_param_dtype = torch.float32 if dtype == torch.float16 else dtype
+
+    if not isinstance(payload, dict) or "model" not in payload:
+        # Bare weights checkpoint (e.g. *_best.pt or raw model weights)
+        print(f"  [checkpoint] {os.path.basename(path)} is a model weights checkpoint. Loading weights...")
+        raw_m = model.module if hasattr(model, "module") else model
+        if hasattr(raw_m, "load_compatible_checkpoint"):
+            raw_m.load_compatible_checkpoint(path, device=device)
+        else:
+            raw_m.load_state_dict(payload, strict=False)
+        model.to(device=device, dtype=model_param_dtype)
+        meta = read_json(meta_path_for(path)) or {}
+        step = int(meta.get("step", 0))
+        best = float(meta.get("selected", meta.get("best", float("inf"))))
+        return {
+            "step": step,
+            "best": best,
+            "patience": 0,
+            "elapsed_seconds": float(meta.get("elapsed_minutes", 0.0)) * 60,
+            "history": [],
+            "corpus": {},
+        }
+
     stored_arch = payload.get("arch", "v2")
     if stored_arch != args.arch:
         raise SystemExit(f"state file holds an {stored_arch} run but --arch is {args.arch}")
 
     model.load_state_dict(payload.pop("model"))
-    model_param_dtype = torch.float32 if dtype == torch.float16 else dtype
     model.to(device=device, dtype=model_param_dtype)
     stored_optimizer = payload.get("args", {}).get("optimizer", "adamw")
     if stored_optimizer != args.optimizer:
@@ -734,9 +757,57 @@ def main():
                 drive_json = drive_cand.replace("_state.pt", "_state.json")
                 if os.path.exists(drive_json):
                     shutil.copy2(drive_json, candidate.replace("_state.pt", "_state.json"))
-        state_file = candidate if os.path.exists(candidate) else None
+
+        if os.path.exists(candidate):
+            state_file = candidate
+        else:
+            # 1. Search for other state files on disk, newest first
+            state_candidates = [
+                os.path.join(CKPT_DIR, "cerebro_spheroid_v3_kaggle_state.pt"),
+                os.path.join(CKPT_DIR, "cerebro_spheroid_v3_colab_state.pt"),
+                os.path.join(CKPT_DIR, "cerebro_spheroid_v3full_state.pt"),
+            ]
+            all_states = [f for f in glob.glob(os.path.join(CKPT_DIR, "*_state.pt")) if os.path.isfile(f)]
+            all_states.sort(key=os.path.getmtime, reverse=True)
+            for sc in state_candidates + all_states:
+                if os.path.exists(sc):
+                    state_file = sc
+                    break
+
+            # 2. If no full state file found, look for best / latest model checkpoints
+            if not state_file:
+                weight_candidates = [
+                    os.path.join(CKPT_DIR, "cerebro_spheroid_v3_kaggle_best.pt"),
+                    os.path.join(CKPT_DIR, "cerebro_spheroid_v3_colab_best.pt"),
+                    os.path.join(CKPT_DIR, "cerebro_spheroid_v3full_best.pt"),
+                    os.path.join(CKPT_DIR, "cerebro_spheroid_distill_v2_best.pt"),
+                ]
+                all_weights = [f for f in glob.glob(os.path.join(CKPT_DIR, "*.pt")) if not f.endswith("_state.pt")]
+                all_weights.sort(key=os.path.getmtime, reverse=True)
+                for wc in weight_candidates + all_weights:
+                    if os.path.exists(wc):
+                        state_file = wc
+                        break
+
+            # 3. If still nothing found, auto-download cerebro_spheroid_v3_colab_best.pt from Google Drive
+            if not state_file:
+                colab_best = os.path.join(CKPT_DIR, "cerebro_spheroid_v3_colab_best.pt")
+                if rank == 0:
+                    from scripts.download_checkpoints import download_drive_file, CHECKPOINTS
+                    download_drive_file(CHECKPOINTS["v3_colab_best"]["file_id"], colab_best, CHECKPOINTS["v3_colab_best"]["size_bytes"])
+                if is_distributed:
+                    torch.distributed.barrier()
+                if os.path.exists(colab_best):
+                    state_file = colab_best
+
     elif args.resume != "none":
         state_file = args.resume
+        if not os.path.exists(state_file) and os.path.basename(state_file) == "cerebro_spheroid_v3_colab_best.pt":
+            if rank == 0:
+                from scripts.download_checkpoints import download_drive_file, CHECKPOINTS
+                download_drive_file(CHECKPOINTS["v3_colab_best"]["file_id"], state_file, CHECKPOINTS["v3_colab_best"]["size_bytes"])
+            if is_distributed:
+                torch.distributed.barrier()
 
     payload = None
     if state_file:
