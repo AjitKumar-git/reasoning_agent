@@ -1156,6 +1156,20 @@ def main():
         print(f"rerun the same command to continue; --resume none to start over")
         print("=" * 88)
 
+        # Automatic Kaggle export: mirror checkpoints to /kaggle/working/ for instant UI access
+        if os.path.exists("/kaggle/working") and os.path.abspath(CKPT_DIR) != "/kaggle/working/checkpoints":
+            import shutil
+            try:
+                os.makedirs("/kaggle/working/checkpoints", exist_ok=True)
+                for f in os.listdir(CKPT_DIR):
+                    src_f = os.path.join(CKPT_DIR, f)
+                    dst_f = os.path.join("/kaggle/working/checkpoints", f)
+                    if os.path.isfile(src_f):
+                        shutil.copy2(src_f, dst_f)
+                print("  [kaggle] mirrored checkpoints to /kaggle/working/checkpoints/", flush=True)
+            except Exception as e:
+                print(f"  [kaggle warn] failed to mirror to /kaggle/working: {e}", flush=True)
+
     if is_distributed and torch.distributed.is_initialized():
         torch.distributed.destroy_process_group()
 
