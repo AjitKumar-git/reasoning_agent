@@ -15,9 +15,11 @@ Every iterator yields raw `(prompt_text, answer_text)` pairs. Tokenisation is se
 because training slices a window out of the answer and the eval path does not.
 """
 
+import hashlib
+import json
 import os
 import random
-from typing import Dict, Iterable, Iterator, List, Sequence, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Set, Tuple
 
 import pyarrow.parquet as pq
 
@@ -26,7 +28,7 @@ Pair = Tuple[str, str]
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 DATA_DIR = os.path.join(ROOT_DIR, "data")
 
-SOURCES = ("openhermes", "lmsys", "knowledge", "cognitive", "gsm8k")
+SOURCES = ("openhermes", "lmsys", "knowledge", "cognitive", "gsm8k", "cosmopedia")
 
 
 # --------------------------------------------------------------------------------------------
@@ -158,6 +160,64 @@ def small_parquet_pairs(path: str, seed: int = 0, holdout_every: int = 0,
             yield (str(q).strip(), str(a).strip())
 
 
+def cosmopedia_pairs(path: str, seed: int = 0, holdout_every: int = 0,
+                     want_heldout: bool = False, max_records: int = 50000) -> Iterator[Pair]:
+    """Capped Cosmopedia-v2 reader (bounded subset of HuggingFaceTB/smollm-corpus).
+    Enforces a strict max_records cap to prevent unbounded disk/memory growth.
+    """
+    if not os.path.exists(path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        try:
+            from datasets import load_dataset
+            print(f"[corpus] Downloading bounded Cosmopedia-v2 subset (max_records={max_records})...")
+            ds = load_dataset("HuggingFaceTB/smollm-corpus", "cosmopedia-v2", split="train", streaming=True)
+            records = []
+            for i, item in enumerate(ds):
+                if i >= max_records:
+                    break
+                text = item.get("text") or item.get("content") or ""
+                prompt = item.get("prompt") or ""
+                if not prompt and "\n\n" in text:
+                    parts = text.split("\n\n", 1)
+                    prompt, text = parts[0], parts[1]
+                elif not prompt:
+                    prompt = "Explain the following topic in depth:"
+                if prompt.strip() and text.strip():
+                    records.append({"prompt": prompt.strip(), "response": text.strip()})
+            import pyarrow as pa
+            table = pa.Table.from_pylist(records)
+            pq.write_table(table, path)
+            print(f"[corpus] Saved bounded Cosmopedia-v2 ({len(records)} records) to {path}")
+        except Exception as e:
+            print(f"[corpus] Warning: unable to auto-download Cosmopedia subset: {e}")
+            return
+
+    table = pq.read_table(path)
+    cols = table.column_names
+    if "prompt" in cols and "response" in cols:
+        prompts = table["prompt"].to_pylist()
+        responses = table["response"].to_pylist()
+    elif "text" in cols:
+        texts = table["text"].to_pylist()
+        prompts, responses = [], []
+        for t in texts:
+            if "\n\n" in str(t):
+                p, r = str(t).split("\n\n", 1)
+            else:
+                p, r = "Explain the following concept:", str(t)
+            prompts.append(p)
+            responses.append(r)
+    else:
+        prompts = table[cols[0]].to_pylist()
+        responses = table[cols[1]].to_pylist() if len(cols) > 1 else prompts
+
+    n = min(len(prompts), max_records)
+    for idx in row_plan(n, seed, holdout_every, want_heldout):
+        q, a = prompts[idx], responses[idx]
+        if q and a and str(q).strip() and str(a).strip():
+            yield (str(q).strip(), str(a).strip())
+
+
 # --------------------------------------------------------------------------------------------
 # mixture
 # --------------------------------------------------------------------------------------------
@@ -169,6 +229,7 @@ def default_paths() -> Dict[str, str]:
         "knowledge": os.path.join(DATA_DIR, "corpus", "world_knowledge_canonical_train.parquet"),
         "cognitive": os.path.join(DATA_DIR, "cerebro_cognitive", "cerebro_cognitive_train.parquet"),
         "gsm8k": os.path.join(DATA_DIR, "gsm8k", "gsm8k_train.parquet"),
+        "cosmopedia": os.path.join(DATA_DIR, "cosmopedia", "cosmopedia_v2_train.parquet"),
     }
 
 
@@ -216,15 +277,19 @@ class Mixture:
         for name in self.names:
             path = paths[name]
             if not os.path.exists(path):
-                raise FileNotFoundError(f"source {name!r} not found at {path}")
-            # Only the sources that carry an eval slice are split. The knowledge file is
-            # already entity-disjoint from its val file, so holding out more rows there
-            # would shrink the smallest source for no measurement it does not already have.
+                # Cosmopedia can be auto-downloaded on demand if missing
+                if name == "cosmopedia":
+                    cosmopedia_pairs(path)
+                else:
+                    raise FileNotFoundError(f"source {name!r} not found at {path}")
+            # Only the sources that carry an eval slice are split.
             every = holdout_every if name in holdout_sources else 0
             if name == "openhermes":
                 factory = lambda p=path, e=every: openhermes_pairs(p, seed, e, want_heldout)
             elif name == "lmsys":
                 factory = lambda p=path, e=every: lmsys_pairs(p, seed, e, want_heldout)
+            elif name == "cosmopedia":
+                factory = lambda p=path, e=every: cosmopedia_pairs(p, seed, e, want_heldout)
             else:
                 factory = lambda p=path, e=every: small_parquet_pairs(p, seed, e, want_heldout)
             self._factories[name] = factory
@@ -268,21 +333,67 @@ def total_weights(specs: List[Tuple[str, float]]) -> Dict[str, float]:
 
 
 # --------------------------------------------------------------------------------------------
-# tokenisation
+# tokenisation & provenance & leakage checks
 # --------------------------------------------------------------------------------------------
 
 def tokenize_pair(tokenizer, prompt: str, answer: str, max_prompt_len: int,
                   max_answer_tokens: int) -> Tuple[List[int], List[int]]:
-    """Tokenises one record, appending EOS only when the answer is seen to its end.
-
-    The previous loaders appended EOS to every answer, including answers cut off at the
-    cap. That teaches the model to end a sentence at an arbitrary token, which shows up as
-    the short template-shaped replies in the chat logs. A truncated answer simply has no
-    EOS; the model only learns to stop where the corpus stops.
-    """
+    """Tokenises one record, appending EOS only when the answer is seen to its end."""
     prompt_ids = tokenizer.encode(prompt, max_length=max_prompt_len, truncation=True)
     answer_text = f" {answer.strip()}"
     answer_ids = tokenizer.encode(answer_text, max_length=max_answer_tokens, truncation=True)
     if len(answer_ids) < max_answer_tokens:
         answer_ids = answer_ids + [tokenizer.eos_token_id]
     return prompt_ids, answer_ids
+
+
+def get_file_hash(path: str) -> str:
+    """Computes deterministic short md5 hash of file or directory contents."""
+    if not os.path.exists(path):
+        return "missing"
+    if os.path.isdir(path):
+        files = sorted(os.listdir(path))
+        return hashlib.md5("".join(files).encode()).hexdigest()[:12]
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        chunk = f.read(65536)
+        while chunk:
+            h.update(chunk)
+            chunk = f.read(65536)
+    return h.hexdigest()[:12]
+
+
+def get_dataset_provenance(paths: Dict[str, str], mix_spec: str) -> Dict[str, Any]:
+    """Records dataset file hashes and the mix string for auditability in the state sidecar."""
+    prov = {"mix": mix_spec, "hashes": {}}
+    for name, p in paths.items():
+        prov["hashes"][name] = get_file_hash(p)
+    return prov
+
+
+def assert_no_data_leakage(
+    train_prompts: Sequence[str],
+    val_prompts: Sequence[str],
+    withheld_entities: Sequence[str] = (),
+) -> Tuple[int, int]:
+    """
+    Acceptance criterion 3:
+    Asserts 0 duplicated questions across train and val, and 0 withheld entities in train.
+    """
+    train_set = set(p.strip().lower() for p in train_prompts)
+    val_set = set(p.strip().lower() for p in val_prompts)
+    duplicates = train_set.intersection(val_set)
+    assert len(duplicates) == 0, f"Leakage detected: {len(duplicates)} duplicated prompts across train and val!"
+
+    entity_leaks = 0
+    if withheld_entities:
+        for p in train_prompts:
+            p_lower = p.lower()
+            for entity in withheld_entities:
+                if entity.lower() in p_lower:
+                    entity_leaks += 1
+                    break
+        assert entity_leaks == 0, f"Leakage detected: {entity_leaks} train prompts contain withheld entities!"
+
+    return len(duplicates), entity_leaks
+

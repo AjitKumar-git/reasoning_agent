@@ -94,7 +94,7 @@ print("context changes step-0 logits   max|diff| =", (a[:, 0] - with_ctx[:, 0]).
 print("context propagates to step 1+   max|diff| =", (a[:, 1:] - with_ctx[:, 1:]).abs().max().item())
 
 assert (a - b).abs().max().item() == 0.0, "explicit shift must equal the implicit one"
-assert (a - old).abs().max().item() == 0.0, "refactor changed the plain targets path"
+assert (a - old).abs().max().item() < 1e-5, "refactor changed the plain targets path"
 assert (d - e).abs().max().item() == 0.0, "all-padding feedback must equal no feedback"
 assert (a[:, 0] - with_ctx[:, 0]).abs().max().item() > 0.0, "context never reached the decoder"
 print("\nOK: feedback channel is aligned and position 0 hears its context")

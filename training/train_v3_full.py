@@ -447,7 +447,7 @@ def stop_requested(args) -> Optional[str]:
 # main
 # --------------------------------------------------------------------------------------------
 
-BYTES_PER_PARAM = {"sgd": 8, "adamw": 16}
+BYTES_PER_PARAM = {"sgd": 8, "spheroid": 12, "adamw": 16}
 
 
 def memory_preflight(device, param_count: int, optimizer_name: str, window: int,
@@ -455,17 +455,14 @@ def memory_preflight(device, param_count: int, optimizer_name: str, window: int,
     """Prints the static cost before it turns into an OOM at step 2.
 
     Weights and gradients are fp32 and resident for the whole run: 4 bytes each, plus 4 per
-    AdamW moment buffer per parameter. The arithmetic matters because the failure is not at
-    start-up: step 1 runs with no optimizer buffers, allocates them in `optimizer.step()`, and
-    step 2 is the first one that has to fit alongside them. On a 4 GB card the AdamW total for
-    162M parameters is 2.4 GiB, which leaves under 600 MiB, so the run dies at step 2 with a
-    message about the allocator rather than about the choice of optimizer.
+    optimizer moment buffer per parameter. SpheroidOptimizer allocates only 1 moment buffer
+    (12 B/param), saving 50% state memory compared to AdamW (16 B/param).
     """
     gib = 1024 ** 3
     static = param_count * BYTES_PER_PARAM[optimizer_name] / gib
     print(f"memory {static:.2f} GiB static for {optimizer_name} "
           f"({BYTES_PER_PARAM[optimizer_name]} B/param: weights, grads"
-          + (", two moments)" if optimizer_name == "adamw" else ")"))
+          + (", one moment)" if optimizer_name == "spheroid" else (", two moments)" if optimizer_name == "adamw" else ")")))
     if device.type != "cuda":
         return
     free, total = (x / gib for x in torch.cuda.mem_get_info())
@@ -506,12 +503,11 @@ def main():
     parser.add_argument("--grad_accum", type=int, default=8, help="Micro-batches per gradient step")
     parser.add_argument("--thinking_cycles", type=int, default=1, help="Internal deliberation cycles")
     parser.add_argument("--lr", type=float, default=None,
-                        help="Base learning rate (default: 0.015 for SGD, 3e-4 for AdamW)")
-    parser.add_argument("--optimizer", default="sgd", choices=["adamw", "sgd"],
-                        help="SGD by default because AdamW's two moment buffers per parameter "
-                             "add 1.2 GB at the laptop scale, and on a 4 GB card that is the "
-                             "difference between running and OOM-ing from step 2. See the "
-                             "preflight line the script prints at start-up")
+                        help="Base learning rate (default: 0.005 for Spheroid, 0.015 for SGD, 3e-4 for AdamW)")
+    parser.add_argument("--optimizer", default="spheroid", choices=["spheroid", "sgd", "adamw"],
+                        help="Optimizer: 'spheroid' (default) uses isometric Newton-Schulz polar updates "
+                             "and recurrent spectral radius guards; 'sgd' uses momentum SGD; "
+                             "'adamw' uses coordinate-wise moments (16 B/param, high VRAM).")
     parser.add_argument("--min_lr_ratio", type=float, default=0.1, help="Cosine floor as a fraction of --lr")
     parser.add_argument("--warmup_steps", type=int, default=100)
     parser.add_argument("--weight_decay", type=float, default=0.01)
@@ -674,7 +670,12 @@ def main():
     args.mix = [(n, w / total_w) for n, w in available_mix]
     rank_print("Active training mix:", ", ".join(f"{n}={w:.2f}" for n, w in args.mix))
     if args.lr is None:
-        args.lr = 0.015 if args.optimizer == "sgd" else 3e-4
+        if args.optimizer == "spheroid":
+            args.lr = 0.005
+        elif args.optimizer == "sgd":
+            args.lr = 0.015
+        else:
+            args.lr = 3e-4
     if args.window < 8:
         raise SystemExit("--window must be at least 8 scored tokens")
     if args.eval_window < 8:
@@ -733,7 +734,15 @@ def main():
             decay.append(param)
     optimizer_groups = [{"params": decay, "weight_decay": args.weight_decay},
                         {"params": no_decay, "weight_decay": 0.0}]
-    if args.optimizer == "sgd":
+    if args.optimizer == "spheroid":
+        from src.spheroid_optimizer import build_spheroid_optimizer
+        optimizer = build_spheroid_optimizer(
+            model,
+            lr=args.lr,
+            weight_decay=args.weight_decay,
+            spectral_clamp=1.0,
+        )
+    elif args.optimizer == "sgd":
         optimizer = torch.optim.SGD(optimizer_groups, lr=args.lr, momentum=0.9, nesterov=True)
     else:
         optimizer = torch.optim.AdamW(optimizer_groups, lr=args.lr, betas=(0.9, 0.95), eps=1e-8)
