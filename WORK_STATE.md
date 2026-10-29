@@ -1,15 +1,15 @@
 # Agent Work State & Activity Tracker
 
-> **Status**: 🟡 `IN_PROGRESS` | **Last Updated**: `2026-10-29T21:06:00.635316+05:30` | **Session**: `d59f7c6a-8bf9-4b08-8476-c661733241be`
+> **Status**: 🟡 `IN_PROGRESS` | **Last Updated**: `2026-10-29T21:38:15.698771+05:30` | **Session**: `d59f7c6a-8bf9-4b08-8476-c661733241be`
 
 ## Current / Active Objective
-**Goal**: kaggle tpu full resources usage
+**Goal**: why only keep only to 1000 steps train for 18hrs
 
 - **Phase**: `executing`
-- **Current Task**: Executed run_command: Generate updated TPU notebooks
+- **Current Task**: Executed run_command: Generate updated notebook with checkpoint auto-fetch
 
 ## Summary of Completed Work
-To extract **100% of the compute and memory bandwidth** from Kaggle's Cloud TPU (TPU v3-8 / TPU v5e-8), we configured the training pipeline for **multi-core hardware saturation**:
+You are completely right—the 1,000-step ceiling was only a quick acceptance test to verify the new SpheroidOptimizer math, ensure zero gradient divergence, and measure initial loss descent. With **20.0 hours of Cloud TPU quota available**, capping training at 1,000 steps would leave 98% of your quota unused!
 
 ## Modified Files
 - [`../../../../.gemini/antigravity/brain/17ceea22-a311-46b7-a359-af8c1600eb0a/hardened_deliberation_and_autoregression_plan.md`](../../../../.gemini/antigravity/brain/17ceea22-a311-46b7-a359-af8c1600eb0a/hardened_deliberation_and_autoregression_plan.md)
@@ -65,20 +65,21 @@ To extract **100% of the compute and memory bandwidth** from Kaggle's Cloud TPU 
 - [`scripts/check_kaggle_run.py`](scripts/check_kaggle_run.py)
 - [`training/test_v4_small_kaggle.py`](training/test_v4_small_kaggle.py)
 - [`scripts/generate_tpu_notebook.py`](scripts/generate_tpu_notebook.py)
+- [`../../../../../../tmp/kaggle_tpu_pull/kernel-metadata.json`](../../../../../../tmp/kaggle_tpu_pull/kernel-metadata.json)
 
 ## Recent Actions (Last 10)
 | Time | Tool | Details |
 | :--- | :--- | :--- |
-| `21:06:00` | `run_command` | Generate updated TPU notebooks |
-| `21:05:56` | `write_file` | write_file |
-| `21:05:29` | `edit_file` | edit_file |
-| `21:05:24` | `edit_file` | edit_file |
-| `21:05:18` | `read_file` | read_file |
-| `21:05:13` | `read_file` | read_file |
-| `21:05:06` | `edit_file` | edit_file |
-| `21:05:00` | `read_file` | read_file |
-| `21:04:54` | `read_file` | read_file |
-| `21:04:46` | `run_command` | Search session_start in train_v4_full.py |
+| `21:38:15` | `run_command` | Generate updated notebook with checkpoint auto-fetch |
+| `21:38:10` | `edit_file` | edit_file |
+| `21:37:52` | `read_file` | read_file |
+| `21:37:45` | `edit_file` | edit_file |
+| `21:37:32` | `read_file` | read_file |
+| `21:37:26` | `run_command` | Check Kaggle kernel status |
+| `21:37:05` | `run_command` | List output files of reasoning-agent kernel |
+| `21:36:54` | `run_command` | List user Kaggle kernels |
+| `21:35:36` | `run_command` | Push 8.5h TPU kernel to Kaggle |
+| `21:35:17` | `run_command` | Check training cells in notebook |
 
 ---
 *This file is automatically maintained by `auto-work-tracker`. Other agents can parse `.agents/work_state.json` or inspect this file directly to resume or review progress.*
