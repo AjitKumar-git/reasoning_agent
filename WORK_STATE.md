@@ -1,15 +1,15 @@
 # Agent Work State & Activity Tracker
 
-> **Status**: 🟡 `IN_PROGRESS` | **Last Updated**: `2026-10-29T11:14:08.693920+05:30` | **Session**: `d59f7c6a-8bf9-4b08-8476-c661733241be`
+> **Status**: 🟡 `IN_PROGRESS` | **Last Updated**: `2026-10-29T11:53:20.364321+05:30` | **Session**: `d59f7c6a-8bf9-4b08-8476-c661733241be`
 
 ## Current / Active Objective
-**Goal**: how can llama/mistral work with only 32000 vocab?
+**Goal**: clean old code, save space
 
 - **Phase**: `executing`
-- **Current Task**: Executed run_command: Check git status
+- **Current Task**: Executed run_command: Check diff of WORK_STATE.md
 
 ## Summary of Completed Work
-It sounds counterintuitive at first: how can a 32,000-vocabulary model represent the entire English language, code, emojis, math, and foreign languages without running out of tokens?
+A comprehensive purge of obsolete files, dead checkpoints, duplicate zip packages, and deprecated code wrappers was performed, reclaiming **12.0 GB of disk space** (available disk space on `/home` increased from **70 GB $\to$ 82 GB**).
 
 ## Modified Files
 - [`../../../../.gemini/antigravity/brain/17ceea22-a311-46b7-a359-af8c1600eb0a/hardened_deliberation_and_autoregression_plan.md`](../../../../.gemini/antigravity/brain/17ceea22-a311-46b7-a359-af8c1600eb0a/hardened_deliberation_and_autoregression_plan.md)
@@ -57,20 +57,24 @@ It sounds counterintuitive at first: how can a 32,000-vocabulary model represent
 - [`training/test_v3full_best.py`](training/test_v3full_best.py)
 - [`training/test_core_noise_corruption.py`](training/test_core_noise_corruption.py)
 - [`RESEARCH_NOTES.md`](RESEARCH_NOTES.md)
+- [`src/deepseek_layers.py`](src/deepseek_layers.py)
+- [`training/probe_mla_verification.py`](training/probe_mla_verification.py)
+- [`training/probe_mtp_verification.py`](training/probe_mtp_verification.py)
+- [`.agents/WORK_STATE.md`](.agents/WORK_STATE.md)
 
 ## Recent Actions (Last 10)
 | Time | Tool | Details |
 | :--- | :--- | :--- |
-| `11:14:08` | `run_command` | Check git status |
-| `11:14:03` | `run_command` | Run test_v4_architecture.py with Llama vocab |
-| `11:13:47` | `read_file` | read_file |
-| `11:13:41` | `edit_file` | edit_file |
-| `11:13:31` | `read_file` | read_file |
-| `11:13:26` | `edit_file` | edit_file |
-| `11:13:20` | `edit_file` | edit_file |
-| `11:13:13` | `read_file` | read_file |
-| `11:13:08` | `read_file` | read_file |
-| `11:13:02` | `edit_file` | edit_file |
+| `11:53:20` | `run_command` | Check diff of WORK_STATE.md |
+| `11:53:11` | `run_command` | View recent git commits |
+| `11:53:01` | `run_command` | Check git status |
+| `11:47:49` | `edit_file` | edit_file |
+| `11:47:39` | `read_file` | read_file |
+| `11:47:32` | `edit_file` | edit_file |
+| `11:47:21` | `run_command` | Check git status |
+| `11:47:16` | `run_command` | Commit and push root cleanup |
+| `11:47:06` | `run_command` | Check git status |
+| `11:47:03` | `run_command` | Run test suites to verify integrity |
 
 ---
 *This file is automatically maintained by `auto-work-tracker`. Other agents can parse `.agents/work_state.json` or inspect this file directly to resume or review progress.*
