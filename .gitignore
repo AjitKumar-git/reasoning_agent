@@ -18,6 +18,7 @@ checkpoints/
 data/
 archive/
 .hf_cache/
+.kaggle_output/
 chat_logs/
 *.parquet
 *.zip

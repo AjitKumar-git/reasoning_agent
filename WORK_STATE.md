@@ -1,15 +1,16 @@
 # Agent Work State & Activity Tracker
 
-> **Status**: 🟡 `IN_PROGRESS` | **Last Updated**: `2026-10-29T14:40:36.647389+05:30` | **Session**: `d59f7c6a-8bf9-4b08-8476-c661733241be`
+> **Status**: 🟡 `IN_PROGRESS` | **Last Updated**: `2026-10-29T20:28:58.991274+05:30` | **Session**: `d59f7c6a-8bf9-4b08-8476-c661733241be`
 
 ## Current / Active Objective
-**Goal**: train for 1000 steps v4 small on kaggle
+**Goal**: 103.7s	172	step      1/1,000 | loss 10.4917 (ppl 36014.5) | lr 1.00e-04 | 143.6 passes/s | vram  1364 MB | 14.26s/step | corpus 32 (x2 gpus)
+226.8s	173	step     10/1,000 | loss 12.9998 (ppl 442326.9)...
 
 - **Phase**: `executing`
-- **Current Task**: Executed run_command: Check git status
+- **Current Task**: Executed edit_file: edit_file
 
 ## Summary of Completed Work
-The 1,000-step training job for **CerebroSpheroid V4-Small** has been configured, committed, and pushed directly to your Kaggle kernel:
+The previous run was cancelled and Version 6 was pushed to Kaggle with high-throughput VRAM scaling:
 
 ## Modified Files
 - [`../../../../.gemini/antigravity/brain/17ceea22-a311-46b7-a359-af8c1600eb0a/hardened_deliberation_and_autoregression_plan.md`](../../../../.gemini/antigravity/brain/17ceea22-a311-46b7-a359-af8c1600eb0a/hardened_deliberation_and_autoregression_plan.md)
@@ -63,20 +64,21 @@ The 1,000-step training job for **CerebroSpheroid V4-Small** has been configured
 - [`.agents/WORK_STATE.md`](.agents/WORK_STATE.md)
 - [`training/test_v4_state_best.py`](training/test_v4_state_best.py)
 - [`scripts/check_kaggle_run.py`](scripts/check_kaggle_run.py)
+- [`training/test_v4_small_kaggle.py`](training/test_v4_small_kaggle.py)
 
 ## Recent Actions (Last 10)
 | Time | Tool | Details |
 | :--- | :--- | :--- |
-| `14:40:36` | `run_command` | Check git status |
-| `14:40:29` | `edit_file` | edit_file |
-| `14:40:01` | `read_file` | read_file |
-| `14:39:55` | `read_file` | read_file |
-| `14:39:47` | `edit_file` | edit_file |
-| `14:39:40` | `read_file` | read_file |
-| `14:39:34` | `read_file` | read_file |
-| `14:39:27` | `run_command` | Check diff on spheroid_optimizer |
-| `14:39:22` | `run_command` | Check git status |
-| `14:39:15` | `run_command` | Check training cell in notebook |
+| `20:28:58` | `edit_file` | edit_file |
+| `20:28:51` | `read_file` | read_file |
+| `20:28:43` | `run_command` | Check git status |
+| `20:28:33` | `read_file` | read_file |
+| `20:28:23` | `edit_file` | edit_file |
+| `20:28:00` | `read_file` | read_file |
+| `20:27:50` | `run_command` | Read task-2251 log |
+| `20:27:47` | `run_command` | Execute evaluation suite for v4_small_kaggle |
+| `20:27:40` | `run_command` | Read task-2251 log |
+| `20:27:27` | `run_command` | Read task-2251 log |
 
 ---
 *This file is automatically maintained by `auto-work-tracker`. Other agents can parse `.agents/work_state.json` or inspect this file directly to resume or review progress.*
