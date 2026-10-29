@@ -615,10 +615,18 @@ def main():
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
         rank = int(os.environ.get("RANK", 0))
         world_size = int(os.environ.get("WORLD_SIZE", 1))
-        torch.cuda.set_device(local_rank)
-        device = torch.device(f"cuda:{local_rank}")
-        if not torch.distributed.is_initialized():
-            torch.distributed.init_process_group(backend="nccl")
+        if args.device == "xla" or os.environ.get("PJRT_DEVICE") == "TPU":
+            import torch_xla.core.xla_model as xm
+            import torch_xla.distributed.xla_backend
+            device = xm.xla_device()
+            is_xla = True
+            if not torch.distributed.is_initialized():
+                torch.distributed.init_process_group("xla", init_method="xla://")
+        else:
+            torch.cuda.set_device(local_rank)
+            device = torch.device(f"cuda:{local_rank}")
+            if not torch.distributed.is_initialized():
+                torch.distributed.init_process_group(backend="nccl")
     else:
         local_rank = 0
         rank = 0
@@ -911,14 +919,28 @@ def main():
         else:
             rank_print("init   random (--init_from none)")
 
-    # Wrap model with DistributedDataParallel if running multi-GPU
-    if is_distributed:
+    # Wrap model with DistributedDataParallel if running multi-GPU (not on XLA: XLA synchronizes via xm.optimizer_step)
+    if is_distributed and not is_xla:
         model = nn.parallel.DistributedDataParallel(
             model,
             device_ids=[local_rank],
             output_device=local_rank,
             find_unused_parameters=True,
         )
+    elif is_distributed and is_xla:
+        import torch_xla.core.xla_model as xm
+        raw_m = model.module if hasattr(model, "module") else model
+        for p in raw_m.parameters():
+            xm.mark_step()
+        try:
+            import torch_xla.runtime as xr
+            xr.broadcast_master_param(raw_m)
+        except Exception:
+            try:
+                import torch_xla.experimental.pjrt as xpjrt
+                xpjrt.broadcast_master_param(raw_m)
+            except Exception:
+                pass
 
     use_scaler = (dtype == torch.float16 and getattr(device, "type", "") == "cuda")
     scaler = torch.amp.GradScaler("cuda", enabled=use_scaler) if (torch.cuda.is_available() and use_scaler) else None

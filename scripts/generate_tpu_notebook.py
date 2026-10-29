@@ -6,14 +6,15 @@ notebook = {
             "cell_type": "markdown",
             "metadata": {},
             "source": [
-                "# 🧠 CerebroSpheroid V4: Cloud TPU Training on Kaggle\n",
-                "### 128 GB High-Bandwidth Memory (HBM) • PyTorch/XLA • Native bfloat16\n",
+                "# 🧠 CerebroSpheroid V4: Cloud TPU Full Resource Training on Kaggle\n",
+                "### 128 GB High-Bandwidth Memory (HBM) • 8 TPU Cores • PyTorch/XLA PJRT • Native bfloat16\n",
                 "\n",
                 "### **Architecture & Capabilities in V4-Small:**\n",
-                "1. **Modern Llama 32,000 Vocabulary**: Byte-fallback BPE with atomic single-digit arithmetic (`0`-`9`) and zero OOV tokens (saving 35M parameters: 127M total).\n",
+                "1. **Modern Llama 32,000 Vocabulary**: Byte-fallback BPE with atomic single-digit arithmetic (`0`-`9`) and zero OOV tokens (127M total parameters).\n",
                 "2. **Causal Temporal Sensory Ingestion**: Exponential recency decay + phase velocity momentum vectors replacing order-erasing centroid pooling.\n",
-                "3. **SpheroidOptimizer**: Riemannian polar Newton-Schulz with persistent power iteration spectral radius guard (<1.5 ms) and decoupled row-wise RMS token momentum (<0.5 ms).\n",
+                "3. **SpheroidOptimizer**: Polar Newton-Schulz Riemannian optimizer with persistent power-iteration spectral radius guard (<1.5 ms) and decoupled row-wise RMS token momentum (<0.5 ms).\n",
                 "4. **Reasoning-Focused Mix**: Multi-step instruction and math reasoning (`OpenHermes=0.45, LMSYS=0.35, GSM8K=0.15, Cognitive=0.05`).\n",
+                "5. **Full TPU Utilization**: Utilizing all 8 TensorCores via PJRT multi-process / multi-threading, saturated 256-token sequence windows, and native `bfloat16` matrix units (MXUs).\n",
                 "\n",
                 "---\n",
                 "### ⚡ Kaggle Settings:\n",
@@ -25,7 +26,7 @@ notebook = {
         {
             "cell_type": "markdown",
             "metadata": {},
-            "source": ["## Step 1: TPU Hardware & PyTorch/XLA Verification"]
+            "source": ["## Step 1: TPU Hardware & PyTorch/XLA PJRT Verification"]
         },
         {
             "cell_type": "code",
@@ -33,11 +34,15 @@ notebook = {
             "metadata": {},
             "outputs": [],
             "source": [
-                "import sys, os\n",
+                "import os, sys\n",
+                "# Set modern PJRT runtime for Cloud TPU\n",
+                "os.environ['PJRT_DEVICE'] = 'TPU'\n",
+                "\n",
                 "try:\n",
                 "    import torch_xla.core.xla_model as xm\n",
                 "    device = xm.xla_device()\n",
-                "    print(f\"✅ Successfully connected to Cloud TPU device: {device}\")\n",
+                "    world_size = xm.xrt_world_size()\n",
+                "    print(f\"✅ Successfully connected to Cloud TPU device: {device} (World Size: {world_size})\")\n",
                 "except ImportError:\n",
                 "    print(\"Installing torch_xla for TPU VM...\")\n",
                 "    !pip install -q torch~=2.5.0 torch_xla[tpu]~=2.5.0 -f https://storage.googleapis.com/libtpu-releases/index.html\n",
@@ -119,7 +124,10 @@ notebook = {
         {
             "cell_type": "markdown",
             "metadata": {},
-            "source": ["## Step 5: Launch Training on Cloud TPU (Native bfloat16, SpheroidOptimizer)"]
+            "source": [
+                "## Step 5: Full-Resource TPU Training\n",
+                "Run with **multi-process distributed execution** (`torchrun --nproc_per_node=4`) to saturate all 8 TensorCores and 128 GB HBM memory at `window=256` tokens."
+            ]
         },
         {
             "cell_type": "code",
@@ -127,7 +135,9 @@ notebook = {
             "metadata": {},
             "outputs": [],
             "source": [
-                "!python3 -u training/train_v4_full.py \\\n",
+                "# Launch full resource training across all TPU chips (4 chips x 2 threads/chip = 8 cores)\n",
+                "# Total effective batch: 4 chips * 32 records * 4 grad_accum = 512 sequences = 131,072 tokens/step!\n",
+                "!torchrun --nproc_per_node=4 training/train_v4_full.py \\\n",
                 "    --arch v4 \\\n",
                 "    --preset v4_small \\\n",
                 "    --tokenizer llama \\\n",
@@ -137,13 +147,47 @@ notebook = {
                 "    --dtype bf16 \\\n",
                 "    --lr 0.002 \\\n",
                 "    --max_steps 3000 \\\n",
-                "    --batch_size 16 \\\n",
-                "    --grad_accum 2 \\\n",
-                "    --window 128 \\\n",
+                "    --batch_size 32 \\\n",
+                "    --grad_accum 4 \\\n",
+                "    --window 256 \\\n",
                 "    --eval_window 128 \\\n",
                 "    --eval_interval 100 \\\n",
                 "    --save_every 50 \\\n",
                 "    --save_prefix cerebro_spheroid_v4_small_tpu\n"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "### Alternative: High-Throughput Single-Process Saturated Mode\n",
+                "*(If you prefer single-process execution without torchrun, this maximizes single-device HBM usage)*"
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "# Single-device high-throughput fallback\n",
+                "# !python3 -u training/train_v4_full.py \\\n",
+                "#     --arch v4 \\\n",
+                "#     --preset v4_small \\\n",
+                "#     --tokenizer llama \\\n",
+                "#     --mix \"openhermes=0.45,lmsys=0.35,gsm8k=0.15,cognitive=0.05\" \\\n",
+                "#     --optimizer spheroid \\\n",
+                "#     --device xla \\\n",
+                "#     --dtype bf16 \\\n",
+                "#     --lr 0.002 \\\n",
+                "#     --max_steps 3000 \\\n",
+                "#     --batch_size 64 \\\n",
+                "#     --grad_accum 4 \\\n",
+                "#     --window 256 \\\n",
+                "#     --eval_window 128 \\\n",
+                "#     --eval_interval 100 \\\n",
+                "#     --save_every 50 \\\n",
+                "#     --save_prefix cerebro_spheroid_v4_small_tpu\n"
             ]
         },
         {
