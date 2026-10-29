@@ -865,7 +865,42 @@ def main():
                         state_file = wc
                         break
 
-            # 3. If still nothing found and v3, auto-download cerebro_spheroid_v3_colab_best.pt from Google Drive
+            # 3. If still nothing found and v4, check /kaggle/input and auto-fetch from ajitsheoran/reasoning-agent
+            if not state_file and args.arch == "v4":
+                if os.path.exists("/kaggle/input"):
+                    import shutil
+                    for root, dirs, files in os.walk("/kaggle/input"):
+                        for f in files:
+                            if f == "cerebro_spheroid_v4_small_kaggle_state.pt":
+                                cand = os.path.join(root, f)
+                                shutil.copy2(cand, os.path.join(CKPT_DIR, f))
+                                json_cand = cand.replace("_state.pt", "_state.json")
+                                if os.path.exists(json_cand):
+                                    shutil.copy2(json_cand, os.path.join(CKPT_DIR, os.path.basename(json_cand)))
+                                state_file = os.path.join(CKPT_DIR, f)
+                                break
+                            elif f.endswith(".zip") and "cerebro_spheroid" in f:
+                                os.system(f'unzip -n -q "{os.path.join(root, f)}" -d {CKPT_DIR}')
+                        if state_file:
+                            break
+
+                if not state_file and os.path.exists("/kaggle") and rank == 0:
+                    rank_print("Auto-fetching 1,000-step checkpoint from previous kernel: ajitsheoran/reasoning-agent...")
+                    os.system(f"kaggle kernels output ajitsheoran/reasoning-agent -p {CKPT_DIR} 2>/dev/null || true")
+                    for f in os.listdir(CKPT_DIR):
+                        if f.endswith(".zip") and "cerebro_spheroid" in f:
+                            os.system(f'unzip -n -q "{os.path.join(CKPT_DIR, f)}" -d {CKPT_DIR}')
+                    tgt = os.path.join(CKPT_DIR, "cerebro_spheroid_v4_small_kaggle_state.pt")
+                    if os.path.exists(tgt):
+                        state_file = tgt
+
+                if is_distributed:
+                    torch.distributed.barrier()
+                tgt = os.path.join(CKPT_DIR, "cerebro_spheroid_v4_small_kaggle_state.pt")
+                if not state_file and os.path.exists(tgt):
+                    state_file = tgt
+
+            # 4. If still nothing found and v3, auto-download cerebro_spheroid_v3_colab_best.pt from Google Drive
             if not state_file and args.arch == "v3":
                 colab_best = os.path.join(CKPT_DIR, "cerebro_spheroid_v3_colab_best.pt")
                 if rank == 0:
