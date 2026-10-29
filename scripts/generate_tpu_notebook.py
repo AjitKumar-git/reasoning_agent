@@ -6,15 +6,15 @@ notebook = {
             "cell_type": "markdown",
             "metadata": {},
             "source": [
-                "# 🧠 CerebroSpheroid V4: Cloud TPU Full Resource Training on Kaggle\n",
-                "### 128 GB High-Bandwidth Memory (HBM) • 8 TPU Cores • PyTorch/XLA PJRT • Native bfloat16\n",
+                "# 🧠 CerebroSpheroid V4: Cloud TPU Full 18-Hour Training Pipeline\n",
+                "### 128 GB HBM • 8 TPU Cores • PyTorch/XLA PJRT • Multi-Task Deep Convergence (bfloat16)\n",
                 "\n",
                 "### **Architecture & Capabilities in V4-Small:**\n",
                 "1. **Modern Llama 32,000 Vocabulary**: Byte-fallback BPE with atomic single-digit arithmetic (`0`-`9`) and zero OOV tokens (127M total parameters).\n",
                 "2. **Causal Temporal Sensory Ingestion**: Exponential recency decay + phase velocity momentum vectors replacing order-erasing centroid pooling.\n",
                 "3. **SpheroidOptimizer**: Polar Newton-Schulz Riemannian optimizer with persistent power-iteration spectral radius guard (<1.5 ms) and decoupled row-wise RMS token momentum (<0.5 ms).\n",
                 "4. **Reasoning-Focused Mix**: Multi-step instruction and math reasoning (`OpenHermes=0.45, LMSYS=0.35, GSM8K=0.15, Cognitive=0.05`).\n",
-                "5. **Full TPU Utilization**: Utilizing all 8 TensorCores via PJRT multi-process / multi-threading, saturated 256-token sequence windows, and native `bfloat16` matrix units (MXUs).\n",
+                "5. **18-Hour Budget & Kaggle 9-Hour Limit**: Kaggle batch runs have a strict 9-hour execution timeout. To train for 18 hours safely, run **Session 1 for 8.5 hours** (`--max_hours 8.5`), which cleanly packages checkpoints. Then run **Session 2 for 8.5 hours** resuming from Session 1 output for a full 17–18 hours without risking timeout termination!\n",
                 "\n",
                 "---\n",
                 "### ⚡ Kaggle Settings:\n",
@@ -75,7 +75,7 @@ notebook = {
         {
             "cell_type": "markdown",
             "metadata": {},
-            "source": ["## Step 3: Checkpoint Restoration (Optional / Automatic)"]
+            "source": ["## Step 3: Checkpoint Ingestion & Resumption (Automatic)"]
         },
         {
             "cell_type": "code",
@@ -96,11 +96,12 @@ notebook = {
                 "                print(f\"Found checkpoint file: {f}\")\n",
                 "                shutil.copy2(full_p, os.path.join(\"checkpoints\", f))\n",
                 "\n",
-                "# Flatten nested checkpoints_out if present\n",
-                "if os.path.exists(\"checkpoints/checkpoints_out\"):\n",
-                "    for item in os.listdir(\"checkpoints/checkpoints_out\"):\n",
-                "        shutil.move(os.path.join(\"checkpoints/checkpoints_out\", item), os.path.join(\"checkpoints\", item))\n",
-                "    shutil.rmtree(\"checkpoints/checkpoints_out\", ignore_errors=True)\n",
+                "# Flatten nested checkpoints_tpu or checkpoints_out if present\n",
+                "for nested in [\"checkpoints/checkpoints_tpu\", \"checkpoints/checkpoints_out\"]:\n",
+                "    if os.path.exists(nested):\n",
+                "        for item in os.listdir(nested):\n",
+                "            shutil.move(os.path.join(nested, item), os.path.join(\"checkpoints\", item))\n",
+                "        shutil.rmtree(nested, ignore_errors=True)\n",
                 "\n",
                 "print(\"\\nCheckpoints available:\")\n",
                 "!ls -lh checkpoints/\n"
@@ -125,8 +126,10 @@ notebook = {
             "cell_type": "markdown",
             "metadata": {},
             "source": [
-                "## Step 5: Full-Resource TPU Training\n",
-                "Run with **multi-process distributed execution** (`torchrun --nproc_per_node=4`) to saturate all 8 TensorCores and 128 GB HBM memory at `window=256` tokens."
+                "## Step 5: Full-Resource Cloud TPU Training (Multi-Core Distributed)\n",
+                "- **Multi-Core**: `torchrun --nproc_per_node=4` utilizing all 8 TensorCores\n",
+                "- **Throughput**: 4 chips $\\times$ 32 batch $\\times$ 4 accum $\\times$ 256 window = **131,072 tokens/step**\n",
+                "- **Session Time Budget**: `--max_hours 8.5` (safely under Kaggle's 9.0-hr hard timeout limit)"
             ]
         },
         {
@@ -135,8 +138,6 @@ notebook = {
             "metadata": {},
             "outputs": [],
             "source": [
-                "# Launch full resource training across all TPU chips (4 chips x 2 threads/chip = 8 cores)\n",
-                "# Total effective batch: 4 chips * 32 records * 4 grad_accum = 512 sequences = 131,072 tokens/step!\n",
                 "!torchrun --nproc_per_node=4 training/train_v4_full.py \\\n",
                 "    --arch v4 \\\n",
                 "    --preset v4_small \\\n",
@@ -146,13 +147,14 @@ notebook = {
                 "    --device xla \\\n",
                 "    --dtype bf16 \\\n",
                 "    --lr 0.002 \\\n",
-                "    --max_steps 3000 \\\n",
+                "    --max_steps 50000 \\\n",
+                "    --max_hours 8.5 \\\n",
                 "    --batch_size 32 \\\n",
                 "    --grad_accum 4 \\\n",
                 "    --window 256 \\\n",
                 "    --eval_window 128 \\\n",
-                "    --eval_interval 100 \\\n",
-                "    --save_every 50 \\\n",
+                "    --eval_interval 200 \\\n",
+                "    --save_every 100 \\\n",
                 "    --save_prefix cerebro_spheroid_v4_small_tpu\n"
             ]
         },
@@ -160,8 +162,8 @@ notebook = {
             "cell_type": "markdown",
             "metadata": {},
             "source": [
-                "### Alternative: High-Throughput Single-Process Saturated Mode\n",
-                "*(If you prefer single-process execution without torchrun, this maximizes single-device HBM usage)*"
+                "### Alternative: Interactive 18-Hour Single-Run Cell\n",
+                "*(If running directly in an active interactive browser tab without the 9-hr batch cutoff)*"
             ]
         },
         {
@@ -170,8 +172,8 @@ notebook = {
             "metadata": {},
             "outputs": [],
             "source": [
-                "# Single-device high-throughput fallback\n",
-                "# !python3 -u training/train_v4_full.py \\\n",
+                "# To train for 18 continuous hours in an interactive editor session:\n",
+                "# !torchrun --nproc_per_node=4 training/train_v4_full.py \\\n",
                 "#     --arch v4 \\\n",
                 "#     --preset v4_small \\\n",
                 "#     --tokenizer llama \\\n",
@@ -180,13 +182,14 @@ notebook = {
                 "#     --device xla \\\n",
                 "#     --dtype bf16 \\\n",
                 "#     --lr 0.002 \\\n",
-                "#     --max_steps 3000 \\\n",
-                "#     --batch_size 64 \\\n",
+                "#     --max_steps 50000 \\\n",
+                "#     --max_hours 18.0 \\\n",
+                "#     --batch_size 32 \\\n",
                 "#     --grad_accum 4 \\\n",
                 "#     --window 256 \\\n",
                 "#     --eval_window 128 \\\n",
-                "#     --eval_interval 100 \\\n",
-                "#     --save_every 50 \\\n",
+                "#     --eval_interval 200 \\\n",
+                "#     --save_every 100 \\\n",
                 "#     --save_prefix cerebro_spheroid_v4_small_tpu\n"
             ]
         },

@@ -528,9 +528,11 @@ def main():
     parser.add_argument("--clip", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=1337)
     # run control
-    parser.add_argument("--max_steps", type=int, default=20000)
+    parser.add_argument("--max_steps", type=int, default=50000)
     parser.add_argument("--max_minutes", type=float, default=0.0,
                         help="Stop cleanly after this many minutes in this session (0 = no limit)")
+    parser.add_argument("--max_hours", type=float, default=0.0,
+                        help="Stop cleanly after this many hours in this session (0 = no limit, e.g. 8.5 for Kaggle batch limit or 18.0)")
     parser.add_argument("--eval_interval", type=int, default=400)
     parser.add_argument("--patience", type=int, default=25, help="Evals without improvement before stopping")
     parser.add_argument("--min_improvement", type=float, default=0.002)
@@ -567,6 +569,8 @@ def main():
     parser.add_argument("--probe_tokens", type=int, default=0, help="0 disables the sample generation (default: 0)")
     parser.add_argument("--dry_run", action="store_true", help="Build the eval set and exit")
     args = parser.parse_args()
+    if args.max_hours > 0:
+        args.max_minutes = args.max_hours * 60.0
 
     # Multi-GPU auto-launcher: if multiple GPUs are available and requested,
     # and we are not already inside torch.distributed.run, launch it automatically.
@@ -1180,7 +1184,7 @@ def main():
                 reason = "peer rank requested stop"
 
         if reason is None and args.max_minutes > 0:
-            used = (time.time() - session_start) / 60
+            used = (time.time() - session_base) / 60
             if used >= args.max_minutes:
                 reason = f"time budget reached ({used:.1f}/{args.max_minutes:.0f} min)"
         if reason is None and step % args.save_every == 0:
