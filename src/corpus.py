@@ -336,6 +336,33 @@ def total_weights(specs: List[Tuple[str, float]]) -> Dict[str, float]:
 # tokenisation & provenance & leakage checks
 # --------------------------------------------------------------------------------------------
 
+def build_tokenizer(name: str = "llama"):
+    """
+    Builds and configures a tokenizer for CerebroSpheroid models:
+    - 'llama': Modern 32,000 Byte-Fallback BPE (via huggyllama/llama-7b or TinyLlama).
+      Features byte-level UTF-8 fallback (zero <unk>), single-digit number tokenization,
+      pad_token_id=0, bos_token_id=1, eos_token_id=2.
+    - 'gpt2': Legacy 50,257 BPE tokenizer.
+    """
+    os.environ["HF_HOME"] = os.path.expanduser("~/.hf_cache")
+    from transformers import AutoTokenizer
+    if name == "llama":
+        tok = AutoTokenizer.from_pretrained("huggyllama/llama-7b")
+        if tok.pad_token_id is None:
+            tok.pad_token_id = 0
+        return tok
+    elif name == "gpt2":
+        tok = AutoTokenizer.from_pretrained("gpt2")
+        if tok.pad_token_id is None:
+            tok.pad_token_id = tok.eos_token_id
+        return tok
+    else:
+        tok = AutoTokenizer.from_pretrained(name)
+        if tok.pad_token_id is None:
+            tok.pad_token_id = tok.eos_token_id or 0
+        return tok
+
+
 def tokenize_pair(tokenizer, prompt: str, answer: str, max_prompt_len: int,
                   max_answer_tokens: int) -> Tuple[List[int], List[int]]:
     """Tokenises one record, appending EOS only when the answer is seen to its end."""

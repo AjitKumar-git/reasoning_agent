@@ -174,7 +174,7 @@ class CerebroSpheroidV4(CerebroSpheroidV3):
     """
     def __init__(
         self,
-        vocab_size: int = 50257,
+        vocab_size: int = 32000,
         surface_dim: int = 640,
         num_shells: int = 16,
         radial_dim: int = 256,
@@ -568,8 +568,9 @@ def compute_manifold_diagnostics(
 # =========================================================================
 
 PRESETS = {
+    # Modern Llama 32k Byte-Fallback BPE Presets (Default for V4)
     "v4_small": dict(
-        vocab_size=50257,
+        vocab_size=32000,
         surface_dim=640,
         num_shells=16,
         radial_dim=256,
@@ -577,6 +578,31 @@ PRESETS = {
         max_len=2048,
     ),
     "v4_wide": dict(
+        vocab_size=32000,
+        surface_dim=896,
+        num_shells=24,
+        radial_dim=384,
+        num_shortcut_tracts=48,
+        max_len=2048,
+    ),
+    "v4_probe": dict(
+        vocab_size=32000,
+        surface_dim=148,
+        num_shells=8,
+        radial_dim=74,
+        num_shortcut_tracts=16,
+        max_len=1024,
+    ),
+    # Legacy GPT-2 50k Presets (for backwards compatibility)
+    "v4_gpt2_small": dict(
+        vocab_size=50257,
+        surface_dim=640,
+        num_shells=16,
+        radial_dim=256,
+        num_shortcut_tracts=40,
+        max_len=2048,
+    ),
+    "v4_gpt2_wide": dict(
         vocab_size=50257,
         surface_dim=896,
         num_shells=24,
@@ -612,7 +638,7 @@ def build_spheroid_v4(preset: str = "v4_small", **kwargs) -> CerebroSpheroidV4:
     return CerebroSpheroidV4(**cfg)
 
 
-def build_v4_model(args, vocab_size: int = 50257) -> CerebroSpheroidV4:
+def build_v4_model(args, vocab_size: int = 32000) -> CerebroSpheroidV4:
     """CLI-aware factory that respects explicit dimension flags."""
     preset = getattr(args, "preset", "v4_small")
     cfg = dict(PRESETS.get(preset, PRESETS["v4_small"]))

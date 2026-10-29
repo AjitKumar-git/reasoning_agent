@@ -35,18 +35,24 @@ from src.corpus import assert_no_data_leakage, get_dataset_provenance, default_p
 
 
 def test_param_counts():
-    print("[1/7] Testing Parameter Counts...")
+    print("[1/8] Testing Parameter Counts (Modern Llama 32k & Legacy GPT-2 50k)...")
+    # Modern Llama 32k presets
     m_small = build_spheroid_v4("v4_small")
     params_small = sum(p.numel() for p in m_small.parameters())
-    print(f"      v4_small params: {params_small:,} (expected 162,272,317)")
-    assert params_small == 162272317, f"v4_small param count mismatch: {params_small} != 162272317"
+    print(f"      v4_small (Llama 32k)      params: {params_small:,} (expected 127,218,877)")
+    assert params_small == 127218877, f"v4_small param count mismatch: {params_small} != 127218877"
 
-    # For v4_wide, verify config dimensions and parameter count
     m_wide = build_spheroid_v4("v4_wide")
     params_wide = sum(p.numel() for p in m_wide.parameters())
-    print(f"      v4_wide  params: {params_wide:,} (expected 327,851,093)")
-    assert params_wide == 327851093, f"v4_wide param count mismatch: {params_wide} != 327851093"
-    print("      OK: Parameter counts match exactly.")
+    print(f"      v4_wide  (Llama 32k)      params: {params_wide:,} (expected 278,776,277)")
+    assert params_wide == 278776277, f"v4_wide param count mismatch: {params_wide} != 278776277"
+
+    # Legacy GPT-2 50k presets (for backwards compatibility)
+    m_gpt2_small = build_spheroid_v4("v4_gpt2_small")
+    params_gpt2 = sum(p.numel() for p in m_gpt2_small.parameters())
+    print(f"      v4_gpt2_small (GPT-2 50k) params: {params_gpt2:,} (expected 162,272,317)")
+    assert params_gpt2 == 162272317, f"v4_gpt2_small param count mismatch: {params_gpt2} != 162272317"
+    print("      OK: Modern Llama 32k and legacy GPT-2 50k parameter counts match exactly.")
 
 
 def test_dynamic_zoning():

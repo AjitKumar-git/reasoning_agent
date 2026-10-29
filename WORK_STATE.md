@@ -1,15 +1,15 @@
 # Agent Work State & Activity Tracker
 
-> **Status**: 🟡 `IN_PROGRESS` | **Last Updated**: `2026-10-29T01:24:51.037416+05:30` | **Session**: `d59f7c6a-8bf9-4b08-8476-c661733241be`
+> **Status**: 🟡 `IN_PROGRESS` | **Last Updated**: `2026-10-29T11:14:08.693920+05:30` | **Session**: `d59f7c6a-8bf9-4b08-8476-c661733241be`
 
 ## Current / Active Objective
-**Goal**: how to get output from kaggle
+**Goal**: how can llama/mistral work with only 32000 vocab?
 
 - **Phase**: `executing`
 - **Current Task**: Executed run_command: Check git status
 
 ## Summary of Completed Work
-On Kaggle, anything written inside `/kaggle/working` persists as an output artifact.
+It sounds counterintuitive at first: how can a 32,000-vocabulary model represent the entire English language, code, emojis, math, and foreign languages without running out of tokens?
 
 ## Modified Files
 - [`../../../../.gemini/antigravity/brain/17ceea22-a311-46b7-a359-af8c1600eb0a/hardened_deliberation_and_autoregression_plan.md`](../../../../.gemini/antigravity/brain/17ceea22-a311-46b7-a359-af8c1600eb0a/hardened_deliberation_and_autoregression_plan.md)
@@ -54,20 +54,23 @@ On Kaggle, anything written inside `/kaggle/working` persists as an output artif
 - [`training/probe_learning_verification.py`](training/probe_learning_verification.py)
 - [`training/benchmark_optimizer_comparison.py`](training/benchmark_optimizer_comparison.py)
 - [`training/remote/CerebroSpheroid_V4_Kaggle.ipynb`](training/remote/CerebroSpheroid_V4_Kaggle.ipynb)
+- [`training/test_v3full_best.py`](training/test_v3full_best.py)
+- [`training/test_core_noise_corruption.py`](training/test_core_noise_corruption.py)
+- [`RESEARCH_NOTES.md`](RESEARCH_NOTES.md)
 
 ## Recent Actions (Last 10)
 | Time | Tool | Details |
 | :--- | :--- | :--- |
-| `01:24:51` | `run_command` | Check git status |
-| `01:24:38` | `edit_file` | edit_file |
-| `01:24:25` | `read_file` | read_file |
-| `01:24:14` | `edit_file` | edit_file |
-| `01:23:58` | `read_file` | read_file |
-| `01:23:48` | `run_command` | Find torch.save in train_v4_full.py |
-| `01:23:37` | `run_command` | Find save_weights definition |
-| `01:23:24` | `read_file` | read_file |
-| `01:23:13` | `read_file` | read_file |
-| `01:23:00` | `read_file` | read_file |
+| `11:14:08` | `run_command` | Check git status |
+| `11:14:03` | `run_command` | Run test_v4_architecture.py with Llama vocab |
+| `11:13:47` | `read_file` | read_file |
+| `11:13:41` | `edit_file` | edit_file |
+| `11:13:31` | `read_file` | read_file |
+| `11:13:26` | `edit_file` | edit_file |
+| `11:13:20` | `edit_file` | edit_file |
+| `11:13:13` | `read_file` | read_file |
+| `11:13:08` | `read_file` | read_file |
+| `11:13:02` | `edit_file` | edit_file |
 
 ---
 *This file is automatically maintained by `auto-work-tracker`. Other agents can parse `.agents/work_state.json` or inspect this file directly to resume or review progress.*

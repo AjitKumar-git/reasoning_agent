@@ -499,8 +499,11 @@ def main():
                         help="Hold out every Nth parquet row group of OpenHermes/LMSYS for eval")
     # optimisation
     parser.add_argument("--arch", default="v4", choices=["v4", "v3", "v2"], help="Manifold generation")
-    parser.add_argument("--preset", default="v4_small", choices=["v4_small", "v4_wide", "v4_probe_25m"],
-                        help="Architecture preset: v4_small (162M), v4_wide (328M), or v4_probe_25m (24.9M)")
+    parser.add_argument("--tokenizer", default="llama", choices=["llama", "gpt2"],
+                        help="Tokenizer vocabulary: 'llama' (32,000 Byte-Fallback BPE, default) or 'gpt2' (legacy 50,257)")
+    parser.add_argument("--preset", default="v4_small",
+                        choices=["v4_small", "v4_wide", "v4_probe", "v4_gpt2_small", "v4_gpt2_wide", "v4_probe_25m"],
+                        help="Architecture preset: v4_small (127M Llama), v4_wide (279M Llama), v4_probe (16.8M), or legacy v4_gpt2_* presets")
     parser.add_argument("--surface_dim", type=int, default=None, help="Explicit surface dimension override")
     parser.add_argument("--num_shells", type=int, default=None, help="Explicit shell count override")
     parser.add_argument("--radial_dim", type=int, default=None, help="Explicit radial dimension override")
@@ -703,9 +706,9 @@ def main():
     else:
         dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}[args.dtype]
 
-    tokenizer = AutoTokenizer.from_pretrained("gpt2")
-    tokenizer.pad_token = tokenizer.eos_token
-    pad_token_id = tokenizer.eos_token_id
+    from src.corpus import build_tokenizer
+    tokenizer = build_tokenizer(getattr(args, "tokenizer", "llama"))
+    pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
 
     rank_print("=" * 88)
     rank_print("  CEREBRO-SPHEROID V4  |  FULL-CORPUS TRAINER  |  PAUSE / RESUME")
