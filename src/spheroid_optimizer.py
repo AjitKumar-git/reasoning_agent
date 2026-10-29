@@ -262,7 +262,7 @@ class SpheroidOptimizer(Optimizer):
                 else:
                     if len(state) == 0:
                         state["step"] = 0
-                        m_dtype = (torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16) if (use_half and p.is_cuda) else p.dtype
+                        m_dtype = (torch.bfloat16 if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) else torch.float16) if (use_half and p.is_cuda) else p.dtype
                         state["momentum"] = torch.zeros_like(p, dtype=m_dtype)
 
                     state["step"] += 1

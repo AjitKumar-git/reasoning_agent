@@ -241,7 +241,7 @@ def autocast_ctx(device, dtype):
     torch.amp.autocast on CPU with a float32 target warns and disables itself, which turns
     every step into a warning line in the log for no numerical benefit.
     """
-    if dtype == torch.float32:
+    if dtype == torch.float32 or getattr(device, "type", "") == "xla":
         return contextlib.nullcontext()
     return torch.amp.autocast(device_type="cuda" if device.type == "cuda" else "cpu", dtype=dtype)
 
@@ -305,7 +305,11 @@ def save_state(prefix: str, model, optimizer, scheduler, step: int, best: float,
         "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
         "python_rng": random.getstate(),
     }
-    torch.save(payload, pt_path)
+    if getattr(device, "type", "") == "xla":
+        import torch_xla.core.xla_model as xm
+        xm.save(payload, pt_path)
+    else:
+        torch.save(payload, pt_path)
     write_json(json_path, {k: v for k, v in payload.items() if not k.endswith("rng") and k != "model"
                            and k != "optimizer" and k != "scheduler"})
     drive_dir = getattr(args, "drive_dir", None)
@@ -543,7 +547,7 @@ def main():
                              "initialising from one turns the knowledge eval into a retention check")
     parser.add_argument("--pause_file", default=os.path.join(CKPT_DIR, "PAUSE"),
                         help="Create this file to stop cleanly; it is consumed (deleted) on pause")
-    parser.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
+    parser.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu", "xla"])
     parser.add_argument("--dtype", default="auto", choices=["auto", "bf16", "fp16", "fp32"])
     parser.add_argument("--gpus", default="auto",
                         help="Number of GPUs to use: 'auto' (all available if > 1), 'all', '1', '2', etc. "
@@ -606,6 +610,7 @@ def main():
 
     # Distributed environment setup
     is_distributed = int(os.environ.get("WORLD_SIZE", 1)) > 1
+    is_xla = False
     if is_distributed:
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
         rank = int(os.environ.get("RANK", 0))
@@ -618,8 +623,20 @@ def main():
         local_rank = 0
         rank = 0
         world_size = 1
-        if args.device == "auto":
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if args.device == "xla":
+            try:
+                import torch_xla.core.xla_model as xm
+                device = xm.xla_device()
+                is_xla = True
+            except Exception as e:
+                raise RuntimeError(f"Requested --device xla but torch_xla failed to load: {e}")
+        elif args.device == "auto":
+            try:
+                import torch_xla.core.xla_model as xm
+                device = xm.xla_device()
+                is_xla = True
+            except Exception:
+                device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         else:
             device = torch.device(args.device)
 
@@ -698,7 +715,9 @@ def main():
         torch.cuda.manual_seed_all(args.seed + rank)
 
     if args.dtype == "auto":
-        if device.type == "cuda":
+        if is_xla or getattr(device, "type", "") == "xla":
+            dtype = torch.bfloat16
+        elif device.type == "cuda":
             # T4 (sm_75 Turing) does not have native bf16 hardware; fp16 uses high-speed tensor cores
             dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         else:
@@ -792,13 +811,20 @@ def main():
         if os.path.exists(candidate):
             state_file = candidate
         else:
-            # 1. Search for other state files on disk, newest first
-            state_candidates = [
-                os.path.join(CKPT_DIR, "cerebro_spheroid_v3_kaggle_state.pt"),
-                os.path.join(CKPT_DIR, "cerebro_spheroid_v3_colab_state.pt"),
-                os.path.join(CKPT_DIR, "cerebro_spheroid_v3full_state.pt"),
-            ]
-            all_states = [f for f in glob.glob(os.path.join(CKPT_DIR, "*_state.pt")) if os.path.isfile(f)]
+            # 1. Search for arch-matching state files on disk, newest first
+            state_candidates = []
+            if args.arch == "v4":
+                state_candidates = [
+                    os.path.join(CKPT_DIR, "cerebro_spheroid_v4_small_kaggle_state.pt"),
+                    os.path.join(CKPT_DIR, "cerebro_spheroid_v4_state_state.pt"),
+                ]
+            elif args.arch == "v3":
+                state_candidates = [
+                    os.path.join(CKPT_DIR, "cerebro_spheroid_v3_kaggle_state.pt"),
+                    os.path.join(CKPT_DIR, "cerebro_spheroid_v3_colab_state.pt"),
+                    os.path.join(CKPT_DIR, "cerebro_spheroid_v3full_state.pt"),
+                ]
+            all_states = [f for f in glob.glob(os.path.join(CKPT_DIR, f"*{args.arch}*_state.pt")) if os.path.isfile(f)]
             all_states.sort(key=os.path.getmtime, reverse=True)
             for sc in state_candidates + all_states:
                 if os.path.exists(sc):
@@ -807,21 +833,28 @@ def main():
 
             # 2. If no full state file found, look for best / latest model checkpoints
             if not state_file:
-                weight_candidates = [
-                    os.path.join(CKPT_DIR, "cerebro_spheroid_v3_kaggle_best.pt"),
-                    os.path.join(CKPT_DIR, "cerebro_spheroid_v3_colab_best.pt"),
-                    os.path.join(CKPT_DIR, "cerebro_spheroid_v3full_best.pt"),
-                    os.path.join(CKPT_DIR, "cerebro_spheroid_distill_v2_best.pt"),
-                ]
-                all_weights = [f for f in glob.glob(os.path.join(CKPT_DIR, "*.pt")) if not f.endswith("_state.pt")]
+                weight_candidates = []
+                if args.arch == "v4":
+                    weight_candidates = [
+                        os.path.join(CKPT_DIR, "cerebro_spheroid_v4_small_kaggle_best.pt"),
+                        os.path.join(CKPT_DIR, "cerebro_spheroid_v4_state_best.pt"),
+                    ]
+                elif args.arch == "v3":
+                    weight_candidates = [
+                        os.path.join(CKPT_DIR, "cerebro_spheroid_v3_kaggle_best.pt"),
+                        os.path.join(CKPT_DIR, "cerebro_spheroid_v3_colab_best.pt"),
+                        os.path.join(CKPT_DIR, "cerebro_spheroid_v3full_best.pt"),
+                        os.path.join(CKPT_DIR, "cerebro_spheroid_distill_v2_best.pt"),
+                    ]
+                all_weights = [f for f in glob.glob(os.path.join(CKPT_DIR, f"*{args.arch}*.pt")) if not f.endswith("_state.pt")]
                 all_weights.sort(key=os.path.getmtime, reverse=True)
                 for wc in weight_candidates + all_weights:
                     if os.path.exists(wc):
                         state_file = wc
                         break
 
-            # 3. If still nothing found, auto-download cerebro_spheroid_v3_colab_best.pt from Google Drive
-            if not state_file:
+            # 3. If still nothing found and v3, auto-download cerebro_spheroid_v3_colab_best.pt from Google Drive
+            if not state_file and args.arch == "v3":
                 colab_best = os.path.join(CKPT_DIR, "cerebro_spheroid_v3_colab_best.pt")
                 if rank == 0:
                     from scripts.download_checkpoints import download_drive_file, CHECKPOINTS
@@ -887,8 +920,8 @@ def main():
             find_unused_parameters=True,
         )
 
-    use_scaler = (dtype == torch.float16 and device.type == "cuda")
-    scaler = torch.amp.GradScaler("cuda", enabled=use_scaler)
+    use_scaler = (dtype == torch.float16 and getattr(device, "type", "") == "cuda")
+    scaler = torch.amp.GradScaler("cuda", enabled=use_scaler) if (torch.cuda.is_available() and use_scaler) else None
 
     step = int(payload["step"]) if payload else 0
     best = float(payload["best"]) if payload else float("inf")
@@ -970,7 +1003,10 @@ def main():
                                                   pad_token_id=pad_token_id,
                                                   targets=targets, feedback_tokens=feedback)
                         loss = criterion(logits.reshape(-1, vocab_size), targets.reshape(-1))
-                    scaler.scale(loss / accum_steps).backward()
+                    if use_scaler and scaler is not None:
+                        scaler.scale(loss / accum_steps).backward()
+                    else:
+                        (loss / accum_steps).backward()
                 step_loss_tensor = step_loss_tensor + (loss.detach() / accum_steps)
                 step_count += 1
             except torch.OutOfMemoryError:
@@ -991,11 +1027,16 @@ def main():
                 break
             continue
 
-        if use_scaler:
+        if use_scaler and scaler is not None:
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
             scaler.step(optimizer)
             scaler.update()
+        elif is_xla:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
+            import torch_xla.core.xla_model as xm
+            xm.optimizer_step(optimizer)
+            xm.mark_step()
         else:
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
             optimizer.step()
@@ -1008,15 +1049,15 @@ def main():
         if rank == 0 and (step % args.log_every == 0 or step == start_step + 1):
             train_mean = step_loss_tensor.item()
             lr_now = scheduler.get_last_lr()[0]
-            vram = torch.cuda.max_memory_allocated() / (1024 ** 2) if device.type == "cuda" else 0.0
+            vram_str = "tpu v3-8" if is_xla else (f"vram {torch.cuda.max_memory_allocated() / (1024 ** 2):5.0f} MB" if device.type == "cuda" else "cpu")
             sec_per_step = (time.time() - session_base) / max(step - start_step, 1)
             passes_per_step = args.batch_size * accum_steps * world_size * args.window
             passes_per_sec = passes_per_step / max(sec_per_step, 1e-4)
             total_consumed = sum(mixture.consumed.values()) * world_size
-            gpu_str = f" (x{world_size} gpus)" if world_size > 1 else ""
+            gpu_str = f" (x{world_size} gpus)" if world_size > 1 else (" (tpu)" if is_xla else "")
             print(f"step {step:6,d}/{args.max_steps:,} | loss {train_mean:6.4f} "
                   f"(ppl {math.exp(min(train_mean, 15)):7.1f}) | lr {lr_now:.2e} | "
-                  f"{passes_per_sec:5.1f} passes/s | vram {vram:5.0f} MB | {sec_per_step:5.2f}s/step | "
+                  f"{passes_per_sec:5.1f} passes/s | {vram_str} | {sec_per_step:5.2f}s/step | "
                   f"corpus {total_consumed:,}{gpu_str}", flush=True)
 
         # --- evaluation -------------------------------------------------------------------
@@ -1056,7 +1097,11 @@ def main():
                 if score < best - args.min_improvement:
                     best, patience = score, 0
                     raw_model = model.module if hasattr(model, "module") else model
-                    torch.save(raw_model.state_dict(), ckpt_best)
+                    if is_xla:
+                        import torch_xla.core.xla_model as xm
+                        xm.save(raw_model.state_dict(), ckpt_best)
+                    else:
+                        torch.save(raw_model.state_dict(), ckpt_best)
                     write_json(meta_path_for(ckpt_best), {
                         "kind": "best", "step": step, "arch": args.arch,
                         "select_on": args.select_on, "selected": score,
@@ -1133,7 +1178,11 @@ def main():
     elapsed += time.time() - session_start
     raw_model = model.module if hasattr(model, "module") else model
     if rank == 0:
-        torch.save(raw_model.state_dict(), ckpt_latest)
+        if is_xla:
+            import torch_xla.core.xla_model as xm
+            xm.save(raw_model.state_dict(), ckpt_latest)
+        else:
+            torch.save(raw_model.state_dict(), ckpt_latest)
         last = history[-1] if history else {}
         write_json(meta_path_for(ckpt_latest), {
             "kind": "latest", "step": step, "arch": args.arch,
