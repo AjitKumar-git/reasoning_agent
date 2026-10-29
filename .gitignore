@@ -36,3 +36,9 @@ ENV/
 .DS_Store
 .idea/
 .vscode/
+
+# Grants, applications, and private proposals
+TRC_APPLICATION.md
+*application*
+*Application*
+private/
