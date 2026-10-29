@@ -1,15 +1,15 @@
 # Agent Work State & Activity Tracker
 
-> **Status**: 🟡 `IN_PROGRESS` | **Last Updated**: `2026-10-29T11:53:39.226255+05:30` | **Session**: `d59f7c6a-8bf9-4b08-8476-c661733241be`
+> **Status**: 🟡 `IN_PROGRESS` | **Last Updated**: `2026-10-29T14:40:36.647389+05:30` | **Session**: `d59f7c6a-8bf9-4b08-8476-c661733241be`
 
 ## Current / Active Objective
-**Goal**: clean old code, save space
+**Goal**: train for 1000 steps v4 small on kaggle
 
 - **Phase**: `executing`
-- **Current Task**: Executed run_command: Verify clean working tree
+- **Current Task**: Executed run_command: Check git status
 
 ## Summary of Completed Work
-A comprehensive purge of obsolete files, dead checkpoints, duplicate zip packages, and deprecated code wrappers was performed, reclaiming **12.0 GB of disk space** (available disk space on `/home` increased from **70 GB $\to$ 82 GB**).
+The 1,000-step training job for **CerebroSpheroid V4-Small** has been configured, committed, and pushed directly to your Kaggle kernel:
 
 ## Modified Files
 - [`../../../../.gemini/antigravity/brain/17ceea22-a311-46b7-a359-af8c1600eb0a/hardened_deliberation_and_autoregression_plan.md`](../../../../.gemini/antigravity/brain/17ceea22-a311-46b7-a359-af8c1600eb0a/hardened_deliberation_and_autoregression_plan.md)
@@ -61,20 +61,22 @@ A comprehensive purge of obsolete files, dead checkpoints, duplicate zip package
 - [`training/probe_mla_verification.py`](training/probe_mla_verification.py)
 - [`training/probe_mtp_verification.py`](training/probe_mtp_verification.py)
 - [`.agents/WORK_STATE.md`](.agents/WORK_STATE.md)
+- [`training/test_v4_state_best.py`](training/test_v4_state_best.py)
+- [`scripts/check_kaggle_run.py`](scripts/check_kaggle_run.py)
 
 ## Recent Actions (Last 10)
 | Time | Tool | Details |
 | :--- | :--- | :--- |
-| `11:53:39` | `run_command` | Verify clean working tree |
-| `11:53:32` | `run_command` | Commit and push WORK_STATE.md |
-| `11:53:20` | `run_command` | Check diff of WORK_STATE.md |
-| `11:53:11` | `run_command` | View recent git commits |
-| `11:53:01` | `run_command` | Check git status |
-| `11:47:49` | `edit_file` | edit_file |
-| `11:47:39` | `read_file` | read_file |
-| `11:47:32` | `edit_file` | edit_file |
-| `11:47:21` | `run_command` | Check git status |
-| `11:47:16` | `run_command` | Commit and push root cleanup |
+| `14:40:36` | `run_command` | Check git status |
+| `14:40:29` | `edit_file` | edit_file |
+| `14:40:01` | `read_file` | read_file |
+| `14:39:55` | `read_file` | read_file |
+| `14:39:47` | `edit_file` | edit_file |
+| `14:39:40` | `read_file` | read_file |
+| `14:39:34` | `read_file` | read_file |
+| `14:39:27` | `run_command` | Check diff on spheroid_optimizer |
+| `14:39:22` | `run_command` | Check git status |
+| `14:39:15` | `run_command` | Check training cell in notebook |
 
 ---
 *This file is automatically maintained by `auto-work-tracker`. Other agents can parse `.agents/work_state.json` or inspect this file directly to resume or review progress.*

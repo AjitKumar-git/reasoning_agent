@@ -133,39 +133,25 @@ class SpheroidOptimizer(Optimizer):
     """
     SpheroidOptimizer: Specialized optimizer for the CerebroSpheroid reasoning manifold.
     
-    Parameters:
-    -----------
-    params: iterable of parameters or param_groups
-    lr: float
-        Base learning rate for matrix/manifold parameters.
-    lr_1d: Optional[float]
-        Learning rate for 1D scalar parameters, pacemakers, and normalization weights.
-        Defaults to 0.2 * lr if not specified.
-    lr_vocab: Optional[float]
-        Learning rate for vocabulary embedding and head parameters (defaults to lr).
-    momentum: float
-        Momentum factor (beta1). Defaults to 0.95.
-    weight_decay: float
-        Decoupled weight decay for matrix parameters. Defaults to 0.01.
-    ns_steps: int
-        Number of quintic Newton-Schulz iterations. Defaults to 3 (ultra-fast, error < 1.7%).
-    power_steps: int
-        Number of persistent power iterations for contractive spectral clamping. Defaults to 2 (<1 ms).
-    spectral_clamp: Optional[float]
-        Maximum allowed spectral norm for recurrent operators. If None, disabled.
-        Recommended: 1.0 for contractive stability.
-    half_precision_moments: bool
-        If True, stores momentum buffers in float16/bfloat16 to reduce memory footprint.
-        Defaults to False (fp32).
-    orthogonal_embeddings: bool
-        If True, runs Newton-Schulz on large token embeddings/unembeddings. Defaults to False
-        (uses Row-Wise RMS momentum, saving ~45ms per step and preventing vocabulary distortion).
+    Architecture:
+    -------------
+    1. Manifold Matrix Operators (rank >= 2):
+       Optimized with orthogonal polar Newton-Schulz updates (zeroth power iteration, Muon-style).
+       Scales updates by aspect ratio max(1.0, sqrt(M/N)) and uses decoupled Riemannian weight decay.
+       Allocates only 1 momentum buffer (half the states of AdamW).
+    2. Recurrent Manifold Core (intra_shell, reentrant_field, shortcut_tracts):
+       Orthogonal polar updates with persistent 2-step power iteration contractive spectral clamp (sigma_max <= 1.0).
+    3. Large Vocabulary Tables & Output Heads:
+       Optimized with AdamW (maintaining first and second moments). Handles sparse token updates,
+       frequency skew, and gracefully decays unvisited tokens.
+    4. 1D Parameters (Scalars, Pacemakers, Biases, RMSNorm weights):
+       Optimized with AdamW (zero weight decay) to handle heterogeneous parameter scales stably.
     """
 
     def __init__(
         self,
         params: Union[Iterable[torch.Tensor], Iterable[Dict]],
-        lr: float = 0.005,
+        lr: float = 0.002,
         lr_1d: Optional[float] = None,
         lr_vocab: Optional[float] = None,
         momentum: float = 0.95,
@@ -186,7 +172,7 @@ class SpheroidOptimizer(Optimizer):
         if lr_1d is None:
             lr_1d = 0.2 * lr
         if lr_vocab is None:
-            lr_vocab = lr
+            lr_vocab = min(lr, 0.0006)
 
         defaults = dict(
             lr=lr,
@@ -210,16 +196,16 @@ class SpheroidOptimizer(Optimizer):
                 loss = closure()
 
         for group in self.param_groups:
+            # lr is dynamically updated by PyTorch learning rate schedulers (e.g. LambdaLR)
             lr = group["lr"]
-            lr_1d = group.get("lr_1d", 0.2 * lr)
-            lr_vocab = group.get("lr_vocab", lr)
-            beta = group["momentum"]
-            wd = group["weight_decay"]
+            beta = group.get("momentum", 0.95)
+            wd = group.get("weight_decay", 0.01)
             ns_steps = group.get("ns_steps", 3)
             power_steps = group.get("power_steps", 2)
             spectral_clamp = group.get("spectral_clamp", None)
             is_recurrent = group.get("is_recurrent", False)
             is_vocab = group.get("is_vocab", False)
+            is_adamw_group = group.get("is_adamw", False)
             orthogonal_embeddings = group.get("orthogonal_embeddings", False)
             use_half = group.get("half_precision_moments", False)
 
@@ -231,47 +217,67 @@ class SpheroidOptimizer(Optimizer):
                 if grad.is_sparse:
                     raise RuntimeError("SpheroidOptimizer does not support sparse gradients.")
 
-                state = self.state[p]
-                if len(state) == 0:
-                    state["step"] = 0
-                    m_dtype = (torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16) if (use_half and p.is_cuda) else p.dtype
-                    state["momentum"] = torch.zeros_like(p, dtype=m_dtype)
-
-                state["step"] += 1
-                buf = state["momentum"]
-
-                # Update first moment: M_t = beta * M_{t-1} + (1 - beta) * G_t
-                if buf.dtype != p.dtype:
-                    buf_f = buf.to(p.dtype)
-                    buf_f.mul_(beta).add_(grad, alpha=1.0 - beta)
-                    buf.copy_(buf_f)
-                    m = buf_f
-                else:
-                    buf.mul_(beta).add_(grad, alpha=1.0 - beta)
-                    m = buf
-
-                # -----------------------------------------------------------------
-                # Case 1: Vocabulary Embeddings & Heads (Token-lookup tables)
-                # -----------------------------------------------------------------
-                # Large lookup matrices (e.g. 32000 x D) are updated with ultra-fast
-                # Row-Wise RMS momentum, preserving frequency scaling and saving ~45ms.
-                is_large_token_table = (not orthogonal_embeddings) and p.ndim == 2 and (
-                    is_vocab or p.shape[0] >= 2048 or p.shape[0] > 8 * p.shape[1]
+                is_adamw = (
+                    is_adamw_group
+                    or is_vocab
+                    or p.ndim <= 1
+                    or ((not orthogonal_embeddings) and p.ndim == 2 and (p.shape[0] >= 2048 or p.shape[0] > 8 * p.shape[1]))
                 )
 
-                if is_large_token_table:
-                    cur_lr = lr_vocab
-                    if wd > 0.0:
-                        p.mul_(1.0 - cur_lr * wd)
-                    # Row-wise RMS normalization scales each token embedding vector independently
-                    rms = m.pow(2).mean(dim=-1, keepdim=True).sqrt().clamp_min(1e-7)
-                    step_dir = m / rms
-                    p.add_(step_dir.to(p.dtype), alpha=-cur_lr)
+                state = self.state[p]
 
                 # -----------------------------------------------------------------
-                # Case 2: Manifold Matrix Operators (rank >= 2)
+                # Case 1: AdamW (Embeddings, Projection Heads, Scalars, Pacemakers)
                 # -----------------------------------------------------------------
-                elif p.ndim >= 2:
+                if is_adamw:
+                    if len(state) == 0:
+                        state["step"] = 0
+                        state["exp_avg"] = torch.zeros_like(p)
+                        state["exp_avg_sq"] = torch.zeros_like(p)
+
+                    state["step"] += 1
+                    exp_avg = state["exp_avg"]
+                    exp_avg_sq = state["exp_avg_sq"]
+                    step = state["step"]
+
+                    # Decoupled AdamW weight decay
+                    if wd > 0.0:
+                        p.mul_(1.0 - lr * wd)
+
+                    beta1, beta2 = 0.9, 0.95
+                    eps = 1e-8
+
+                    exp_avg.mul_(beta1).add_(grad, alpha=1.0 - beta1)
+                    exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1.0 - beta2)
+
+                    bias_correction1 = 1.0 - beta1 ** step
+                    bias_correction2 = 1.0 - beta2 ** step
+                    step_size = lr / bias_correction1
+                    denom = (exp_avg_sq.sqrt() / math.sqrt(bias_correction2)).add_(eps)
+                    p.addcdiv_(exp_avg, denom, value=-step_size)
+
+                # -----------------------------------------------------------------
+                # Case 2: Manifold Matrix Operators (rank >= 2) via Polar Newton-Schulz
+                # -----------------------------------------------------------------
+                else:
+                    if len(state) == 0:
+                        state["step"] = 0
+                        m_dtype = (torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16) if (use_half and p.is_cuda) else p.dtype
+                        state["momentum"] = torch.zeros_like(p, dtype=m_dtype)
+
+                    state["step"] += 1
+                    buf = state["momentum"]
+
+                    # Update first moment: M_t = beta * M_{t-1} + (1 - beta) * G_t
+                    if buf.dtype != p.dtype:
+                        buf_f = buf.to(p.dtype)
+                        buf_f.mul_(beta).add_(grad, alpha=1.0 - beta)
+                        buf.copy_(buf_f)
+                        m = buf_f
+                    else:
+                        buf.mul_(beta).add_(grad, alpha=1.0 - beta)
+                        m = buf
+
                     # Decoupled Riemannian-style weight decay
                     if wd > 0.0:
                         p.mul_(1.0 - lr * wd)
@@ -299,24 +305,12 @@ class SpheroidOptimizer(Optimizer):
                         state["power_v"] = v_next
                         p.copy_(clamped)
 
-                # -----------------------------------------------------------------
-                # Case 3: 1D Parameters (Scalars, Pacemakers, Biases, RMSNorm)
-                # -----------------------------------------------------------------
-                else:
-                    if wd > 0.0:
-                        p.mul_(1.0 - lr_1d * wd)
-
-                    # Scale-invariant RMS normalized momentum
-                    rms = m.pow(2).mean().sqrt().clamp_min(1e-7)
-                    step_dir = m / rms
-                    p.add_(step_dir.to(p.dtype), alpha=-lr_1d)
-
         return loss
 
 
 def create_spheroid_param_groups(
     model: torch.nn.Module,
-    lr: float = 0.005,
+    lr: float = 0.002,
     lr_1d: Optional[float] = None,
     lr_vocab: Optional[float] = None,
     weight_decay: float = 0.01,
@@ -326,16 +320,16 @@ def create_spheroid_param_groups(
 ) -> List[Dict]:
     """
     Automatically classifies model parameters into tailored groups for Spheroid models:
-    1. 'recurrent_manifold': intra_shell, reentrant_field, shortcut_tracts (Orthogonal + Persistent Spectral Clamp)
-    2. 'embedding_head': vocabulary embeddings & projection head (Row-Wise RMS Momentum, <0.5 ms)
-    3. 'manifold_matrices': 2D/3D projections, dense layers, attention weights (Orthogonal Polar NS-3)
-    4. 'wavelets': 1D conv filters in temporal sensory encoder
-    5. 'scalar_gates': log_write, log_leak, inertia_gate, rhythm_freq, pacemakers, norms, biases (RMS-normalized)
+    1. 'recurrent_manifold': intra_shell, reentrant_field, shortcut_tracts (Orthogonal Polar + Persistent Spectral Clamp)
+    2. 'manifold_matrices': 2D/3D projections, dense layers, attention weights (Orthogonal Polar NS-3)
+    3. 'wavelets': 1D conv filters in temporal sensory encoder (Orthogonal Polar NS-3)
+    4. 'embedding_head': vocabulary embeddings & projection head (AdamW, handles sparse token lookups cleanly)
+    5. 'scalar_gates': log_write, log_leak, inertia_gate, rhythm_freq, pacemakers, norms, biases (AdamW, 0 wd)
     """
     if lr_1d is None:
         lr_1d = 0.2 * lr
     if lr_vocab is None:
-        lr_vocab = lr
+        lr_vocab = min(lr, 0.0006)
 
     recurrent_params = []
     vocab_params = []
@@ -374,18 +368,8 @@ def create_spheroid_param_groups(
             "weight_decay": weight_decay,
             "is_recurrent": True,
             "is_vocab": False,
+            "is_adamw": False,
             "spectral_clamp": spectral_clamp,
-            "half_precision_moments": half_precision_moments,
-        })
-    if vocab_params:
-        groups.append({
-            "name": "embedding_head",
-            "params": vocab_params,
-            "lr": lr_vocab,
-            "weight_decay": weight_decay,
-            "is_recurrent": False,
-            "is_vocab": True,
-            "spectral_clamp": None,
             "half_precision_moments": half_precision_moments,
         })
     if matrix_params:
@@ -396,6 +380,7 @@ def create_spheroid_param_groups(
             "weight_decay": weight_decay,
             "is_recurrent": False,
             "is_vocab": False,
+            "is_adamw": False,
             "spectral_clamp": None,
             "half_precision_moments": half_precision_moments,
         })
@@ -407,8 +392,21 @@ def create_spheroid_param_groups(
             "weight_decay": weight_decay,
             "is_recurrent": False,
             "is_vocab": False,
+            "is_adamw": False,
             "spectral_clamp": None,
             "half_precision_moments": half_precision_moments,
+        })
+    if vocab_params:
+        groups.append({
+            "name": "embedding_head",
+            "params": vocab_params,
+            "lr": lr_vocab,
+            "weight_decay": weight_decay,
+            "is_recurrent": False,
+            "is_vocab": True,
+            "is_adamw": True,
+            "spectral_clamp": None,
+            "half_precision_moments": False,
         })
     if scalar_params:
         groups.append({
@@ -418,6 +416,7 @@ def create_spheroid_param_groups(
             "weight_decay": 0.0,  # No weight decay on scalar gates and pacemakers
             "is_recurrent": False,
             "is_vocab": False,
+            "is_adamw": True,
             "spectral_clamp": None,
             "half_precision_moments": False,
         })
@@ -427,7 +426,7 @@ def create_spheroid_param_groups(
 
 def build_spheroid_optimizer(
     model: torch.nn.Module,
-    lr: float = 0.005,
+    lr: float = 0.002,
     lr_1d: Optional[float] = None,
     lr_vocab: Optional[float] = None,
     momentum: float = 0.95,

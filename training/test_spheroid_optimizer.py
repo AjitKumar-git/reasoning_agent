@@ -94,7 +94,7 @@ def test_memory_footprint():
     print("[4/7] Testing Optimizer State Memory Footprint...")
     model = nn.Sequential(
         nn.Linear(128, 128, bias=False),
-        nn.Linear(128, 64, bias=True),
+        nn.Linear(128, 64, bias=False),
     )
     opt = SpheroidOptimizer(model.parameters(), lr=0.01)
 
@@ -104,13 +104,13 @@ def test_memory_footprint():
     loss.backward()
     opt.step()
 
-    # Verify that each parameter has ONLY 'step' and 'momentum' in state (NO second moment v)
+    # Verify that manifold matrix parameters allocate ONLY 1 momentum buffer (NO second moment)
     for p in model.parameters():
         state = opt.state[p]
-        assert "momentum" in state, "Momentum buffer missing"
-        assert "exp_avg_sq" not in state, "Should NOT allocate second moment (exp_avg_sq)!"
-        assert len(state) == 2, f"State should only contain 'step' and 'momentum', got keys: {list(state.keys())}"
-    print("      OK: SpheroidOptimizer allocates exactly 1 state buffer (momentum), 50% state savings over AdamW.")
+        assert "momentum" in state, "Momentum buffer missing for manifold matrix"
+        assert "exp_avg_sq" not in state, "Manifold matrices should NOT allocate second moment (exp_avg_sq)!"
+        assert len(state) == 2, f"Matrix state should only contain 'step' and 'momentum', got keys: {list(state.keys())}"
+    print("      OK: Manifold matrix parameters allocate exactly 1 state buffer (momentum), 50% state savings over AdamW.")
 
 
 def test_checkpoint_roundtrip():
@@ -138,7 +138,9 @@ def test_checkpoint_roundtrip():
     # Assert exact match of states
     for p, p_new in zip(model.parameters(), model.parameters()):
         assert opt.state[p]["step"] == opt_new.state[p_new]["step"]
-        assert torch.allclose(opt.state[p]["momentum"], opt_new.state[p_new]["momentum"])
+        for k in opt.state[p]:
+            if torch.is_tensor(opt.state[p][k]):
+                assert torch.allclose(opt.state[p][k], opt_new.state[p_new][k])
     print("      OK: Optimizer state_dict roundtrip is bitwise exact.")
 
 

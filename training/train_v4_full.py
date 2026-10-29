@@ -681,7 +681,7 @@ def main():
     rank_print("Active training mix:", ", ".join(f"{n}={w:.2f}" for n, w in args.mix))
     if args.lr is None:
         if args.optimizer == "spheroid":
-            args.lr = 0.005
+            args.lr = 0.002
         elif args.optimizer == "sgd":
             args.lr = 0.015
         else:

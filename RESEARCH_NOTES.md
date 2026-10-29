@@ -1829,6 +1829,82 @@ To definitively verify whether this 10-hour trained model relies on the volumetr
 2. **OpenHermes Instruction Following**:
    - Generates grammatical English text and constructs Python function stubs (`def ...:`) inside markdown code blocks.
 
+---
+
+## 25. Diagnosis and Resolution of Early Training Divergence (Hybrid SpheroidOptimizer)
+
+### 25.1 The Divergence Symptom
+During early multi-GPU training on Kaggle Dual-T4 with `v4_small` (127M parameters, 32,000 Llama BPE vocabulary), the training loss exhibited immediate divergence across the initial 20 warmup steps:
+```
+step   1/1,000 | loss 10.4917 (ppl 36,014.5) | lr 1.00e-04 | 143.6 passes/s | vram 1364 MB
+step  10/1,000 | loss 12.9998 (ppl 442,326.9) | lr 5.50e-04 | 149.1 passes/s | vram 1607 MB
+step  20/1,000 | loss 14.4227 (ppl 1,835,330) | lr 1.05e-03 | 148.6 passes/s | vram 1607 MB
+```
+For a 32,000-token vocabulary, uniform random guessing corresponds to cross-entropy:
+$$\mathcal{L}_{\text{random}} = \ln(32000) \approx 10.37$$
+At step 1, the model initialized at random expectation ($\mathcal{L} = 10.49$). However, instead of decreasing, the loss monotonically exploded to $14.42$ by step 20 (perplexity surging from 36,000 to over 1.8 million), directly tracking the ascending warmup learning rate.
+
+---
+
+### 25.2 Mathematical Root-Cause Analysis
+
+Detailed mathematical profiling revealed three compounding structural defects:
+
+1. **The Row-Wise RMS Momentum Decay Cancellation Bug on Sparse Token Tables**:
+   In the initial acceleration pass, vocabulary lookup matrices were normalized row-wise by RMS:
+   $$\mathbf{u}_i = \frac{\mathbf{m}_i}{\text{RMS}(\mathbf{m}_i)}$$
+   In token-lookup tables, out of 32,000 tokens, only $\sim 80$ distinct tokens appear in any given micro-batch. For the remaining 31,920 unvisited tokens, gradient is zero ($\mathbf{g}_i = \mathbf{0}$).
+   When an unvisited token decays under exponential moving average:
+   $$\mathbf{m}_{i, t} = \beta \mathbf{m}_{i, t-1}$$
+   Evaluating the row-wise RMS update:
+   $$\mathbf{u}_{i, t} = \frac{\beta \mathbf{m}_{i, t-1}}{\sqrt{\frac{1}{D}\sum_j (\beta m_{i,j,t-1})^2}} = \frac{\beta \mathbf{m}_{i, t-1}}{\beta \text{RMS}(\mathbf{m}_{i, t-1})} = \frac{\mathbf{m}_{i, t-1}}{\text{RMS}(\mathbf{m}_{i, t-1})} = \mathbf{u}_{i, t-1}$$
+   **The momentum decay factor $\beta$ cancelled out in the ratio.** Every token touched even once in training continued to receive a full unit-RMS update vector ($\|\mathbf{u}_i\|_2 = \sqrt{D} \approx 25.3$) at *every subsequent step*, even with zero gradient. Within 20 steps, thousands of token embeddings drifted into unconstrained random trajectories, blowing out projection logits.
+
+2. **Learning Rate Scheduler Disconnect**:
+   PyTorch learning rate schedulers (`LambdaLR`, `CosineAnnealingLR`) scale `group["lr"]` at every step. In the prior implementation, vocabulary and scalar updates queried `group.get("lr_vocab", lr)` and `group.get("lr_1d", 0.2 * lr)`, which returned the static unscaled floats initialized in `defaults` ($0.005$ and $0.001$). The warmup schedule was completely bypassed for vocabulary and 1D parameters, subjecting initialized weights to full-magnitude steps on step 1.
+
+3. **Polar Matrix Learning Rate Calibration**:
+   For hidden matrix operators using quintic Newton-Schulz zeroth-power updates ($\mathbf{O} = \mathbf{U} \mathbf{V}^T$, singular values $\approx 1.0$), an update step $\eta \mathbf{O}$ with $\eta = 0.005$ is excessively large for $D=640$ without second-moment damping. The optimal polar learning rate in Muon-class optimizers is $\eta \in [0.0015, 0.0025]$.
+
+---
+
+### 25.3 The Solution: Decoupled Riemannian-AdamW Hybrid Architecture
+
+We refactored `SpheroidOptimizer` into a hybrid manifold optimizer combining Riemannian polar updates with AdamW:
+
+1. **Internal Manifold Hidden Matrices** ($\mathbf{W} \in \mathbb{R}^{D \times D}$, attention QKV, FFN, 16 concentric shells, reentrant fields):
+   - **Update**: Vectorized quintic Newton-Schulz polar updates (`ns_steps = 3`, BLAS fused `addmm` / `baddbmm`).
+   - **Aspect Ratio Scaling**: $\max(1.0, \sqrt{M / N})$.
+   - **Contractive Guard**: Persistent 2-step power iteration spectral clamping ($\sigma_{\max} \le 1.0$) on recurrent manifold operators.
+   - **Memory**: Exactly 1 momentum buffer (12 B/param), preserving the 50% state savings over AdamW.
+2. **Vocabulary Lookup Tables & Output Projection Heads** ($\mathbf{W} \in \mathbb{R}^{V \times D}$):
+   - **Update**: Full AdamW with first and second moments ($\mathbf{m}_t, \mathbf{v}_t$). Handles sparse token lookups, power-law frequency distributions, and cleanly decays unvisited tokens.
+   - **Learning Rate**: `lr_vocab = min(lr, 0.0006)` (default `0.0004` at $\eta = 0.002$).
+3. **1D Parameters** (Biases, RMSNorm scales, pacemakers, gates: `log_write`, `log_leak`, `inertia_gate`, `rhythm_freq`):
+   - **Update**: Full AdamW with zero weight decay.
+   - **Learning Rate**: `lr_1d = 0.2 * lr` (default `0.0004` at $\eta = 0.002$).
+4. **Unified Scheduler Compatibility**:
+   - Each parameter group explicitly registers its own base `lr` (`lr`, `lr_vocab`, `lr_1d`).
+   - `SpheroidOptimizer.step()` consumes `group["lr"]` directly, ensuring `LambdaLR` warms up and anneals all parameter groups synchronously.
+
+---
+
+### 25.4 Empirical Verification
+
+1. **Unit Test Suite (`training/test_spheroid_optimizer.py`)**:
+   - All 7 tests passed with zero regressions.
+   - Manifold end-to-end rollout loss decreased monotonically: `[11.1602, 9.8306, 9.2607, 8.4790, 8.0462]`.
+2. **V4 Specification & Acceptance Suite (`training/test_v4_architecture.py`)**:
+   - All 8 tests passed, confirming bitwise state serialization, dynamic shell zoning, and causal ingestion order-sensitivity.
+3. **Random-Entropy Stability Probe**:
+   - Tested 10 steps on `v4_small` with 32,000 vocabulary:
+     `step 0: 10.6585 | step 1: 10.5148 | step 2: 10.5180 | step 5: 10.6570 | step 9: 10.5856`.
+   - Complete bounded stability around theoretical random expectation ($\approx 10.37$ - $10.65$) with zero divergence.
+4. **Default Tuning**:
+   - Updated default `--lr` in `train_v4_full.py` to `0.002` for SpheroidOptimizer.
+   - Explicitly configured `--lr 0.002` in `training/remote/CerebroSpheroid_V4_Kaggle.ipynb`.
+
+
 
 
 
