@@ -121,7 +121,11 @@ def main(args=None):
             try:
                 from src.cloud_sync import check_remote_manifest, push_checkpoint_async
                 m_info = check_remote_manifest(args.cloud_url, args.cloud_token)
-                rem_step = m_info.get("manifest", {}).get("latest", {}).get("step", 0)
+                rem_m = m_info.get("manifest", {})
+                if not isinstance(rem_m, dict):
+                    rem_m = {}
+                rem_latest = rem_m.get("latest", {})
+                rem_step = rem_latest.get("step", 0) if isinstance(rem_latest, dict) else 0
                 if max_step > rem_step:
                     print(f"🌐 [cloud_sync] Initial sync: Uploading restored Step {max_step:,} to bioflo.in asynchronously...")
                     push_checkpoint_async(

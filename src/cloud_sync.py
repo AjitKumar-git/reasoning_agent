@@ -251,8 +251,10 @@ def auto_sync_checkpoints(
     os.makedirs(local_dir, exist_ok=True)
     manifest_info = check_remote_manifest(url, token)
     remote_manifest = manifest_info.get("manifest", {})
-    remote_latest = remote_manifest.get("latest", {})
-    remote_step = remote_latest.get("step", 0)
+    if not isinstance(remote_manifest, dict):
+        remote_manifest = {}
+    remote_latest = remote_manifest.get("latest", {}) if isinstance(remote_manifest, dict) else {}
+    remote_step = remote_latest.get("step", 0) if isinstance(remote_latest, dict) else 0
 
     # Inspect local checkpoint directory
     local_latest_step = -1

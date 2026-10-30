@@ -58,7 +58,10 @@ $action = isset($_REQUEST['action']) ? $_REQUEST['action'] : 'status';
 if ($action === 'status') {
     header('Content-Type: application/json');
     $manifest_file = $storage_dir . '/manifest.json';
-    $manifest = file_exists($manifest_file) ? json_decode(file_get_contents($manifest_file), true) : [];
+    $manifest = (file_exists($manifest_file) && filesize($manifest_file) > 2) ? json_decode(file_get_contents($manifest_file), true) : null;
+    if (!is_array($manifest) || empty($manifest)) {
+        $manifest = new stdClass();
+    }
 
     $latest_exists = file_exists($storage_dir . '/latest.pt');
     $best_exists = file_exists($storage_dir . '/best.pt');
