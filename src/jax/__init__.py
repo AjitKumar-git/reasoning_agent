@@ -33,6 +33,13 @@ from .checkpoint import (
     AsyncCheckpointManager,
 )
 
+# Elastic Sliding Context Window Engine
+from ..elastic_window import (
+    get_default_elastic_buckets,
+    select_best_bucket,
+    ElasticBucketBatcher,
+)
+
 # V3 Legacy Architecture
 from .model import (
     ModelConfig,
@@ -66,11 +73,14 @@ __all__ = [
     "is_manifold_operator",
     "init_spheroid_opt_state",
     "build_train_step_spheroid",
-    # Checkpoint
+    # Checkpoint & Elastic Window
     "save_jax_to_torch_pt",
     "load_torch_pt_to_jax",
     "discover_latest_checkpoint",
     "AsyncCheckpointManager",
+    "get_default_elastic_buckets",
+    "select_best_bucket",
+    "ElasticBucketBatcher",
     # V3
     "ModelConfig",
     "CerebroSpheroidJAX",

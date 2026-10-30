@@ -499,6 +499,10 @@ def main():
                         help="Answers longer than this are truncated for storage, not scored in full")
     parser.add_argument("--window", type=int, default=64,
                         help="Scored answer tokens per record. Fixed step cost; raise if VRAM allows")
+    parser.add_argument("--elastic_window", action="store_true",
+                        help="Enable dynamic complementary sliding context window (balances prompt vs response)")
+    parser.add_argument("--total_window", type=int, default=1024,
+                        help="Total sequence budget (prompt + response) when --elastic_window is active")
     parser.add_argument("--lm_holdout_every", type=int, default=50,
                         help="Hold out every Nth parquet row group of OpenHermes/LMSYS for eval")
     # optimisation
@@ -1025,6 +1029,22 @@ def main():
 
     criterion = nn.CrossEntropyLoss(ignore_index=-100)
     vocab_size = tokenizer.vocab_size
+
+    elastic_batcher = None
+    if args.elastic_window:
+        from src.elastic_window import ElasticBucketBatcher
+        elastic_batcher = ElasticBucketBatcher(
+            tokenizer=tokenizer,
+            data_iterator=mixture,
+            batch_size=args.batch_size,
+            total_window=args.total_window,
+            framework="torch",
+            target_pad_id=-100,
+            return_feedback=True,
+        )
+        rank_print(f"  Elastic context window active: total_window={args.total_window} "
+                   f"across {len(elastic_batcher.buckets)} complementary buckets")
+
     session_start = time.time()
     session_base = session_start
     start_step = step
@@ -1046,15 +1066,19 @@ def main():
         oom = False
         accum_steps = args.grad_accum
         for accum_idx in range(accum_steps):
-            records = []
-            for _ in range(args.batch_size):
-                record = mixture.next()
-                records.append(record)
-            built = build_batch(tokenizer, records, args.window, call_rng,
-                                args.max_prompt_len, args.max_answer_tokens, pad_token_id)
-            if built is None:
-                continue
-            prompts, targets, feedback = (t.to(device) for t in built)
+            if elastic_batcher is not None:
+                _, _, prompts, targets, feedback = elastic_batcher.next_batch()
+                prompts, targets, feedback = prompts.to(device), targets.to(device), feedback.to(device)
+            else:
+                records = []
+                for _ in range(args.batch_size):
+                    record = mixture.next()
+                    records.append(record)
+                built = build_batch(tokenizer, records, args.window, call_rng,
+                                    args.max_prompt_len, args.max_answer_tokens, pad_token_id)
+                if built is None:
+                    continue
+                prompts, targets, feedback = (t.to(device) for t in built)
             try:
                 sync_ctx = model.no_sync() if (is_distributed and accum_idx < accum_steps - 1 and hasattr(model, "no_sync")) else contextlib.nullcontext()
                 with sync_ctx:

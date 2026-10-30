@@ -41,8 +41,10 @@ def parse_args():
     parser = argparse.ArgumentParser(description="CerebroSpheroid V4 JAX High-Throughput Trainer")
     parser.add_argument("--steps", type=int, default=40000, help="Total target steps (40k = 1 full epoch)")
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size per TPU device")
-    parser.add_argument("--prompt_len", type=int, default=256, help="Prompt context length")
-    parser.add_argument("--target_len", type=int, default=512, help="Deliberated target rollout length")
+    parser.add_argument("--total_window", type=int, default=1024, help="Total sequence budget for elastic sliding window")
+    parser.add_argument("--prompt_len", type=int, default=256, help="Prompt context length (used when --elastic_window is disabled)")
+    parser.add_argument("--target_len", type=int, default=768, help="Deliberated target rollout length (used when --elastic_window is disabled)")
+    parser.add_argument("--elastic_window", action="store_true", default=True, help="Enable elastic sliding context window")
     parser.add_argument("--lr", type=float, default=2.0e-3, help="Peak SpheroidOptimizer learning rate")
     parser.add_argument("--min_lr", type=float, default=1.0e-4, help="Final annealed learning rate")
     parser.add_argument("--preset", type=str, default="small", choices=["small", "wide"])
@@ -102,34 +104,27 @@ def main():
     train_step = build_train_step_spheroid(config, buffers, pad_id=pad_id, weight_decay=0.01)
     ckpt_mgr = AsyncCheckpointManager(target_dir=args.ckpt_dir, local_scratch_dir=args.scratch_dir)
 
-    # 5. Data Stream Generator (OpenHermes-2.5)
+    # 5. Data Stream Generator (OpenHermes-2.5) with Elastic Sliding Buckets
     from datasets import load_dataset
+    from src.elastic_window import ElasticBucketBatcher, get_default_elastic_buckets
+
     print("\n📦 Initializing streaming reasoning data (teknium/OpenHermes-2.5)...")
     dataset = load_dataset("teknium/OpenHermes-2.5", split="train", streaming=True)
     data_iter = iter(dataset)
 
-    def get_batch():
-        prompts, targets = [], []
-        while len(prompts) < args.batch_size:
-            try:
-                row = next(data_iter)
-            except StopIteration:
-                break
-            convs = row.get("conversations", [])
-            q_txt, r_txt = "", ""
-            for turn in convs:
-                if turn.get("from") == "human" and not q_txt:
-                    q_txt = turn.get("value", "")
-                elif turn.get("from") == "gpt" and not r_txt:
-                    r_txt = turn.get("value", "")
-            if not q_txt or not r_txt:
-                continue
-
-            q_tok = tokenizer.encode(q_txt, max_length=args.prompt_len, truncation=True, padding="max_length")
-            r_tok = tokenizer.encode(r_txt, max_length=args.target_len, truncation=True, padding="max_length")
-            prompts.append(q_tok)
-            targets.append(r_tok)
-        return jnp.array(prompts, dtype=jnp.int32), jnp.array(targets, dtype=jnp.int32)
+    if args.elastic_window:
+        buckets = get_default_elastic_buckets(args.total_window)
+        print(f"🌊 Elastic Sliding Context Window Active (Budget: {args.total_window} tokens):")
+        for idx, (b_name, bp, bt) in enumerate(buckets):
+            print(f"   Bucket {idx}: {b_name:<18} (Prompt: {bp:4d} tok -> Target: {bt:4d} tok)")
+        batcher = ElasticBucketBatcher(
+            tokenizer, data_iter, batch_size=args.batch_size, total_window=args.total_window, buckets=buckets, framework="jax"
+        )
+    else:
+        buckets = [("static", args.prompt_len, args.target_len)]
+        batcher = ElasticBucketBatcher(
+            tokenizer, data_iter, batch_size=args.batch_size, total_window=args.prompt_len + args.target_len, buckets=buckets, framework="jax"
+        )
 
     # 6. Training Loop with Smooth Warmup and SpheroidOptimizer Updates
     best_ema_loss = float("inf")
@@ -147,7 +142,7 @@ def main():
     try:
         for step in range(start_step, args.steps + 1):
             current_step = step
-            q_batch, r_batch = get_batch()
+            b_idx, b_name, q_batch, r_batch = batcher.next_batch()
 
             # Schedule
             step_offset = step - start_step
@@ -171,10 +166,11 @@ def main():
             if step % 25 == 0 or step == start_step:
                 ppl = math.exp(min(loss_val, 15.0))
                 ema_ppl = math.exp(min(ema_loss, 15.0))
-                tok_s = (args.batch_size * (args.prompt_len + args.target_len)) / max(dt, 1e-4)
+                seq_len = q_batch.shape[1] + r_batch.shape[1]
+                tok_s = (args.batch_size * seq_len) / max(dt, 1e-4)
                 eta_h = ((args.steps - step) * dt) / 3600.0
                 print(
-                    f"step {step:5d}/{args.steps:,} | loss {loss_val:6.4f} (ema {ema_loss:6.4f}) | "
+                    f"step {step:5d}/{args.steps:,} | {b_name:<16} | loss {loss_val:6.4f} (ema {ema_loss:6.4f}) | "
                     f"ema_ppl {ema_ppl:6.1f} | lr {lr:.2e} | {dt*1000:5.1f} ms/step | {tok_s:7.1f} tok/s | ETA: {eta_h:4.2f}h"
                 )
 
