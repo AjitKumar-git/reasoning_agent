@@ -79,7 +79,7 @@ if ($action === 'status') {
 }
 
 // --------------------------------------------------------------------------------------------
-// Action: DOWNLOAD
+// Action: DOWNLOAD (Supports HTTP Range Requests & Streaming Proxy Bypass)
 // --------------------------------------------------------------------------------------------
 if ($action === 'download') {
     $type = (isset($_GET['type']) && $_GET['type'] === 'best') ? 'best' : 'latest';
@@ -93,22 +93,59 @@ if ($action === 'download') {
     }
 
     $file_size = filesize($target_file);
+
+    // Disable all active PHP output buffering to avoid server memory ballooning & throttling
+    while (ob_get_level()) {
+        ob_end_clean();
+    }
+
+    // Inform reverse proxies and Cloudflare not to buffer response
+    header('X-Accel-Buffering: no');
+    header('Accept-Ranges: bytes');
     header('Content-Description: File Transfer');
     header('Content-Type: application/octet-stream');
     header('Content-Disposition: attachment; filename="cerebro_spheroid_v4_' . $type . '.pt"');
-    header('Content-Length: ' . $file_size);
-    header('Cache-Control: must-revalidate, no-cache, private');
+    header('Cache-Control: no-cache, no-store, must-revalidate');
     header('Pragma: no-cache');
 
-    // Stream out in 2 MB chunks
+    $start = 0;
+    $end = $file_size - 1;
+
+    // Check for HTTP Range header
+    if (isset($_SERVER['HTTP_RANGE'])) {
+        if (preg_match('/bytes=\h*(\d+)-(\d*)[\D.*]?/i', $_SERVER['HTTP_RANGE'], $matches)) {
+            $start = intval($matches[1]);
+            if (!empty($matches[2])) {
+                $end = min(intval($matches[2]), $file_size - 1);
+            }
+            http_response_code(206);
+            header("Content-Range: bytes {$start}-{$end}/{$file_size}");
+        }
+    }
+
+    $length = $end - $start + 1;
+    header('Content-Length: ' . $length);
+
     $handle = fopen($target_file, 'rb');
     if ($handle === false) {
         http_response_code(500);
         exit;
     }
-    while (!feof($handle)) {
-        echo fread($handle, 2 * 1024 * 1024);
+
+    if ($start > 0) {
+        fseek($handle, $start);
+    }
+
+    $bytes_remaining = $length;
+    while (!feof($handle) && $bytes_remaining > 0) {
+        $read_size = min(2 * 1024 * 1024, $bytes_remaining);
+        $buffer = fread($handle, $read_size);
+        if ($buffer === false || strlen($buffer) === 0) {
+            break;
+        }
+        echo $buffer;
         flush();
+        $bytes_remaining -= strlen($buffer);
     }
     fclose($handle);
     exit;
