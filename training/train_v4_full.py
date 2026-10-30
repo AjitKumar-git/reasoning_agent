@@ -321,6 +321,20 @@ def save_state(prefix: str, model, optimizer, scheduler, step: int, best: float,
         except Exception as e:
             print(f"  [warn] failed to mirror state to drive_dir: {e}", flush=True)
 
+    if getattr(args, "cloud_sync", False):
+        try:
+            from src.cloud_sync import push_checkpoint_async
+            push_checkpoint_async(
+                pt_path,
+                step=step,
+                loss=float(best or 0.0),
+                target_type="latest",
+                url=getattr(args, "cloud_url", None),
+                token=getattr(args, "cloud_token", None),
+            )
+        except Exception as sync_err:
+            print(f"  [cloud_sync warn] Mirroring failed: {sync_err}", flush=True)
+
 
 def load_state(path: str, model, optimizer, scheduler, device, dtype, args) -> Optional[dict]:
     print(f"  resuming from {os.path.relpath(path, ROOT_DIR)}")
@@ -545,6 +559,12 @@ def main():
     parser.add_argument("--save_prefix", default="cerebro_spheroid_v4_state")
     parser.add_argument("--drive_dir", default=None,
                         help="Optional Google Drive directory to continuously mirror best checkpoints and state to")
+    parser.add_argument("--cloud_sync", action="store_true", default=False,
+                        help="Enable automatic cloud synchronization with bioflo.in")
+    parser.add_argument("--cloud_url", default="https://bioflo.in/api/cerebro/sync.php",
+                        help="bioflo.in sync endpoint")
+    parser.add_argument("--cloud_token", default="CerebroSpheroid_Sync_Secure_2026",
+                        help="Secret sync token")
     parser.add_argument("--resume", default="auto",
                         help="'auto' (default), 'none', or a path to a *_state.pt")
     parser.add_argument("--init_from", default="none",
@@ -823,6 +843,18 @@ def main():
                 drive_json = drive_cand.replace("_state.pt", "_state.json")
                 if os.path.exists(drive_json):
                     shutil.copy2(drive_json, candidate.replace("_state.pt", "_state.json"))
+
+        # Synchronize with bioflo.in private model registry if cloud_sync is enabled
+        if getattr(args, "cloud_sync", False) and rank == 0:
+            try:
+                from src.cloud_sync import auto_sync_checkpoints
+                synced = auto_sync_checkpoints(local_dir=CKPT_DIR, url=args.cloud_url, token=args.cloud_token)
+                if synced:
+                    rank_print(f"  [cloud_sync] Active checkpoint synced from bioflo.in: {synced}")
+            except Exception as sync_err:
+                rank_print(f"  [cloud_sync warn] Failed to auto-sync from cloud: {sync_err}")
+        if getattr(args, "cloud_sync", False) and is_distributed:
+            torch.distributed.barrier()
 
         if os.path.exists(candidate):
             state_file = candidate
@@ -1215,6 +1247,20 @@ def main():
                             print(f"  mirrored best checkpoint to {drive_dir}", flush=True)
                         except Exception as e:
                             print(f"  [warn] failed to mirror best to drive_dir: {e}", flush=True)
+
+                    if getattr(args, "cloud_sync", False):
+                        try:
+                            from src.cloud_sync import push_checkpoint_async
+                            push_checkpoint_async(
+                                ckpt_best,
+                                step=step,
+                                loss=float(score),
+                                target_type="best",
+                                url=getattr(args, "cloud_url", None),
+                                token=getattr(args, "cloud_token", None),
+                            )
+                        except Exception as sync_err:
+                            print(f"  [cloud_sync warn] Failed to mirror best to bioflo.in: {sync_err}", flush=True)
                 else:
                     patience += 1
                     print(f"  no improvement for {patience}/{args.patience} evals "

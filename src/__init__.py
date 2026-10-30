@@ -36,6 +36,13 @@ from .spheroid_optimizer import (
     build_spheroid_optimizer,
     create_spheroid_param_groups,
 )
+from .cloud_sync import (
+    check_remote_manifest,
+    pull_checkpoint,
+    push_checkpoint,
+    push_checkpoint_async,
+    auto_sync_checkpoints,
+)
 
 __all__ = [
     "SensoryInputDNN",
@@ -62,6 +69,11 @@ __all__ = [
     "SpheroidOptimizer",
     "build_spheroid_optimizer",
     "create_spheroid_param_groups",
+    "check_remote_manifest",
+    "pull_checkpoint",
+    "push_checkpoint",
+    "push_checkpoint_async",
+    "auto_sync_checkpoints",
 ]
 
 # Lazy-load JAX submodule to prevent expensive GPU device initialization on import

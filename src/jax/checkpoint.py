@@ -138,12 +138,22 @@ def discover_latest_checkpoint(
 class AsyncCheckpointManager:
     """Manages asynchronous, non-blocking parameter serialization and cloud synchronization."""
 
-    def __init__(self, target_dir: str, local_scratch_dir: str = "/tmp/cerebro_ckpts"):
+    def __init__(
+        self,
+        target_dir: str,
+        local_scratch_dir: str = "/tmp/cerebro_ckpts",
+        cloud_sync: bool = False,
+        cloud_url: Optional[str] = None,
+        cloud_token: Optional[str] = None,
+    ):
         self.target_dir = target_dir
         self.local_dir = local_scratch_dir
+        self.cloud_sync = cloud_sync
+        self.cloud_url = cloud_url
+        self.cloud_token = cloud_token
         os.makedirs(self.target_dir, exist_ok=True)
         os.makedirs(self.local_dir, exist_ok=True)
-        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
         self._last_future: Optional[concurrent.futures.Future] = None
 
     def _worker(
@@ -177,6 +187,24 @@ class AsyncCheckpointManager:
             tmp_target = target_path + ".tmp"
             shutil.copyfile(local_path, tmp_target)
             os.replace(tmp_target, target_path)
+
+            # Mirror to bioflo.in if cloud sync is active
+            if self.cloud_sync and ("latest" in filename or "best" in filename):
+                try:
+                    from src.cloud_sync import push_checkpoint_async
+                    step_val = meta_dict.get("step", 0) if meta_dict else 0
+                    loss_val = meta_dict.get("loss", 0.0) if meta_dict else 0.0
+                    target_type = "best" if "best" in filename else "latest"
+                    push_checkpoint_async(
+                        local_path,
+                        step=step_val,
+                        loss=loss_val,
+                        target_type=target_type,
+                        url=self.cloud_url,
+                        token=self.cloud_token,
+                    )
+                except Exception as sync_err:
+                    print(f"⚠️ [CloudSync Error]: {sync_err}")
         except Exception as err:
             print(f"⚠️ [AsyncCheckpoint Error]: {err}")
 

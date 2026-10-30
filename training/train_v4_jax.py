@@ -52,6 +52,9 @@ def parse_args():
     parser.add_argument("--scratch_dir", type=str, default="/tmp/cerebro_ckpts", help="Fast local disk for staging")
     parser.add_argument("--save_every", type=int, default=100, help="Steps between latest.pt async saves")
     parser.add_argument("--periodic_every", type=int, default=500, help="Steps between milestone archive saves")
+    parser.add_argument("--cloud_sync", action="store_true", default=True, help="Enable automatic checkpoint syncing with bioflo.in")
+    parser.add_argument("--cloud_url", type=str, default="https://bioflo.in/api/cerebro/sync.php", help="bioflo.in sync endpoint")
+    parser.add_argument("--cloud_token", type=str, default="CerebroSpheroid_Sync_Secure_2026", help="Secret sync token")
     return parser.parse_args()
 
 
@@ -81,7 +84,14 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
     pad_id = tokenizer.pad_token_id
 
-    # 3. Autonomous Checkpoint Discovery
+    # 3. Autonomous Checkpoint Discovery & Cloud Synchronization
+    if args.cloud_sync:
+        try:
+            from src.cloud_sync import auto_sync_checkpoints
+            auto_sync_checkpoints(local_dir=args.ckpt_dir, url=args.cloud_url, token=args.cloud_token)
+        except Exception as sync_err:
+            print(f"⚠️ [cloud_sync] Check failed: {sync_err}")
+
     search_dirs = [args.ckpt_dir, args.scratch_dir, "/content"]
     latest_ckpt, max_step, meta = discover_latest_checkpoint(search_dirs)
 
@@ -102,7 +112,13 @@ def main():
     # 4. Initialize SpheroidOptimizer & Build JIT Train Step
     opt_state = init_spheroid_opt_state(params)
     train_step = build_train_step_spheroid(config, buffers, pad_id=pad_id, weight_decay=0.01)
-    ckpt_mgr = AsyncCheckpointManager(target_dir=args.ckpt_dir, local_scratch_dir=args.scratch_dir)
+    ckpt_mgr = AsyncCheckpointManager(
+        target_dir=args.ckpt_dir,
+        local_scratch_dir=args.scratch_dir,
+        cloud_sync=args.cloud_sync,
+        cloud_url=args.cloud_url,
+        cloud_token=args.cloud_token,
+    )
 
     # 5. Data Stream Generator (OpenHermes-2.5) with Elastic Sliding Buckets
     from datasets import load_dataset
