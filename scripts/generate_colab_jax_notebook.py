@@ -7,14 +7,14 @@ notebook = {
             "metadata": {},
             "source": [
                 "# 🧠 CerebroSpheroid V4: Cloud TPU Training with JAX in Google Colab\n",
-                "### 127M Parameters • Pure JAX / XLA Native • PyTorch (.pt) & GCS / Drive Auto-Sync\n",
+                "### 127M Parameters • Pure JAX / XLA Native • Automatic Google Drive PyTorch (.pt) Sync\n",
                 "\n",
-                "This notebook trains the **CerebroSpheroid V4** architecture natively on Google Colab Cloud TPUs (TPU v2 / v3 / v4 / v5e) using JAX and XLA, with **automatic export to standard PyTorch (`.pt`) checkpoint format** and direct sync to **Google Cloud Storage (`gs://...`)** or Google Drive.\n",
+                "This notebook trains the **CerebroSpheroid V4** architecture natively on Google Colab Cloud TPUs (TPU v2 / v3 / v4 / v5e) using JAX and XLA, with **automatic streaming of PyTorch (`.pt`) checkpoints directly to your Google Drive (`/MyDrive/cerebro_checkpoints`)**.\n",
                 "\n",
-                "### Highlights:\n",
-                "1. **Automatic `.pt` Format Export**: Checkpoints are saved natively as PyTorch `state_dict` (`.pt`) so they can be loaded directly by `train_v4_full.py`, PyTorch inference, or uploaded to Hugging Face.\n",
-                "2. **Google Cloud Storage (GCS) Streaming**: Weights stream continuously to `gs://your-bucket/` or Google Drive.\n",
-                "3. **Zero PyTorch/XLA Graph Explosion**: Unrolled multi-step deliberation and zero-feedback autoregressive emission are compiled into a single fused XLA HLO kernel via `jax.lax.scan`.\n",
+                "### Key Advantages:\n",
+                "1. **Automatic Google Drive Auto-Sync**: Checkpoints are saved natively as PyTorch `state_dict` (`.pt`) and mirrored directly into your Google Drive every interval and on new best loss.\n",
+                "2. **Zero PyTorch/XLA Recompilation Overhead**: The entire multi-step deliberation and zero-feedback autoregressive emission loop is compiled into a single fused XLA kernel via `jax.lax.scan`.\n",
+                "3. **Native TPU Matrix Performance**: Directly executes on the TPU Systolic Matrix Units (MXUs) in `bfloat16`.\n",
                 "\n",
                 "---\n",
                 "### ⚡ Colab Settings:\n",
@@ -54,7 +54,8 @@ notebook = {
             "cell_type": "markdown",
             "metadata": {},
             "source": [
-                "## Step 2: Configure Cloud Storage (GCS) & Google Drive Authentication"
+                "## Step 2: Mount Google Drive for Automatic Checkpoint Persistence\n",
+                "All model checkpoints (`.pt`) and metrics (`.json`) will be saved directly into `/content/drive/MyDrive/cerebro_checkpoints` so your training progress is permanently preserved."
             ]
         },
         {
@@ -63,53 +64,29 @@ notebook = {
             "metadata": {},
             "outputs": [],
             "source": [
-                "import os\n",
-                "import torch\n",
-                "\n",
-                "# =====================================================================\n",
-                "# ⚙️ CLOUD STORAGE CONFIGURATION\n",
-                "# =====================================================================\n",
-                "# If you have a Google Cloud Storage bucket, specify it here:\n",
-                "GCS_BUCKET = None          # Example: 'gs://cerebro-spheroid-checkpoints' or 'my-bucket-name'\n",
-                "ENABLE_GDRIVE = True       # Mirror to Google Drive (/content/drive/MyDrive/cerebro_checkpoints)\n",
-                "\n",
-                "if GCS_BUCKET and GCS_BUCKET.startswith(\"gs://\"):\n",
-                "    GCS_BUCKET = GCS_BUCKET.replace(\"gs://\", \"\").rstrip(\"/\")\n",
-                "\n",
-                "# Authenticate GCS if provided\n",
-                "if GCS_BUCKET:\n",
-                "    try:\n",
-                "        from google.colab import auth\n",
-                "        auth.authenticate_user()\n",
-                "        !gcloud config set project {GCS_BUCKET.split('-')[0]} 2>/dev/null || true\n",
-                "        print(f\"✅ Google Cloud Storage authenticated! Target: gs://{GCS_BUCKET}/\")\n",
-                "    except Exception as e:\n",
-                "        print(f\"⚠️ GCS auth notice: {e}\")\n",
+                "import os, shutil\n",
+                "from google.colab import drive\n",
                 "\n",
                 "# Mount Google Drive\n",
-                "GDRIVE_DIR = None\n",
-                "if ENABLE_GDRIVE:\n",
-                "    try:\n",
-                "        from google.colab import drive\n",
-                "        drive.mount('/content/drive', force_remount=False)\n",
-                "        GDRIVE_DIR = \"/content/drive/MyDrive/cerebro_spheroid_v4_checkpoints\"\n",
-                "        os.makedirs(GDRIVE_DIR, exist_ok=True)\n",
-                "        print(f\"✅ Google Drive mounted! Target: {GDRIVE_DIR}\")\n",
-                "    except Exception as e:\n",
-                "        print(f\"⚠️ Google Drive notice: {e}\")\n",
+                "drive.mount('/content/drive', force_remount=False)\n",
                 "\n",
-                "def sync_to_cloud_storage(local_path: str):\n",
-                "    \"\"\"Uploads local .pt / .json files to GCS and/or Google Drive.\"\"\"\n",
+                "# Destination directory in your Google Drive\n",
+                "DRIVE_CKPT_DIR = \"/content/drive/MyDrive/cerebro_checkpoints\"\n",
+                "os.makedirs(DRIVE_CKPT_DIR, exist_ok=True)\n",
+                "print(f\"✅ Google Drive successfully mounted!\")\n",
+                "print(f\"📂 Checkpoints destination: {DRIVE_CKPT_DIR}\")\n",
+                "\n",
+                "def save_to_drive(local_path: str):\n",
+                "    \"\"\"Copies checkpoint to Google Drive and verifies file sync.\"\"\"\n",
                 "    filename = os.path.basename(local_path)\n",
-                "    if GCS_BUCKET:\n",
-                "        os.system(f\"gcloud storage cp '{local_path}' 'gs://{GCS_BUCKET}/{filename}' 2>/dev/null || gsutil cp '{local_path}' 'gs://{GCS_BUCKET}/{filename}'\")\n",
-                "        print(f\"  ☁️ [GCS] Uploaded {filename} -> gs://{GCS_BUCKET}/{filename}\")\n",
-                "    if GDRIVE_DIR and os.path.exists(GDRIVE_DIR):\n",
-                "        import shutil\n",
-                "        shutil.copy2(local_path, os.path.join(GDRIVE_DIR, filename))\n",
-                "        print(f\"  💾 [Drive] Mirrored {filename} -> {GDRIVE_DIR}/{filename}\")\n",
-                "\n",
-                "print(\"✅ Storage sync ready!\")\n"
+                "    dest_path = os.path.join(DRIVE_CKPT_DIR, filename)\n",
+                "    shutil.copy2(local_path, dest_path)\n",
+                "    # Also copy companion JSON metadata if present\n",
+                "    json_local = local_path.replace(\".pt\", \".json\")\n",
+                "    if os.path.exists(json_local) and json_local != local_path:\n",
+                "        shutil.copy2(json_local, os.path.join(DRIVE_CKPT_DIR, os.path.basename(json_local)))\n",
+                "    size_mb = os.path.getsize(dest_path) / (1024**2)\n",
+                "    print(f\"  💾 [Google Drive] Saved {filename} ({size_mb:.1f} MB) -> {DRIVE_CKPT_DIR}/\")\n"
             ]
         },
         {
@@ -123,7 +100,7 @@ notebook = {
             "metadata": {},
             "outputs": [],
             "source": [
-                "!pip install -q transformers datasets sentencepiece optax google-cloud-storage\n",
+                "!pip install -q transformers datasets sentencepiece optax torch\n",
                 "print(\"✅ Libraries installed successfully!\")\n"
             ]
         },
@@ -142,6 +119,7 @@ notebook = {
                 "from typing import Optional, Tuple, Dict, Any\n",
                 "import math\n",
                 "import numpy as np\n",
+                "import torch, json\n",
                 "from jax import lax\n",
                 "\n",
                 "DEFAULT_RMS_EPS = 1e-6\n",
@@ -173,7 +151,6 @@ notebook = {
                 "    n_tracts, fused_dim = config.num_shortcut_tracts, s_dim * 5\n",
                 "    src_idx, dst_idx = precompute_axonal_indices(shells, n_tracts)\n",
                 "\n",
-                "    # Trainable parameters (all real float32)\n",
                 "    p: Dict[str, jnp.ndarray] = {\n",
                 "        \"core.intra_shell\": jax.random.normal(keys[0], (shells, s_dim, s_dim)) * 0.015,\n",
                 "        \"core.reentrant_field\": jax.random.normal(keys[1], (shells, shells, r_dim, r_dim)) * 0.008,\n",
@@ -336,7 +313,6 @@ notebook = {
                 "# =====================================================================\n",
                 "def save_jax_to_torch_pt(params: Dict[str, jnp.ndarray], buffers: Tuple[jnp.ndarray, jnp.ndarray], save_path: str, meta: Optional[dict] = None):\n",
                 "    \"\"\"Converts JAX PyTree into standard PyTorch state_dict and saves to .pt format.\"\"\"\n",
-                "    import torch, json\n",
                 "    os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)\n",
                 "    torch_state: Dict[str, torch.Tensor] = {}\n",
                 "    for k, v in params.items():\n",
@@ -348,7 +324,7 @@ notebook = {
                 "        meta_path = save_path.replace(\".pt\", \".json\")\n",
                 "        with open(meta_path, \"w\") as f:\n",
                 "            json.dump(meta, f, indent=2)\n",
-                "    print(f\"  💾 Saved PyTorch checkpoint: {save_path}\")\n",
+                "    print(f\"  💾 Created local PyTorch checkpoint: {save_path}\")\n",
                 "\n",
                 "print(\"✅ CerebroSpheroid V4 Architecture and PyTorch Converter ready!\")\n"
             ]
@@ -379,6 +355,7 @@ notebook = {
                 "key = jax.random.PRNGKey(1337)\n",
                 "key, init_k = jax.random.split(key)\n",
                 "\n",
+                "# Decoupled float params from integer routing buffers\n",
                 "params, buffers = init_v4_params(config, init_k)\n",
                 "param_count = sum(p.size for p in params.values() if jnp.issubdtype(p.dtype, jnp.inexact))\n",
                 "print(f\"Model scale: {param_count:,} parameters ({param_count * 2 / (1024**2):.1f} MB in bf16)\")\n",
@@ -388,7 +365,7 @@ notebook = {
                 "v_state = jax.tree_util.tree_map(jnp.zeros_like, params)\n",
                 "opt_state = {\"step\": jnp.array(0, dtype=jnp.int32), \"m\": m_state, \"v\": v_state}\n",
                 "\n",
-                "# JIT-Compiled training step (allow_int=True handles discrete token inputs cleanly)\n",
+                "# JIT-compiled with allow_int=True (handles discrete tokens without type errors)\n",
                 "@jax.jit\n",
                 "def train_step(p, opt_s, q_batch, r_batch, lr):\n",
                 "    target_len = r_batch.shape[1]\n",
@@ -437,7 +414,8 @@ notebook = {
             "cell_type": "markdown",
             "metadata": {},
             "source": [
-                "## Step 6: Launch Cloud TPU Training with PyTorch (.pt) & GCS Streaming"
+                "## Step 6: Launch Cloud TPU Training with Automatic Google Drive (.pt) Sync\n",
+                "Checkpoints are saved locally and immediately mirrored into `/content/drive/MyDrive/cerebro_checkpoints/` every interval and whenever a new best loss is achieved!"
             ]
         },
         {
@@ -454,15 +432,12 @@ notebook = {
                 "PROMPT_LEN = 32               # Input prompt length\n",
                 "TARGET_LEN = 64               # Deliberated answer length\n",
                 "BASE_LR = 2e-3                # Base learning rate\n",
-                "SAVE_EVERY = 200              # Save & sync .pt checkpoint every N steps\n",
+                "SAVE_EVERY = 200              # Save & mirror to Google Drive every N steps\n",
                 "\n",
                 "print(\"=\" * 80)\n",
                 "print(f\"Starting CerebroSpheroid V4 Training on {devices[0].device_kind}\")\n",
                 "print(f\"Batch: {BATCH_SIZE} | Window: {PROMPT_LEN + TARGET_LEN} tokens | Steps: {TRAIN_STEPS:,}\")\n",
-                "if GCS_BUCKET:\n",
-                "    print(f\"Cloud Persistence: gs://{GCS_BUCKET}/\")\n",
-                "if GDRIVE_DIR:\n",
-                "    print(f\"Drive Persistence: {GDRIVE_DIR}\")\n",
+                "print(f\"Google Drive Destination: {DRIVE_CKPT_DIR}/\")\n",
                 "print(\"=\" * 80)\n",
                 "\n",
                 "best_loss = float(\"inf\")\n",
@@ -489,22 +464,18 @@ notebook = {
                 "        tokens_per_sec = (BATCH_SIZE * (PROMPT_LEN + TARGET_LEN)) / max(dt, 1e-4)\n",
                 "        print(f\"step {step:5d}/{TRAIN_STEPS:,} | loss {loss_val:6.4f} (ppl {ppl:7.1f}) | lr {lr:.2e} | {dt*1000:5.1f} ms/step | {tokens_per_sec:7.1f} tok/s\")\n",
                 "\n",
-                "    # Periodic or Best Checkpoint PyTorch (.pt) Save & Cloud Sync\n",
+                "    # Periodic or Best Checkpoint PyTorch (.pt) Save & Google Drive Sync\n",
                 "    is_new_best = loss_val < best_loss - 0.01\n",
                 "    if is_new_best:\n",
                 "        best_loss = loss_val\n",
                 "        best_path = \"cerebro_spheroid_v4_jax_best.pt\"\n",
                 "        save_jax_to_torch_pt(params, buffers, best_path, meta={\"step\": step, \"best_loss\": best_loss})\n",
-                "        sync_to_cloud_storage(best_path)\n",
-                "        if os.path.exists(best_path.replace(\".pt\", \".json\")):\n",
-                "            sync_to_cloud_storage(best_path.replace(\".pt\", \".json\"))\n",
+                "        save_to_drive(best_path)\n",
                 "\n",
                 "    if step % SAVE_EVERY == 0 or step == TRAIN_STEPS:\n",
                 "        periodic_path = f\"cerebro_spheroid_v4_jax_step_{step}.pt\"\n",
                 "        save_jax_to_torch_pt(params, buffers, periodic_path, meta={\"step\": step, \"loss\": loss_val})\n",
-                "        sync_to_cloud_storage(periodic_path)\n",
-                "        if os.path.exists(periodic_path.replace(\".pt\", \".json\")):\n",
-                "            sync_to_cloud_storage(periodic_path.replace(\".pt\", \".json\"))\n",
+                "        save_to_drive(periodic_path)\n",
                 "\n",
                 "total_sec = time.time() - t_start\n",
                 "print(\"=\" * 80)\n",
@@ -516,7 +487,7 @@ notebook = {
         {
             "cell_type": "markdown",
             "metadata": {},
-            "source": ["## Step 7: Export Final PyTorch (.pt) Checkpoint to GCS & Drive"]
+            "source": ["## Step 7: Export Final PyTorch (.pt) Checkpoint to Google Drive"]
         },
         {
             "cell_type": "code",
@@ -526,11 +497,10 @@ notebook = {
             "source": [
                 "final_path = \"cerebro_spheroid_v4_jax_final.pt\"\n",
                 "save_jax_to_torch_pt(params, buffers, final_path, meta={\"total_steps\": TRAIN_STEPS, \"best_loss\": best_loss})\n",
-                "sync_to_cloud_storage(final_path)\n",
-                "if os.path.exists(final_path.replace(\".pt\", \".json\")):\n",
-                "    sync_to_cloud_storage(final_path.replace(\".pt\", \".json\"))\n",
+                "save_to_drive(final_path)\n",
                 "\n",
-                "print(\"\\n✅ All PyTorch (.pt) checkpoints successfully created and synced to cloud storage!\")\n"
+                "print(f\"\\n🎉 All checkpoints are safely backed up in your Google Drive at: {DRIVE_CKPT_DIR}/\")\n",
+                "!ls -lh \"{DRIVE_CKPT_DIR}\"\n"
             ]
         }
     ],
@@ -555,4 +525,4 @@ notebook = {
 with open("training/remote/CerebroSpheroid_V4_Colab_TPU_JAX.ipynb", "w") as f:
     json.dump(notebook, f, indent=1)
 
-print("Successfully generated updated notebook with .pt saving and allow_int=True fix!")
+print("Successfully written CerebroSpheroid_V4_Colab_TPU_JAX.ipynb tailored purely for Google Drive!")
