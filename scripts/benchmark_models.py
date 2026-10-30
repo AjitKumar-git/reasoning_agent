@@ -157,17 +157,28 @@ def main():
     records = get_test_records(parquet_path, count=100)
     print(f"Loaded {len(records)} test dialogue pairs.\n")
 
-    # Discover candidate models (excluding probe checkpoints)
-    ckpt_dir = os.path.join(ROOT_DIR, "checkpoints")
-    all_ckpts = sorted(glob.glob(os.path.join(ckpt_dir, "*.pt")))
+    # Discover candidate models (accept custom CLI paths or scan checkpoints/)
     candidates = []
-    for c in all_ckpts:
+    if len(sys.argv) > 1:
+        for arg in sys.argv[1:]:
+            if os.path.isdir(arg):
+                candidates.extend(sorted(glob.glob(os.path.join(arg, "*.pt"))))
+            elif os.path.isfile(arg):
+                candidates.append(arg)
+    else:
+        ckpt_dir = os.path.join(ROOT_DIR, "checkpoints")
+        candidates = sorted(glob.glob(os.path.join(ckpt_dir, "*.pt")))
+
+    # Filter out probe and optimizer state dumps
+    filtered = []
+    for c in candidates:
         fname = os.path.basename(c).lower()
         if "probe" in fname:
-            continue  # Exclude probe models
+            continue
         if "_state.pt" in fname:
-            continue  # Exclude full state optimizer dumps
-        candidates.append(c)
+            continue
+        filtered.append(c)
+    candidates = sorted(list(set(filtered)))
 
     print(f"Evaluating {len(candidates)} candidate model checkpoints:\n")
     results = []
