@@ -592,7 +592,9 @@ def main():
                         help="Which held-out number decides 'best'")
     parser.add_argument("--probe_tokens", type=int, default=0, help="0 disables the sample generation (default: 0)")
     parser.add_argument("--dry_run", action="store_true", help="Build the eval set and exit")
-    args = parser.parse_args()
+    # Filter out accidental trailing 'n' artifacts from Jupyter/IPython escaped newlines
+    cleaned_argv = [a for a in sys.argv[1:] if a != "n"]
+    args = parser.parse_args(cleaned_argv)
     if args.max_hours > 0:
         args.max_minutes = args.max_hours * 60.0
 

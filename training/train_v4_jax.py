@@ -38,6 +38,8 @@ from src.jax import (
 
 
 def parse_args(args_list=None):
+    if args_list is None:
+        args_list = [a for a in sys.argv[1:] if a != "n"]
     parser = argparse.ArgumentParser(description="CerebroSpheroid V4 JAX High-Throughput Trainer")
     parser.add_argument("--steps", "--max_steps", dest="steps", type=int, default=50000, help="Total target steps")
     parser.add_argument("--batch_size", type=int, default=4, help="Batch size per TPU device (default: 4 for 16 GB HBM)")
