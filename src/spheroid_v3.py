@@ -1006,7 +1006,7 @@ def training_rollout(
     condition on a token outside the scored window. Omitted, the channel behaves as before.
     """
     raw_model = model.module if hasattr(model, "module") else model
-    if isinstance(raw_model, CerebroSpheroidV3):
+    if isinstance(raw_model, CerebroSpheroidV3) or type(raw_model).__name__ == "CerebroSpheroidV4":
         return model(
             prompts,
             response_steps=response_steps,

@@ -1155,7 +1155,10 @@ def main():
                     torch.cuda.empty_cache()
                 break
             finally:
-                del prompts, targets, feedback, built
+                if "prompts" in locals(): del prompts
+                if "targets" in locals(): del targets
+                if "feedback" in locals(): del feedback
+                if "built" in locals(): del built
 
         if oom or step_count == 0:
             step -= 1  # Do not advance step on OOM without update

@@ -28,6 +28,7 @@ from typing import Dict, List, Optional, Tuple, Union
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.checkpoint as checkpoint_module
 
 from .model import SensoryInputDNN, VolumetricBrainCore
 from .spheroid_v3 import (
@@ -434,14 +435,26 @@ class CerebroSpheroidV4(CerebroSpheroidV3):
             else:
                 cur_kv = (all_k[:, :prompt_len], all_v[:, :prompt_len])
 
-            step_logits, state, refractory, plan = self.emit_step(
-                state,
-                sensory_kv=cur_kv,
-                plan=plan,
-                refractory_trace=refractory,
-                step_idx=step,
-                auditory_feedback=auditory_feedback,
-            )
+            if self.training and torch.is_grad_enabled() and response_steps > 32:
+                step_logits, state, refractory, plan = checkpoint_module.checkpoint(
+                    self.emit_step,
+                    state,
+                    cur_kv,
+                    plan,
+                    refractory,
+                    step,
+                    auditory_feedback,
+                    use_reentrant=False,
+                )
+            else:
+                step_logits, state, refractory, plan = self.emit_step(
+                    state,
+                    sensory_kv=cur_kv,
+                    plan=plan,
+                    refractory_trace=refractory,
+                    step_idx=step,
+                    auditory_feedback=auditory_feedback,
+                )
             logits.append(step_logits)
 
             if targets is None and feed is None:
@@ -489,6 +502,25 @@ class CerebroSpheroidV4(CerebroSpheroidV3):
             pixel_values=pixel_values,
             audio_values=audio_values,
         )
+
+    def load_compatible_checkpoint(self, checkpoint_path: str, device: torch.device = torch.device("cpu")) -> bool:
+        """Loads V4 or V3 checkpoints directly into CerebroSpheroidV4 without dropping V4 tensors."""
+        if not os.path.exists(checkpoint_path):
+            return False
+        state = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        weights = state.get("model", state) if isinstance(state, dict) else state
+        if not isinstance(weights, dict):
+            return False
+
+        my_keys = set(self.state_dict().keys())
+        v4_overlap = len(set(weights.keys()) & my_keys)
+        if v4_overlap > 10:
+            matched = {k: v for k, v in weights.items() if k in my_keys and v.shape == self.state_dict()[k].shape}
+            self.load_state_dict(matched, strict=False)
+            return True
+        else:
+            lift_checkpoint_v3_to_v4(weights, self)
+            return True
 
 
 # =========================================================================
