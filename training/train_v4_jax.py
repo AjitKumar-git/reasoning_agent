@@ -101,6 +101,25 @@ def main():
         print(f"🔄 Automatically resuming from Step {max_step + 1:,}...")
         params, buffers = load_torch_pt_to_jax(latest_ckpt, config)
         start_step = max_step + 1
+
+        # Synchronize initial restored model to bioflo.in asynchronously
+        if args.cloud_sync:
+            try:
+                from src.cloud_sync import check_remote_manifest, push_checkpoint_async
+                m_info = check_remote_manifest(args.cloud_url, args.cloud_token)
+                rem_step = m_info.get("manifest", {}).get("latest", {}).get("step", 0)
+                if max_step > rem_step:
+                    print(f"🌐 [cloud_sync] Initial sync: Uploading restored Step {max_step:,} to bioflo.in asynchronously...")
+                    push_checkpoint_async(
+                        latest_ckpt,
+                        step=max_step,
+                        loss=float(meta.get("loss", 0.0)) if meta else 0.0,
+                        target_type="latest",
+                        url=args.cloud_url,
+                        token=args.cloud_token,
+                    )
+            except Exception as e:
+                print(f"⚠️ [cloud_sync] Initial upload notice: {e}")
     else:
         print("\n🆕 No previous checkpoints found. Initializing fresh parameters at Step 1...")
         key = jax.random.PRNGKey(1337)

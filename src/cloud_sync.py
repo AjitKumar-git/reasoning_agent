@@ -20,6 +20,9 @@ from typing import Optional, Dict, Any, Tuple
 DEFAULT_URL = os.environ.get("BIOFLO_SYNC_URL", "https://bioflo.in/api/cerebro/sync.php")
 DEFAULT_TOKEN = os.environ.get("BIOFLO_SYNC_TOKEN", "CerebroSpheroid_Sync_Secure_2026")
 
+_IN_FLIGHT_UPLOADS: Dict[str, int] = {}
+_UPLOAD_LOCK = threading.Lock()
+
 
 def detect_source_environment() -> str:
     """Detects whether current execution is in Google Colab, Kaggle, or Local."""
@@ -121,6 +124,13 @@ def push_checkpoint(
         print(f"⚠️ [cloud_sync] Cannot push: {file_path} not found.")
         return False
 
+    global _IN_FLIGHT_UPLOADS
+    with _UPLOAD_LOCK:
+        if _IN_FLIGHT_UPLOADS.get(target_type, 0) > step:
+            # A more recent step is already being or has been uploaded
+            return False
+        _IN_FLIGHT_UPLOADS[target_type] = step
+
     sync_url = url or DEFAULT_URL
     sync_token = token or DEFAULT_TOKEN
     node_name = source_node or detect_source_environment()
@@ -129,15 +139,16 @@ def push_checkpoint(
     chunk_size = chunk_size_mb * 1024 * 1024
     total_chunks = max(1, (file_size + chunk_size - 1) // chunk_size)
 
-    print(f"🌐 [cloud_sync] Mirroring {target_type}.pt (Step {step:,}, Loss {loss:.4f}) "
+    print(f"\n🌐 [cloud_sync] Mirroring {target_type}.pt (Step {step:,}, Loss {loss:.4f}) "
           f"to {sync_url} across {total_chunks} chunk(s)...")
 
     t0 = time.time()
-    with open(file_path, "rb") as f:
-        for idx in range(total_chunks):
-            chunk_data = f.read(chunk_size)
-            if not chunk_data:
-                break
+    try:
+        with open(file_path, "rb") as f:
+            for idx in range(total_chunks):
+                chunk_data = f.read(chunk_size)
+                if not chunk_data:
+                    break
 
             # Multipart boundary assembly
             boundary = f"----WebKitFormBoundary{os.urandom(8).hex()}"
@@ -196,10 +207,14 @@ def push_checkpoint(
                 print(f"❌ [cloud_sync] Aborted upload at chunk {idx + 1}/{total_chunks} after 3 attempts.")
                 return False
 
-    dt = time.time() - t0
-    sz_mb = file_size / 1e6
-    print(f"✅ [cloud_sync] Successfully uploaded {target_type}.pt ({sz_mb:.1f} MB) in {dt:.1f}s to bioflo.in!")
-    return True
+        dt = time.time() - t0
+        sz_mb = file_size / 1e6
+        print(f"✅ [cloud_sync] Successfully uploaded {target_type}.pt ({sz_mb:.1f} MB) in {dt:.1f}s to bioflo.in!")
+        return True
+    finally:
+        with _UPLOAD_LOCK:
+            if _IN_FLIGHT_UPLOADS.get(target_type) == step:
+                _IN_FLIGHT_UPLOADS.pop(target_type, None)
 
 
 def push_checkpoint_async(
