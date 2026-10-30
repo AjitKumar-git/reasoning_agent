@@ -39,19 +39,20 @@ from src.jax import (
 
 def parse_args():
     parser = argparse.ArgumentParser(description="CerebroSpheroid V4 JAX High-Throughput Trainer")
-    parser.add_argument("--steps", type=int, default=40000, help="Total target steps (40k = 1 full epoch)")
+    parser.add_argument("--steps", "--max_steps", dest="steps", type=int, default=50000, help="Total target steps")
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size per TPU device")
-    parser.add_argument("--total_window", type=int, default=1024, help="Total sequence budget for elastic sliding window")
+    parser.add_argument("--total_window", type=int, default=1536, help="Total sequence budget for elastic sliding window")
     parser.add_argument("--prompt_len", type=int, default=256, help="Prompt context length (used when --elastic_window is disabled)")
     parser.add_argument("--target_len", type=int, default=768, help="Deliberated target rollout length (used when --elastic_window is disabled)")
     parser.add_argument("--elastic_window", action="store_true", default=True, help="Enable elastic sliding context window")
     parser.add_argument("--lr", type=float, default=2.0e-3, help="Peak SpheroidOptimizer learning rate")
     parser.add_argument("--min_lr", type=float, default=1.0e-4, help="Final annealed learning rate")
     parser.add_argument("--preset", type=str, default="small", choices=["small", "wide"])
-    parser.add_argument("--ckpt_dir", type=str, default="/content/drive/MyDrive/cerebro_checkpoints", help="Destination directory")
+    parser.add_argument("--ckpt_dir", "--drive_dir", dest="ckpt_dir", type=str, default="/content/drive/MyDrive/cerebro_checkpoints", help="Destination checkpoint directory")
     parser.add_argument("--scratch_dir", type=str, default="/tmp/cerebro_ckpts", help="Fast local disk for staging")
     parser.add_argument("--save_every", type=int, default=100, help="Steps between latest.pt async saves")
     parser.add_argument("--periodic_every", type=int, default=500, help="Steps between milestone archive saves")
+    parser.add_argument("--log_every", type=int, default=25, help="Steps between console progress lines")
     parser.add_argument("--cloud_sync", action="store_true", default=True, help="Enable automatic checkpoint syncing with bioflo.in")
     parser.add_argument("--cloud_url", type=str, default="https://bioflo.in/api/cerebro/sync.php", help="bioflo.in sync endpoint")
     parser.add_argument("--cloud_token", type=str, default="CerebroSpheroid_Sync_Secure_2026", help="Secret sync token")
@@ -179,7 +180,7 @@ def main():
             else:
                 ema_loss = 0.96 * ema_loss + 0.04 * loss_val
 
-            if step % 25 == 0 or step == start_step:
+            if step % args.log_every == 0 or step == start_step:
                 ppl = math.exp(min(loss_val, 15.0))
                 ema_ppl = math.exp(min(ema_loss, 15.0))
                 seq_len = q_batch.shape[1] + r_batch.shape[1]
