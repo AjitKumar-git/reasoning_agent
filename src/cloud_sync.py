@@ -91,6 +91,11 @@ def pull_checkpoint(
                           f"({pct:.1f}%) | {speed:.1f} MB/s", end="", flush=True)
 
         if os.path.exists(tmp_dest) and os.path.getsize(tmp_dest) > 1024:
+            import zipfile
+            if not zipfile.is_zipfile(tmp_dest):
+                print(f"\n⚠️ [cloud_sync] Checkpoint failed zip archive integrity check. Discarding corrupt download.")
+                os.remove(tmp_dest)
+                return False
             os.replace(tmp_dest, local_dest)
             dt = time.time() - t0
             sz_mb = os.path.getsize(local_dest) / 1e6
