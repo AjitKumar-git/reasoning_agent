@@ -255,17 +255,21 @@ def training_rollout(
     state = init_state.at[:, -1, :].set(jnp.mean(sensory_mem, axis=1))
 
     # Subconscious deliberation cycles before verbalization
+    deliberate_remat = jax.checkpoint(deliberate_step)
     def _delib(s, _):
-        return deliberate_step(params, s, buffers, config), None
+        return deliberate_remat(params, s, buffers, config), None
 
     state, _ = lax.scan(_delib, state, None, length=config.thinking_cycles)
 
     init_plan = jnp.zeros((B, config.surface_dim), dtype=jnp.float32)
     init_refractory = jnp.zeros((B, config.vocab_size), dtype=jnp.float32)
 
+    # Gradient checkpointing on sequential emission reduces HBM temporaries from O(T) to O(1)
+    emit_step_remat = jax.checkpoint(emit_step)
+
     def _emit(carry, step_idx):
         cur_state, cur_trace, cur_plan = carry
-        logits, nxt_s, nxt_t, nxt_p = emit_step(
+        logits, nxt_s, nxt_t, nxt_p = emit_step_remat(
             params, cur_state, sensory_kv, cur_plan, cur_trace, step_idx, buffers, config
         )
         return (nxt_s, nxt_t, nxt_p), logits
