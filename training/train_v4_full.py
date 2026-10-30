@@ -322,18 +322,20 @@ def save_state(prefix: str, model, optimizer, scheduler, step: int, best: float,
             print(f"  [warn] failed to mirror state to drive_dir: {e}", flush=True)
 
     if getattr(args, "cloud_sync", False):
-        try:
-            from src.cloud_sync import push_checkpoint_async
-            push_checkpoint_async(
-                pt_path,
-                step=step,
-                loss=float(best or 0.0),
-                target_type="latest",
-                url=getattr(args, "cloud_url", None),
-                token=getattr(args, "cloud_token", None),
-            )
-        except Exception as sync_err:
-            print(f"  [cloud_sync warn] Mirroring failed: {sync_err}", flush=True)
+        cloud_interval = getattr(args, "cloud_save_every", 1000)
+        if step % cloud_interval == 0 or step == getattr(args, "steps", 50000):
+            try:
+                from src.cloud_sync import push_checkpoint_async
+                push_checkpoint_async(
+                    pt_path,
+                    step=step,
+                    loss=float(best or 0.0),
+                    target_type="latest",
+                    url=getattr(args, "cloud_url", None),
+                    token=getattr(args, "cloud_token", None),
+                )
+            except Exception as sync_err:
+                print(f"  [cloud_sync warn] Mirroring failed: {sync_err}", flush=True)
 
 
 def load_state(path: str, model, optimizer, scheduler, device, dtype, args) -> Optional[dict]:
@@ -554,7 +556,8 @@ def main():
     parser.add_argument("--eval_interval", type=int, default=400)
     parser.add_argument("--patience", type=int, default=25, help="Evals without improvement before stopping")
     parser.add_argument("--min_improvement", type=float, default=0.002)
-    parser.add_argument("--save_every", type=int, default=40, help="Steps between state writes (default: 40)")
+    parser.add_argument("--save_every", type=int, default=1000, help="Steps between state writes (default: 1000)")
+    parser.add_argument("--cloud_save_every", type=int, default=1000, help="Steps between background cloud sync uploads (default: 1000)")
     parser.add_argument("--log_every", type=int, default=10, help="Steps between progress lines")
     parser.add_argument("--save_prefix", default="cerebro_spheroid_v4_state")
     parser.add_argument("--drive_dir", default=None,

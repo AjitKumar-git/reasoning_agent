@@ -52,7 +52,7 @@ def parse_args(args_list=None):
     parser.add_argument("--preset", type=str, default="small", choices=["small", "wide"])
     parser.add_argument("--ckpt_dir", "--drive_dir", dest="ckpt_dir", type=str, default="/content/drive/MyDrive/cerebro_checkpoints", help="Destination checkpoint directory")
     parser.add_argument("--scratch_dir", type=str, default="/tmp/cerebro_ckpts", help="Fast local disk for staging")
-    parser.add_argument("--save_every", type=int, default=100, help="Steps between latest.pt async saves")
+    parser.add_argument("--save_every", type=int, default=1000, help="Steps between latest.pt async saves (default: 1000)")
     parser.add_argument("--periodic_every", type=int, default=500, help="Steps between milestone archive saves")
     parser.add_argument("--log_every", type=int, default=25, help="Steps between console progress lines")
     parser.add_argument("--cloud_sync", action="store_true", default=True, help="Enable automatic checkpoint syncing with bioflo.in")
