@@ -754,13 +754,25 @@ def main():
     torch.manual_seed(args.seed + rank)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed + rank)
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
 
     if args.dtype == "auto":
         if is_xla or getattr(device, "type", "") == "xla":
             dtype = torch.bfloat16
         elif device.type == "cuda":
-            # T4 (sm_75 Turing) does not have native bf16 hardware; fp16 uses high-speed tensor cores
-            dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+            # Hardware capability check: sm_80+ (Ampere/Hopper/Blackwell) has native BF16 Tensor Cores.
+            # Turing sm_75 (Tesla T4) lacks native BF16 hardware and emulates it slowly on FP32;
+            # float16 unlocks the native 65 TFLOPS Turing Tensor Cores!
+            try:
+                major, _ = torch.cuda.get_device_capability(device)
+            except Exception:
+                major = 7
+            if major >= 8 and torch.cuda.is_bf16_supported():
+                dtype = torch.bfloat16
+            else:
+                dtype = torch.float16
         else:
             dtype = torch.float32
     else:
