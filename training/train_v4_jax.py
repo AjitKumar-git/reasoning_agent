@@ -107,7 +107,16 @@ def main(args=None):
         except Exception as sync_err:
             print(f"⚠️ [cloud_sync] Check failed: {sync_err}")
 
-    search_dirs = [args.ckpt_dir, args.scratch_dir, "/content"]
+    search_dirs = [
+        args.ckpt_dir,
+        args.scratch_dir,
+        "/content/drive/MyDrive/cerebro_checkpoints",
+        "/kaggle/working/checkpoints",
+        "/kaggle/working/reasoning_agent/checkpoints",
+        "/kaggle/input",
+        "checkpoints",
+        "/content",
+    ]
     latest_ckpt, max_step, meta = discover_latest_checkpoint(search_dirs)
 
     if latest_ckpt and max_step > 0:

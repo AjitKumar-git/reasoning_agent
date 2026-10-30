@@ -884,6 +884,9 @@ def main():
                 weight_candidates = []
                 if args.arch == "v4":
                     weight_candidates = [
+                        os.path.join(CKPT_DIR, "cerebro_spheroid_v4_latest.pt"),
+                        os.path.join(CKPT_DIR, "cerebro_spheroid_v4_best.pt"),
+                        os.path.join(CKPT_DIR, "cerebro_spheroid_v4_jax_latest.pt"),
                         os.path.join(CKPT_DIR, "cerebro_spheroid_v4_small_kaggle_best.pt"),
                         os.path.join(CKPT_DIR, "cerebro_spheroid_v4_state_best.pt"),
                     ]
