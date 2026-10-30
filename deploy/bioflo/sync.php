@@ -144,6 +144,13 @@ if ($action === 'upload_chunk') {
         exit;
     }
 
+    // Guard against out-of-order chunks
+    if ($chunk_index > 0 && !file_exists($part_file)) {
+        http_response_code(400);
+        echo json_encode(['error' => "Out-of-order chunk: cannot append chunk {$chunk_index} without existing part file"]);
+        exit;
+    }
+
     // First chunk creates / truncates; subsequent chunks append
     $mode = ($chunk_index === 0) ? 'wb' : 'ab';
     $fp = fopen($part_file, $mode);

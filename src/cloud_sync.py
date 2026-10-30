@@ -150,63 +150,66 @@ def push_checkpoint(
                 if not chunk_data:
                     break
 
-            # Multipart boundary assembly
-            boundary = f"----WebKitFormBoundary{os.urandom(8).hex()}"
-            body = []
+                # Multipart boundary assembly
+                boundary = f"----WebKitFormBoundary{os.urandom(8).hex()}"
+                body = []
 
-            # Metadata fields
-            for k, v in [
-                ("action", "upload_chunk"),
-                ("type", target_type),
-                ("chunk_index", str(idx)),
-                ("total_chunks", str(total_chunks)),
-                ("step", str(step)),
-                ("loss", f"{loss:.6f}"),
-                ("source", node_name),
-            ]:
-                body.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n".encode("utf-8"))
+                # Metadata fields
+                for k, v in [
+                    ("action", "upload_chunk"),
+                    ("type", target_type),
+                    ("chunk_index", str(idx)),
+                    ("total_chunks", str(total_chunks)),
+                    ("step", str(step)),
+                    ("loss", f"{loss:.6f}"),
+                    ("source", node_name),
+                ]:
+                    body.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n".encode("utf-8"))
 
-            # Chunk payload
-            body.append(
-                f"--{boundary}\r\nContent-Disposition: form-data; name=\"chunk\"; filename=\"chunk_{idx}.bin\"\r\n"
-                f"Content-Type: application/octet-stream\r\n\r\n".encode("utf-8")
-            )
-            body.append(chunk_data)
-            body.append(f"\r\n--{boundary}--\r\n".encode("utf-8"))
+                # Chunk payload
+                body.append(
+                    f"--{boundary}\r\nContent-Disposition: form-data; name=\"chunk\"; filename=\"chunk_{idx}.bin\"\r\n"
+                    f"Content-Type: application/octet-stream\r\n\r\n".encode("utf-8")
+                )
+                body.append(chunk_data)
+                body.append(f"\r\n--{boundary}--\r\n".encode("utf-8"))
 
-            payload = b"".join(body)
+                payload = b"".join(body)
 
-            req = urllib.request.Request(
-                sync_url,
-                data=payload,
-                headers={
-                    "Authorization": f"Bearer {sync_token}",
-                    "Content-Type": f"multipart/form-data; boundary={boundary}",
-                    "Content-Length": str(len(payload)),
-                    "User-Agent": "CerebroCloudSync/1.0"
-                }
-            )
+                req = urllib.request.Request(
+                    sync_url,
+                    data=payload,
+                    headers={
+                        "Authorization": f"Bearer {sync_token}",
+                        "Content-Type": f"multipart/form-data; boundary={boundary}",
+                        "Content-Length": str(len(payload)),
+                        "User-Agent": "CerebroCloudSync/1.0"
+                    }
+                )
 
-            success = False
-            for attempt in range(1, 4):
-                try:
-                    with urllib.request.urlopen(req, timeout=120) as resp:
-                        resp_json = json.loads(resp.read().decode("utf-8"))
-                        if resp_json.get("success"):
-                            success = True
-                            break
-                        else:
-                            print(f"\n⚠️ [cloud_sync] Chunk {idx + 1}/{total_chunks} rejected (attempt {attempt}): {resp_json}")
-                except Exception as e:
-                    print(f"\n⚠️ [cloud_sync] Chunk {idx + 1}/{total_chunks} failed (attempt {attempt}): {e}")
-                time.sleep(attempt * 1.5)
+                success = False
+                for attempt in range(1, 4):
+                    try:
+                        with urllib.request.urlopen(req, timeout=120) as resp:
+                            resp_json = json.loads(resp.read().decode("utf-8"))
+                            if resp_json.get("success"):
+                                success = True
+                                break
+                            else:
+                                print(f"\n⚠️ [cloud_sync] Chunk {idx + 1}/{total_chunks} rejected (attempt {attempt}): {resp_json}")
+                    except Exception as e:
+                        print(f"\n⚠️ [cloud_sync] Chunk {idx + 1}/{total_chunks} failed (attempt {attempt}): {e}")
+                    time.sleep(attempt * 1.5)
 
-            # Explicit memory release
-            del payload, body, chunk_data
-            if not success:
-                print(f"❌ [cloud_sync] Aborted upload at chunk {idx + 1}/{total_chunks} after 3 attempts.")
-                return False
+                # Explicit memory release
+                del payload, body, chunk_data
+                if not success:
+                    print(f"\n❌ [cloud_sync] Aborted upload at chunk {idx + 1}/{total_chunks} after 3 attempts.")
+                    return False
+                pct = ((idx + 1) / total_chunks) * 100
+                print(f"\r  Uploaded chunk {idx + 1}/{total_chunks} ({pct:.0f}%)", end="", flush=True)
 
+        print()
         dt = time.time() - t0
         sz_mb = file_size / 1e6
         print(f"✅ [cloud_sync] Successfully uploaded {target_type}.pt ({sz_mb:.1f} MB) in {dt:.1f}s to bioflo.in!")
