@@ -279,7 +279,6 @@ def push_checkpoint(
         sz_mb = file_size / 1e6
         print(f"✅ [cloud_sync] Successfully uploaded {target_type}.pt ({sz_mb:.1f} MB) in {dt:.1f}s to bioflo.in!")
         if target_type == "best":
-            global _LAST_BEST_UPLOAD_TIME
             _LAST_BEST_UPLOAD_TIME = time.time()
         return True
     finally:
