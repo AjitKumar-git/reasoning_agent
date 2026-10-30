@@ -37,7 +37,7 @@ from src.jax import (
 )
 
 
-def parse_args():
+def parse_args(args_list=None):
     parser = argparse.ArgumentParser(description="CerebroSpheroid V4 JAX High-Throughput Trainer")
     parser.add_argument("--steps", "--max_steps", dest="steps", type=int, default=50000, help="Total target steps")
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size per TPU device")
@@ -56,11 +56,25 @@ def parse_args():
     parser.add_argument("--cloud_sync", action="store_true", default=True, help="Enable automatic checkpoint syncing with bioflo.in")
     parser.add_argument("--cloud_url", type=str, default="https://bioflo.in/api/cerebro/sync.php", help="bioflo.in sync endpoint")
     parser.add_argument("--cloud_token", type=str, default="CerebroSpheroid_Sync_Secure_2026", help="Secret sync token")
-    return parser.parse_args()
+    return parser.parse_args(args_list)
 
 
-def main():
-    args = parse_args()
+def run_training(**kwargs):
+    """Programmatic in-process entrypoint for Jupyter / Colab notebooks (avoids TPU process lock conflicts)."""
+    args = parse_args([])
+    for k, v in kwargs.items():
+        if hasattr(args, k):
+            setattr(args, k, v)
+        elif k == "drive_dir":
+            setattr(args, "ckpt_dir", v)
+        elif k == "max_steps":
+            setattr(args, "steps", v)
+    return main(args)
+
+
+def main(args=None):
+    if args is None:
+        args = parse_args()
     devices = jax.devices()
     print("=" * 80)
     print("🧠 CEREBRO-SPHEROID V4: JAX HIGH-THROUGHPUT ENGINE")
