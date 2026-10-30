@@ -357,7 +357,7 @@ def load_state(path: str, model, optimizer, scheduler, device, dtype, args) -> O
         else:
             raw_m.load_state_dict(payload, strict=False)
         model.to(device=device, dtype=model_param_dtype)
-        meta = read_json(meta_path_for(path)) or {}
+        meta = read_json(meta_path_for(path)) or read_json(path.replace(".pt", ".json")) or {}
         step = int(meta.get("step", 0))
         best = float(meta.get("selected", meta.get("best", float("inf"))))
         return {
@@ -873,7 +873,10 @@ def main():
         if getattr(args, "cloud_sync", False) and is_distributed:
             torch.distributed.barrier()
 
-        if os.path.exists(candidate):
+        cloud_latest = os.path.join(CKPT_DIR, "cerebro_spheroid_v4_latest.pt")
+        if getattr(args, "cloud_sync", False) and os.path.exists(cloud_latest) and not os.path.exists(candidate):
+            state_file = cloud_latest
+        elif os.path.exists(candidate):
             state_file = candidate
         else:
             # 1. Search for arch-matching state files on disk, newest first

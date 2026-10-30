@@ -348,6 +348,21 @@ def auto_sync_checkpoints(
         print(f"📥 [cloud_sync] Remote checkpoint is newer ({remote_step:,} > {local_latest_step:,}). Pulling from bioflo.in...")
         success = pull_checkpoint(target_local_file, target_type="latest", url=url, token=token)
         if success:
+            loss_val = float(remote_latest.get("loss", 7.34)) if isinstance(remote_latest, dict) else 7.34
+            meta_payload = {
+                "step": remote_step,
+                "loss": loss_val,
+                "best": loss_val,
+                "selected": loss_val,
+                "source": remote_latest.get("source", "bioflo"),
+                "resumed_from_cloud": True,
+            }
+            for meta_ext in [".json", ".meta.json"]:
+                try:
+                    with open(target_local_file.replace(".pt", meta_ext), "w") as f:
+                        json.dump(meta_payload, f, indent=2)
+                except Exception:
+                    pass
             return target_local_file
 
     return local_latest_path or (target_local_file if os.path.exists(target_local_file) else None)
