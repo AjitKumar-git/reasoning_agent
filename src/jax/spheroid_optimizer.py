@@ -141,9 +141,11 @@ def build_train_step_spheroid(
         def _loss_fn(param_dict):
             logits = training_rollout(param_dict, q_batch, target_len, buffers, config)
             log_probs = jax.nn.log_softmax(logits, axis=-1)
-            targets_onehot = jax.nn.one_hot(r_batch, config.vocab_size)
-            token_loss = -jnp.sum(targets_onehot * log_probs, axis=-1)
-            mask = (r_batch != pad_id).astype(jnp.float32)
+            # Memory optimization: Gather target log_probs directly without allocating 2.1 GB one-hot tensor
+            safe_targets = jnp.maximum(r_batch, 0)
+            target_log_probs = jnp.take_along_axis(log_probs, safe_targets[..., None], axis=-1).squeeze(-1)
+            token_loss = -target_log_probs
+            mask = ((r_batch != pad_id) & (r_batch >= 0)).astype(jnp.float32)
             return jnp.sum(token_loss * mask) / jnp.maximum(jnp.sum(mask), 1.0)
 
         loss_val, grads = jax.value_and_grad(_loss_fn, allow_int=True)(p)

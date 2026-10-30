@@ -79,10 +79,11 @@ class ElasticBucketBatcher:
         self.framework = framework.lower()
         self.target_pad_id = target_pad_id
         self.return_feedback = return_feedback
+        self.max_queue_size = max(batch_size * 4, 128)
 
         self.pad_id = tokenizer.pad_token_id if (hasattr(tokenizer, "pad_token_id") and tokenizer.pad_token_id is not None) else 0
-        # Queues per bucket index
-        self.queues: Dict[int, collections.deque] = {i: collections.deque() for i in range(len(self.buckets))}
+        # Queues per bucket index with bounded capacity
+        self.queues: Dict[int, collections.deque] = {i: collections.deque(maxlen=self.max_queue_size) for i in range(len(self.buckets))}
 
     def _extract_text_pair(self, row: Any) -> Tuple[str, str]:
         """Extracts (prompt, response) from diverse dataset formats (OpenHermes, ShareGPT, LMSYS, tuple pairs, etc.)."""
@@ -182,9 +183,18 @@ class ElasticBucketBatcher:
             if not q_txt or not r_txt:
                 continue
 
-            # Tokenize raw
-            q_ids = self.tokenizer.encode(q_txt, truncation=False)
-            r_ids = self.tokenizer.encode(r_txt, truncation=False)
+            # Tokenize bounded to prevent processing gigantic out-of-distribution text
+            max_enc = self.total_window + 256
+            if hasattr(self.tokenizer, "encode"):
+                try:
+                    q_ids = self.tokenizer.encode(q_txt, max_length=max_enc, truncation=True)
+                    r_ids = self.tokenizer.encode(r_txt, max_length=max_enc, truncation=True)
+                except TypeError:
+                    q_ids = self.tokenizer.encode(q_txt)
+                    r_ids = self.tokenizer.encode(r_txt)
+            else:
+                q_ids = [1] * len(q_txt.split())
+                r_ids = [1] * len(r_txt.split())
             q_len, r_len = len(q_ids), len(r_ids)
 
             # Route to best complementary bucket

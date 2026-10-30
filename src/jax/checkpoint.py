@@ -188,6 +188,9 @@ class AsyncCheckpointManager:
             shutil.copyfile(local_path, tmp_target)
             os.replace(tmp_target, target_path)
 
+            # Prune scratch disk to prevent unbounded local disk growth
+            self._prune_scratch()
+
             # Mirror to bioflo.in if cloud sync is active
             if self.cloud_sync and ("latest" in filename or "best" in filename):
                 try:
@@ -207,6 +210,22 @@ class AsyncCheckpointManager:
                     print(f"⚠️ [CloudSync Error]: {sync_err}")
         except Exception as err:
             print(f"⚠️ [AsyncCheckpoint Error]: {err}")
+
+    def _prune_scratch(self):
+        try:
+            pt_files = glob.glob(os.path.join(self.local_dir, "*_step_*.pt"))
+            if len(pt_files) > 2:
+                pt_files.sort(key=os.path.getmtime)
+                for old_f in pt_files[:-2]:
+                    try:
+                        os.remove(old_f)
+                        old_j = old_f.replace(".pt", ".json")
+                        if os.path.exists(old_j):
+                            os.remove(old_j)
+                    except OSError:
+                        pass
+        except Exception:
+            pass
 
     def dispatch(
         self,
