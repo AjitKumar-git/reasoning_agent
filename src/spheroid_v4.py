@@ -512,6 +512,19 @@ class CerebroSpheroidV4(CerebroSpheroidV3):
         if not isinstance(weights, dict):
             return False
 
+        # Remap JAX or foreign key naming conventions to native PyTorch
+        remapped_weights = {}
+        for k, v in weights.items():
+            new_k = k
+            if new_k.startswith("module."):
+                new_k = new_k[len("module."):]
+            if new_k.startswith("sensory."):
+                new_k = "sensory_dnn." + new_k[len("sensory."):]
+            elif new_k.startswith("motor."):
+                new_k = "motor_dnn." + new_k[len("motor."):]
+            remapped_weights[new_k] = v
+        weights = remapped_weights
+
         my_keys = set(self.state_dict().keys())
         v4_overlap = len(set(weights.keys()) & my_keys)
         if v4_overlap > 10:

@@ -40,8 +40,6 @@ def clean_drive():
         "cerebro_spheroid_v4_small_kaggle_latest.meta.json",
         "cerebro_spheroid_v4_small_kaggle_state.pt",
         "cerebro_spheroid_v4_small_kaggle_state.json",
-        "cerebro_spheroid_v4_jax_latest.pt",
-        "cerebro_spheroid_v4_jax_best.pt",
         "latest.pt",
         "best.pt",
         "manifest.json",
