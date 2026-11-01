@@ -37,6 +37,14 @@ class ModelConfigV4:
     use_plan: bool = True            # Recurrent premotor plan
 
 
+# Register ModelConfigV4 as a static JAX PyTree so remat / jit never treat it as an array
+jax.tree_util.register_pytree_node(
+    ModelConfigV4,
+    lambda c: ((), (c.vocab_size, c.surface_dim, c.num_shells, c.radial_dim, c.num_shortcut_tracts, c.max_phase_steps, c.thinking_cycles, c.use_shell_tap, c.use_plan)),
+    lambda aux, _: ModelConfigV4(*aux),
+)
+
+
 PRESETS_V4: Dict[str, Dict[str, Any]] = {
     "small": {
         "surface_dim": 640,
@@ -148,7 +156,7 @@ def deliberate_step(
     params: Dict[str, jnp.ndarray],
     state: jnp.ndarray,
     buffers: Tuple[jnp.ndarray, jnp.ndarray],
-    config: ModelConfigV4,
+    config: Optional[ModelConfigV4] = None,
 ) -> jnp.ndarray:
     """Single subconscious deliberation tick across concentric spherical shells."""
     B, K, D = state.shape
@@ -183,12 +191,13 @@ def emit_step(
     refractory_trace: Optional[jnp.ndarray],
     step_idx: int,
     buffers: Tuple[jnp.ndarray, jnp.ndarray],
-    config: ModelConfigV4,
+    config: Optional[ModelConfigV4] = None,
 ) -> Tuple[jnp.ndarray, jnp.ndarray, Optional[jnp.ndarray], jnp.ndarray]:
     """Single autoregressive/zero-feedback motor emission step."""
     B, K, D = state.shape
     surface, core = state[:, -1, :], state[:, 0, :]
-    phase_idx = jnp.clip(step_idx, 0, config.max_phase_steps - 1)
+    max_phase = params["motor.phase_embed.weight"].shape[0]
+    phase_idx = jnp.clip(step_idx, 0, max_phase - 1)
     phase = params["motor.phase_embed.weight"][phase_idx]
     motor_surface = surface + phase
 
@@ -237,7 +246,7 @@ def emit_step(
 
     # Efference copy injected back into subcortical core
     state_eff = state.at[:, 0, :].add(efference)
-    next_state = deliberate_step(params, state_eff, buffers, config)
+    next_state = deliberate_step(params, state_eff, buffers)
     return adapted_logits, next_state, next_trace, next_plan
 
 
@@ -257,7 +266,7 @@ def training_rollout(
     # Subconscious deliberation cycles before verbalization
     deliberate_remat = jax.checkpoint(deliberate_step)
     def _delib(s, _):
-        return deliberate_remat(params, s, buffers, config), None
+        return deliberate_remat(params, s, buffers), None
 
     state, _ = lax.scan(_delib, state, None, length=config.thinking_cycles)
 
@@ -270,7 +279,7 @@ def training_rollout(
     def _emit(carry, step_idx):
         cur_state, cur_trace, cur_plan = carry
         logits, nxt_s, nxt_t, nxt_p = emit_step_remat(
-            params, cur_state, sensory_kv, cur_plan, cur_trace, step_idx, buffers, config
+            params, cur_state, sensory_kv, cur_plan, cur_trace, step_idx, buffers
         )
         return (nxt_s, nxt_t, nxt_p), logits
 
