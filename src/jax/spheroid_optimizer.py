@@ -139,7 +139,7 @@ def build_train_step_spheroid(
         target_len = r_batch.shape[1]
 
         def _loss_fn(param_dict):
-            logits = training_rollout(param_dict, q_batch, target_len, buffers, config)
+            logits = training_rollout(param_dict, q_batch, target_len, buffers)
             log_probs = jax.nn.log_softmax(logits, axis=-1)
             # Memory optimization: Gather target log_probs directly without allocating 2.1 GB one-hot tensor
             safe_targets = jnp.maximum(r_batch, 0)

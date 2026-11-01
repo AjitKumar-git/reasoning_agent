@@ -138,7 +138,7 @@ def init_v4_params(
 
 
 def encode_sensory(
-    params: Dict[str, jnp.ndarray], token_ids: jnp.ndarray, config: ModelConfigV4
+    params: Dict[str, jnp.ndarray], token_ids: jnp.ndarray, config: Optional[ModelConfigV4] = None
 ) -> Tuple[jnp.ndarray, Tuple[jnp.ndarray, jnp.ndarray]]:
     """Encodes token IDs into continuous sensory memory and precomputed Arcuate Fasciculus K/V."""
     x = params["sensory.embedding.weight"][token_ids]
@@ -255,12 +255,17 @@ def training_rollout(
     prompts: jnp.ndarray,
     target_len: int,
     buffers: Tuple[jnp.ndarray, jnp.ndarray],
-    config: ModelConfigV4,
+    config: Optional[ModelConfigV4] = None,
 ) -> jnp.ndarray:
     """Full unrolled zero-feedback training rollout over target_len steps."""
     B, L = prompts.shape
-    sensory_mem, sensory_kv = encode_sensory(params, prompts, config)
-    init_state = jnp.zeros((B, config.num_shells, config.surface_dim), dtype=jnp.float32)
+    sensory_mem, sensory_kv = encode_sensory(params, prompts)
+    num_shells = config.num_shells if config is not None else params["core.intra_shell"].shape[0]
+    surface_dim = config.surface_dim if config is not None else params["sensory.fc2.weight"].shape[0]
+    vocab_size = config.vocab_size if config is not None else params["sensory.embedding.weight"].shape[0]
+    thinking_cycles = config.thinking_cycles if config is not None else 4
+
+    init_state = jnp.zeros((B, num_shells, surface_dim), dtype=jnp.float32)
     state = init_state.at[:, -1, :].set(jnp.mean(sensory_mem, axis=1))
 
     # Subconscious deliberation cycles before verbalization
@@ -268,10 +273,10 @@ def training_rollout(
     def _delib(s, _):
         return deliberate_remat(params, s, buffers), None
 
-    state, _ = lax.scan(_delib, state, None, length=config.thinking_cycles)
+    state, _ = lax.scan(_delib, state, None, length=thinking_cycles)
 
-    init_plan = jnp.zeros((B, config.surface_dim), dtype=jnp.float32)
-    init_refractory = jnp.zeros((B, config.vocab_size), dtype=jnp.float32)
+    init_plan = jnp.zeros((B, surface_dim), dtype=jnp.float32)
+    init_refractory = jnp.zeros((B, vocab_size), dtype=jnp.float32)
 
     # Gradient checkpointing on sequential emission reduces HBM temporaries from O(T) to O(1)
     emit_step_remat = jax.checkpoint(emit_step)
