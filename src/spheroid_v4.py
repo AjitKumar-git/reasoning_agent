@@ -522,6 +522,10 @@ class CerebroSpheroidV4(CerebroSpheroidV3):
                 new_k = "sensory_dnn." + new_k[len("sensory."):]
             elif new_k.startswith("motor."):
                 new_k = "motor_dnn." + new_k[len("motor."):]
+            elif new_k.startswith("core."):
+                new_k = "volumetric_core." + new_k[len("core."):]
+            if "motor_dnn.phase_embed." in new_k:
+                new_k = new_k.replace("motor_dnn.phase_embed.", "motor_dnn.motor_phase_embed.")
             remapped_weights[new_k] = v
         weights = remapped_weights
 
