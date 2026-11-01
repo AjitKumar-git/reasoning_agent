@@ -50,6 +50,7 @@ def parse_args(args_list=None):
     parser.add_argument("--lr", type=float, default=2.0e-3, help="Peak SpheroidOptimizer learning rate")
     parser.add_argument("--min_lr", type=float, default=1.0e-4, help="Final annealed learning rate")
     parser.add_argument("--preset", type=str, default="small", choices=["small", "wide"])
+    parser.add_argument("--max_hours", type=float, default=None, help="Maximum training wall-clock time in hours before graceful shutdown")
     parser.add_argument("--ckpt_dir", "--drive_dir", dest="ckpt_dir", type=str, default="/content/drive/MyDrive/cerebro_checkpoints", help="Destination checkpoint directory")
     parser.add_argument("--scratch_dir", type=str, default="/tmp/cerebro_ckpts", help="Fast local disk for staging")
     parser.add_argument("--save_every", type=int, default=1000, help="Steps between latest.pt async saves (default: 1000)")
@@ -265,6 +266,20 @@ def main(args=None):
                     f"cerebro_spheroid_v4_jax_step_{step}.pt",
                     meta_dict={"step": step, "loss": loss_val, "ema_loss": ema_loss},
                 )
+
+            # Max wall-clock time limit guard (e.g. Kaggle 8.5-hour safety limit)
+            if args.max_hours is not None:
+                elapsed_hours = (time.time() - t_start) / 3600.0
+                if elapsed_hours >= args.max_hours:
+                    print(f"\n⏰ Reached session time limit of {args.max_hours:.2f}h (elapsed: {elapsed_hours:.2f}h).")
+                    print(f"💾 Gracefully flushing final state for Step {step:,}...")
+                    ckpt_mgr.flush(
+                        params,
+                        buffers,
+                        "cerebro_spheroid_v4_jax_latest.pt",
+                        meta_dict={"step": step, "loss": loss_val, "ema_loss": ema_loss, "best_ema_loss": best_ema_loss},
+                    )
+                    break
 
     except (KeyboardInterrupt, Exception) as e:
         print(f"\n⚠️ Interrupted or stopped: {e}")

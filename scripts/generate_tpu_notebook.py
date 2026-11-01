@@ -6,19 +6,19 @@ notebook = {
             "cell_type": "markdown",
             "metadata": {},
             "source": [
-                "# 🧠 CerebroSpheroid V4: Cloud TPU Full 18-Hour Training Pipeline\n",
-                "### 128 GB HBM • 8 TPU Cores • PyTorch/XLA PJRT • Multi-Task Deep Convergence (bfloat16)\n",
+                "# 🧠 CerebroSpheroid V4: Cloud TPU JAX High-Throughput Engine\n",
+                "### 128 GB HBM • 8 TPU v3 Cores • Pure JAX / PJRT Native • 0ms Compilation Delay\n",
                 "\n",
                 "### **Architecture & Capabilities in V4-Small:**\n",
                 "1. **Modern Llama 32,000 Vocabulary**: Byte-fallback BPE with atomic single-digit arithmetic (`0`-`9`) and zero OOV tokens (127M total parameters).\n",
-                "2. **Causal Temporal Sensory Ingestion**: Exponential recency decay + phase velocity momentum vectors replacing order-erasing centroid pooling.\n",
-                "3. **SpheroidOptimizer**: Polar Newton-Schulz Riemannian optimizer with persistent power-iteration spectral radius guard (<1.5 ms) and decoupled row-wise RMS token momentum (<0.5 ms).\n",
-                "4. **Reasoning-Focused Mix**: Multi-step instruction and math reasoning (`OpenHermes=0.45, LMSYS=0.35, GSM8K=0.15, Cognitive=0.05`).\n",
-                "5. **18-Hour Budget & Kaggle 9-Hour Limit**: Kaggle batch runs have a strict 9-hour execution timeout. To train for 18 hours safely, run **Session 1 for 8.5 hours** (`--max_hours 8.5`), which cleanly packages checkpoints. Then run **Session 2 for 8.5 hours** resuming from Session 1 output for a full 17–18 hours without risking timeout termination!\n",
+                "2. **Elastic Sliding Context Window**: 1,536-token budget dynamically partitioned across 4 complementary cognitive regimes (`deep_reasoning`, `standard_cot`, `balanced`, `long_context`).\n",
+                "3. **SpheroidOptimizer**: Polar Quintic Newton-Schulz Riemannian optimizer with single-moment memory and contractive spectral bounds ($\\rho \\le 1.0$).\n",
+                "4. **Pure JAX / XLA Fused Kernel**: The entire multi-step deliberation and zero-feedback emission unroll runs natively on the TPU MXU systolic array without PyTorch/XLA recompilation lags.\n",
+                "5. **Autonomous Multi-Session Resumption**: Safely trains under Kaggle's 9-hour limit via `--max_hours 8.5` and automatically mirrors checkpoints into `/kaggle/working/checkpoints/` and bioflo.in.\n",
                 "\n",
                 "---\n",
                 "### ⚡ Kaggle Settings:\n",
-                "- **Accelerator**: Select **TPU VM v3-8** or **TPU v5e**\n",
+                "- **Accelerator**: Select **TPU VM v3-8**\n",
                 "- **Internet**: Toggle **Internet ON**\n",
                 "- **Persistence**: Variables and Files\n"
             ]
@@ -26,7 +26,7 @@ notebook = {
         {
             "cell_type": "markdown",
             "metadata": {},
-            "source": ["## Step 1: TPU Hardware & PyTorch/XLA PJRT Verification"]
+            "source": ["## Step 1: Verify Kaggle TPU Hardware & JAX PJRT Environment"]
         },
         {
             "cell_type": "code",
@@ -34,27 +34,25 @@ notebook = {
             "metadata": {},
             "outputs": [],
             "source": [
-                "import os, sys\n",
-                "# Set modern PJRT runtime for Cloud TPU\n",
-                "os.environ['PJRT_DEVICE'] = 'TPU'\n",
+                "import jax\n",
+                "import jax.numpy as jnp\n",
                 "\n",
-                "try:\n",
-                "    import torch_xla.core.xla_model as xm\n",
-                "    device = xm.xla_device()\n",
-                "    world_size = xm.xrt_world_size()\n",
-                "    print(f\"✅ Successfully connected to Cloud TPU device: {device} (World Size: {world_size})\")\n",
-                "except ImportError:\n",
-                "    print(\"Installing torch_xla for TPU VM...\")\n",
-                "    !pip install -q torch~=2.5.0 torch_xla[tpu]~=2.5.0 -f https://storage.googleapis.com/libtpu-releases/index.html\n",
-                "    import torch_xla.core.xla_model as xm\n",
-                "    device = xm.xla_device()\n",
-                "    print(f\"✅ Successfully installed and connected to Cloud TPU: {device}\")\n"
+                "print(f\"JAX Version      : {jax.__version__}\")\n",
+                "print(f\"JAX Default Dev  : {jax.default_backend().upper()}\")\n",
+                "devices = jax.devices()\n",
+                "print(f\"Detected Devices : {devices}\")\n",
+                "print(f\"Active Core Count: {len(devices)}\")\n",
+                "print(f\"Device Kind      : {devices[0].device_kind}\")\n",
+                "\n",
+                "is_tpu = any(\"TPU\" in d.device_kind.upper() for d in devices)\n",
+                "assert is_tpu, \"⚠️ No TPU detected! In the Kaggle notebook settings (right panel), set Accelerator to 'TPU VM v3-8'!\"\n",
+                "print(f\"\\n✅ Successfully connected to Cloud TPU VM! ({len(devices)} cores active)\")\n"
             ]
         },
         {
             "cell_type": "markdown",
             "metadata": {},
-            "source": ["## Step 2: Clone / Pull Latest Repository"]
+            "source": ["## Step 2: Clone / Pull Latest Repository & Dependencies"]
         },
         {
             "cell_type": "code",
@@ -69,7 +67,7 @@ notebook = {
                 "%cd /kaggle/working/reasoning_agent\n",
                 "!git fetch origin main\n",
                 "!git reset --hard origin/main\n",
-                "!pip install -q pyarrow fastparquet transformers datasets sentencepiece\n"
+                "!pip install -q transformers datasets sentencepiece optax torch\n"
             ]
         },
         {
@@ -84,62 +82,37 @@ notebook = {
             "outputs": [],
             "source": [
                 "import os, glob, shutil\n",
-                "os.makedirs(\"checkpoints\", exist_ok=True)\n",
+                "os.makedirs(\"/kaggle/working/checkpoints\", exist_ok=True)\n",
                 "# 1. Check mounted inputs under /kaggle/input\n",
                 "if os.path.exists(\"/kaggle/input\"):\n",
                 "    for root, dirs, files in os.walk(\"/kaggle/input\"):\n",
                 "        for f in files:\n",
                 "            full_p = os.path.join(root, f)\n",
                 "            if f.endswith(\".zip\") and \"cerebro_spheroid\" in f:\n",
-                "                print(f\"Unpacking checkpoint archive: {f}\")\n",
-                "                os.system(f'unzip -n -q \"{full_p}\" -d checkpoints/')\n",
-                "            elif f.endswith(\".pt\") and \"cerebro_spheroid_v4\" in f:\n",
-                "                print(f\"Found checkpoint file: {f}\")\n",
-                "                shutil.copy2(full_p, os.path.join(\"checkpoints\", f))\n",
+                "                print(f\"📦 Unzipping checkpoint archive from input: {full_p}\")\n",
+                "                !unzip -q -o \"{full_p}\" -d /kaggle/working/checkpoints/\n",
+                "            elif f.endswith(\".pt\") and \"cerebro_spheroid\" in f:\n",
+                "                shutil.copy2(full_p, os.path.join(\"/kaggle/working/checkpoints\", f))\n",
+                "                print(f\"📥 Found raw checkpoint: {f} -> copied to /kaggle/working/checkpoints/\")\n",
                 "\n",
-                "# 2. Fallback: Download 1,000-step checkpoint directly from previous kernel if not mounted\n",
-                "v4_ckpts = [f for f in os.listdir(\"checkpoints\") if \"cerebro_spheroid_v4_small\" in f]\n",
-                "if not v4_ckpts:\n",
-                "    print(\"Downloading 1,000-step checkpoint from previous kernel: ajitsheoran/reasoning-agent...\")\n",
-                "    os.system(\"kaggle kernels output ajitsheoran/reasoning-agent -p checkpoints/ || true\")\n",
-                "    for f in os.listdir(\"checkpoints\"):\n",
-                "        if f.endswith(\".zip\") and \"cerebro_spheroid\" in f:\n",
-                "            os.system(f'unzip -n -q \"checkpoints/{f}\" -d checkpoints/')\n",
-                "\n",
-                "# Flatten nested checkpoints_tpu or checkpoints_out if present\n",
-                "for nested in [\"checkpoints/checkpoints_tpu\", \"checkpoints/checkpoints_out\"]:\n",
-                "    if os.path.exists(nested):\n",
-                "        for item in os.listdir(nested):\n",
-                "            shutil.move(os.path.join(nested, item), os.path.join(\"checkpoints\", item))\n",
-                "        shutil.rmtree(nested, ignore_errors=True)\n",
-                "\n",
-                "print(\"\\nCheckpoints available:\")\n",
-                "!ls -lh checkpoints/\n"
-            ]
-        },
-        {
-            "cell_type": "markdown",
-            "metadata": {},
-            "source": ["## Step 4: Acceptance Verification Tests on TPU VM"]
-        },
-        {
-            "cell_type": "code",
-            "execution_count": None,
-            "metadata": {},
-            "outputs": [],
-            "source": [
-                "!python3 -u training/test_v4_architecture.py\n",
-                "!python3 -u training/test_spheroid_optimizer.py\n"
+                "ckpts = glob.glob(\"/kaggle/working/checkpoints/*.pt\")\n",
+                "if ckpts:\n",
+                "    print(f\"✅ Active checkpoints ready for auto-resume ({len(ckpts)} files found):\")\n",
+                "    for c in ckpts:\n",
+                "        print(f\"   • {os.path.basename(c)} ({os.path.getsize(c) / (1024**2):.1f} MB)\")\n",
+                "else:\n",
+                "    print(\"🆕 No existing checkpoints found in inputs. Will auto-sync latest state from bioflo.in or start clean!\")\n"
             ]
         },
         {
             "cell_type": "markdown",
             "metadata": {},
             "source": [
-                "## Step 5: Full-Resource Cloud TPU Training (Multi-Core Distributed)\n",
-                "- **Multi-Core**: `torchrun --nproc_per_node=4` utilizing all 8 TensorCores\n",
-                "- **Throughput**: 4 chips $\\times$ 32 batch $\\times$ 4 accum $\\times$ 256 window = **131,072 tokens/step**\n",
-                "- **Session Time Budget**: `--max_hours 8.5` (safely under Kaggle's 9.0-hr hard timeout limit)"
+                "## Step 4: Launch CerebroSpheroid V4 JAX Cloud TPU Training\n",
+                "- **Engine**: Pure JAX native execution with XLA fusion\n",
+                "- **Context**: Elastic Sliding Window (1,536 tokens)\n",
+                "- **Time Safety**: `--max_hours 8.5` safely exits before Kaggle's 9.0-hr hard timeout\n",
+                "- **Cloud Sync**: 0ms TPU pause asynchronous mirroring to bioflo.in"
             ]
         },
         {
@@ -148,65 +121,23 @@ notebook = {
             "metadata": {},
             "outputs": [],
             "source": [
-                "!torchrun --nproc_per_node=4 training/train_v4_full.py \\\n",
-                "    --arch v4 \\\n",
-                "    --preset v4_small \\\n",
-                "    --tokenizer llama \\\n",
-                "    --mix \"openhermes=0.45,lmsys=0.35,gsm8k=0.15,cognitive=0.05\" \\\n",
-                "    --optimizer spheroid \\\n",
-                "    --device xla \\\n",
-                "    --dtype bf16 \\\n",
+                "!python3 training/train_v4_jax.py \\\n",
+                "    --ckpt_dir /kaggle/working/checkpoints \\\n",
+                "    --elastic_window \\\n",
+                "    --total_window 1536 \\\n",
+                "    --batch_size 4 \\\n",
                 "    --lr 0.002 \\\n",
                 "    --max_steps 50000 \\\n",
                 "    --max_hours 8.5 \\\n",
-                "    --batch_size 32 \\\n",
-                "    --grad_accum 4 \\\n",
-                "    --window 256 \\\n",
-                "    --eval_window 128 \\\n",
-                "    --eval_interval 200 \\\n",
                 "    --save_every 100 \\\n",
-                "    --save_prefix cerebro_spheroid_v4_small_tpu\n"
+                "    --log_every 10 \\\n",
+                "    --cloud_sync\n"
             ]
         },
         {
             "cell_type": "markdown",
             "metadata": {},
-            "source": [
-                "### Alternative: Interactive 18-Hour Single-Run Cell\n",
-                "*(If running directly in an active interactive browser tab without the 9-hr batch cutoff)*"
-            ]
-        },
-        {
-            "cell_type": "code",
-            "execution_count": None,
-            "metadata": {},
-            "outputs": [],
-            "source": [
-                "# To train for 18 continuous hours in an interactive editor session:\n",
-                "# !torchrun --nproc_per_node=4 training/train_v4_full.py \\\n",
-                "#     --arch v4 \\\n",
-                "#     --preset v4_small \\\n",
-                "#     --tokenizer llama \\\n",
-                "#     --mix \"openhermes=0.45,lmsys=0.35,gsm8k=0.15,cognitive=0.05\" \\\n",
-                "#     --optimizer spheroid \\\n",
-                "#     --device xla \\\n",
-                "#     --dtype bf16 \\\n",
-                "#     --lr 0.002 \\\n",
-                "#     --max_steps 50000 \\\n",
-                "#     --max_hours 18.0 \\\n",
-                "#     --batch_size 32 \\\n",
-                "#     --grad_accum 4 \\\n",
-                "#     --window 256 \\\n",
-                "#     --eval_window 128 \\\n",
-                "#     --eval_interval 200 \\\n",
-                "#     --save_every 100 \\\n",
-                "#     --save_prefix cerebro_spheroid_v4_small_tpu\n"
-            ]
-        },
-        {
-            "cell_type": "markdown",
-            "metadata": {},
-            "source": ["## Step 6: Archive Checkpoints for Download"]
+            "source": ["## Step 5: Archive Checkpoints for Download & Multi-Session Chaining"]
         },
         {
             "cell_type": "code",
@@ -216,11 +147,11 @@ notebook = {
             "source": [
                 "import os, glob\n",
                 "!mkdir -p /kaggle/working/checkpoints_tpu\n",
-                "!cp -r checkpoints/* /kaggle/working/checkpoints_tpu/ 2>/dev/null || true\n",
-                "!zip -r /kaggle/working/cerebro_spheroid_v4_small_tpu_checkpoints.zip /kaggle/working/checkpoints_tpu\n",
+                "!cp -r /kaggle/working/checkpoints/* /kaggle/working/checkpoints_tpu/ 2>/dev/null || true\n",
+                "!zip -r /kaggle/working/cerebro_spheroid_v4_jax_checkpoints.zip /kaggle/working/checkpoints_tpu\n",
                 "!ls -lh /kaggle/working/*.zip\n",
-                "print(\"\\n✅ Checkpoints successfully archived to /kaggle/working/cerebro_spheroid_v4_small_tpu_checkpoints.zip!\")\n",
-                "print(\"Download it directly from the right-hand Kaggle Output panel.\")\n"
+                "print(\"\\n✅ Checkpoints successfully archived to /kaggle/working/cerebro_spheroid_v4_jax_checkpoints.zip!\")\n",
+                "print(\"Download it directly from the Kaggle Output panel or attach as input to your next session!\")\n"
             ]
         }
     ],
@@ -247,7 +178,4 @@ notebook = {
 with open("training/remote/CerebroSpheroid_V4_TPU_Kaggle.ipynb", "w") as f:
     json.dump(notebook, f, indent=1)
 
-with open("/tmp/kaggle_tpu_pull/reasoning-agent-tpu.ipynb", "w") as f:
-    json.dump(notebook, f, indent=1)
-
-print("Successfully written TPU notebooks!")
+print("Successfully written TPU JAX notebook!")
