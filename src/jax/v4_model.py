@@ -225,9 +225,12 @@ def emit_step(
     phase_batch = jnp.repeat(phase[None, :], B, axis=0)
     plan_input = jnp.concatenate([h, phase_batch], axis=-1)
     p_gate = jax.nn.sigmoid(jnp.matmul(plan_input, params["motor.plan_gate.weight"].T) + params["motor.plan_gate.bias"])
-    next_plan = (
-        params["motor.plan_decay"] * plan
-        + params["motor.plan_write"] * p_gate * jnp.matmul(plan_input, params["motor.plan_update.weight"].T)
+    plan_decay = jnp.clip(params["motor.plan_decay"], 0.0, 0.92)
+    plan_update = jnp.matmul(plan_input, params["motor.plan_update.weight"].T)
+    next_plan = jnp.clip(
+        plan_decay * plan + params["motor.plan_write"] * p_gate * plan_update,
+        -50.0,
+        50.0,
     )
 
     temp = jnp.clip(params["motor.temperature_scale"], 0.1, 5.0)

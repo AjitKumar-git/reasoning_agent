@@ -26,7 +26,7 @@ from .v4_model import ModelConfigV4, training_rollout
 
 
 RECURRENT_KEYS: Set[str] = {"core.intra_shell", "core.reentrant_field", "core.shortcut_tracts"}
-VOCAB_KEYS: Set[str] = {"sensory.embedding.weight", "motor.head.weight"}
+VOCAB_KEYS: Set[str] = {"sensory.embedding.weight", "motor.head.weight", "motor.phase_embed.weight"}
 
 
 def is_manifold_operator(k: str, p: jnp.ndarray) -> bool:
@@ -155,92 +155,99 @@ def build_spheroid_train_engine(
 
     @jax.jit
     def apply_opt_step(p, opt_s, grads, base_lr):
-        # Gradient clipping
+        # Gradient clipping & finite validation
         grad_norm = jnp.sqrt(sum(jnp.sum(jnp.square(g)) for g in grads.values() if jnp.issubdtype(g.dtype, jnp.inexact)))
-        clip_scale = jnp.minimum(1.0, 1.0 / (grad_norm + 1e-6))
+        is_finite = jnp.isfinite(grad_norm)
+        clip_scale = jnp.where(is_finite, jnp.minimum(1.0, 1.0 / (grad_norm + 1e-6)), 0.0)
         clipped_grads = jax.tree_util.tree_map(lambda g: g * clip_scale if jnp.issubdtype(g.dtype, jnp.inexact) else g, grads)
 
-        cur_step = opt_s["step"] + 1
-        new_params = {}
-        new_m = {}
-        new_v = {}
-        new_power_v = dict(opt_s["power_v"])
+        def _apply_step():
+            cur_step = opt_s["step"] + 1
+            new_params = {}
+            new_m = {}
+            new_v = {}
+            new_power_v = dict(opt_s["power_v"])
 
-        lr_1d = 0.2 * base_lr
-        lr_vocab = jnp.minimum(base_lr, 6.0e-4)
+            lr_1d = 0.2 * base_lr
+            lr_vocab = jnp.minimum(base_lr, 6.0e-4)
 
-        for k, param in p.items():
-            if not jnp.issubdtype(param.dtype, jnp.inexact):
-                new_params[k] = param
-                continue
+            for k, param in p.items():
+                if not jnp.issubdtype(param.dtype, jnp.inexact):
+                    new_params[k] = param
+                    continue
 
-            g = clipped_grads[k]
-            m_prev = opt_s["m"][k]
+                g = clipped_grads[k]
+                m_prev = opt_s["m"][k]
 
-            # -----------------------------------------------------------------
-            # 1. Manifold Matrix Operators (Quintic Newton-Schulz Polar Update)
-            # -----------------------------------------------------------------
-            if is_manifold_operator(k, param):
-                m_new = 0.95 * m_prev + 0.05 * g
-                new_m[k] = m_new
+                # -----------------------------------------------------------------
+                # 1. Manifold Matrix Operators (Quintic Newton-Schulz Polar Update)
+                # -----------------------------------------------------------------
+                if is_manifold_operator(k, param):
+                    m_new = 0.95 * m_prev + 0.05 * g
+                    new_m[k] = m_new
 
-                # Decoupled Riemannian Weight Decay
-                p_decayed = param * (1.0 - base_lr * weight_decay)
+                    # Decoupled Riemannian Weight Decay
+                    p_decayed = param * (1.0 - base_lr * weight_decay)
 
-                # Polar orthogonalization
-                O = zeropower_via_newtonschulz5_jax(m_new, steps=3)
+                    # Polar orthogonalization
+                    O = zeropower_via_newtonschulz5_jax(m_new, steps=3)
 
-                # Natural aspect-ratio scaling
-                rows = param.shape[-2]
-                cols = param.shape[-1]
-                aspect_scale = math.sqrt(max(1.0, float(rows) / float(cols)))
+                    # Natural aspect-ratio scaling
+                    rows = param.shape[-2]
+                    cols = param.shape[-1]
+                    aspect_scale = math.sqrt(max(1.0, float(rows) / float(cols)))
 
-                # Update along orthogonal manifold
-                p_updated = p_decayed - (base_lr * aspect_scale) * O
+                    # Update along orthogonal manifold
+                    p_updated = p_decayed - (base_lr * aspect_scale) * O
 
-                # Recurrent Manifold Contractive Spectral Guard (rho <= 1.0)
-                if k in RECURRENT_KEYS:
-                    p_updated, v_next = clamp_spectral_norm_jax(p_updated, opt_s["power_v"][k], max_spec_norm=1.0)
-                    new_power_v[k] = v_next
+                    # Recurrent Manifold Contractive Spectral Guard (rho <= 1.0)
+                    if k in RECURRENT_KEYS:
+                        p_updated, v_next = clamp_spectral_norm_jax(p_updated, opt_s["power_v"][k], max_spec_norm=1.0)
+                        new_power_v[k] = v_next
 
-                new_params[k] = p_updated
+                    new_params[k] = p_updated
 
-            # -----------------------------------------------------------------
-            # 2. Vocabulary Embeddings & Heads (AdamW)
-            # -----------------------------------------------------------------
-            elif k in VOCAB_KEYS:
-                v_prev = opt_s["v"][k]
-                m_new = 0.9 * m_prev + 0.1 * g
-                v_new = 0.95 * v_prev + 0.05 * jnp.square(g)
-                new_m[k] = m_new
-                new_v[k] = v_new
+                # -----------------------------------------------------------------
+                # 2. Vocabulary & Phase Embeddings / Heads (AdamW)
+                # -----------------------------------------------------------------
+                elif k in VOCAB_KEYS:
+                    v_prev = opt_s["v"][k]
+                    m_new = 0.9 * m_prev + 0.1 * g
+                    v_new = 0.95 * v_prev + 0.05 * jnp.square(g)
+                    new_m[k] = m_new
+                    new_v[k] = v_new
 
-                m_hat = m_new / (1.0 - jnp.power(0.9, cur_step))
-                v_hat = v_new / (1.0 - jnp.power(0.95, cur_step))
-                p_decayed = param * (1.0 - lr_vocab * weight_decay)
-                new_params[k] = p_decayed - lr_vocab * (m_hat / (jnp.sqrt(v_hat) + 1e-8))
+                    m_hat = m_new / (1.0 - jnp.power(0.9, cur_step))
+                    v_hat = v_new / (1.0 - jnp.power(0.95, cur_step))
+                    p_decayed = param * (1.0 - lr_vocab * weight_decay)
+                    new_params[k] = p_decayed - lr_vocab * (m_hat / (jnp.sqrt(v_hat) + 1e-8))
 
-            # -----------------------------------------------------------------
-            # 3. 1D Parameters, Scalars, Pacemakers & Norms (AdamW, 0 Decay)
-            # -----------------------------------------------------------------
-            else:
-                v_prev = opt_s["v"][k]
-                m_new = 0.9 * m_prev + 0.1 * g
-                v_new = 0.95 * v_prev + 0.05 * jnp.square(g)
-                new_m[k] = m_new
-                new_v[k] = v_new
+                # -----------------------------------------------------------------
+                # 3. 1D Parameters, Scalars, Pacemakers & Norms (AdamW, 0 Decay)
+                # -----------------------------------------------------------------
+                else:
+                    v_prev = opt_s["v"][k]
+                    m_new = 0.9 * m_prev + 0.1 * g
+                    v_new = 0.95 * v_prev + 0.05 * jnp.square(g)
+                    new_m[k] = m_new
+                    new_v[k] = v_new
 
-                m_hat = m_new / (1.0 - jnp.power(0.9, cur_step))
-                v_hat = v_new / (1.0 - jnp.power(0.95, cur_step))
-                new_params[k] = param - lr_1d * (m_hat / (jnp.sqrt(v_hat) + 1e-8))
+                    m_hat = m_new / (1.0 - jnp.power(0.9, cur_step))
+                    v_hat = v_new / (1.0 - jnp.power(0.95, cur_step))
+                    new_params[k] = param - lr_1d * (m_hat / (jnp.sqrt(v_hat) + 1e-8))
 
-        new_opt_state = {
-            "step": cur_step,
-            "m": new_m,
-            "v": new_v,
-            "power_v": new_power_v,
-        }
-        return new_params, new_opt_state
+            new_opt_state = {
+                "step": cur_step,
+                "m": new_m,
+                "v": new_v,
+                "power_v": new_power_v,
+            }
+            return new_params, new_opt_state
+
+        def _skip_step():
+            return p, opt_s
+
+        return lax.cond(is_finite, _apply_step, _skip_step)
 
     return compute_grad_step, apply_opt_step
 

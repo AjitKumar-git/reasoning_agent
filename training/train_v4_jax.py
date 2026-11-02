@@ -227,13 +227,21 @@ def main(args=None):
             total_step_tokens = 0
 
             # Gradient accumulation across diverse elastic sliding window buckets
+            valid_micro_steps = 0
             for _ in range(args.grad_accum):
                 b_idx, b_name, q_batch, r_batch = batcher.next_batch()
                 last_bucket_name = b_name
                 total_step_tokens += int(q_batch.shape[0] * (q_batch.shape[1] + r_batch.shape[1]))
 
                 micro_loss, micro_grads = compute_grad_step(params, q_batch, r_batch)
-                accum_loss += float(micro_loss)
+                m_loss_f = float(micro_loss)
+
+                # Skip corrupted or non-finite micro-batches
+                if math.isnan(m_loss_f) or math.isinf(m_loss_f):
+                    continue
+
+                accum_loss += m_loss_f
+                valid_micro_steps += 1
 
                 scale = 1.0 / float(args.grad_accum)
                 if accum_grads is None:
@@ -241,51 +249,65 @@ def main(args=None):
                 else:
                     accum_grads = jax.tree_util.tree_map(lambda a, g: a + g * scale, accum_grads, micro_grads)
 
-            params, opt_state = apply_opt_step(params, opt_state, accum_grads, lr)
-            loss_val = accum_loss / float(args.grad_accum)
+            if valid_micro_steps > 0 and accum_grads is not None:
+                if valid_micro_steps < args.grad_accum:
+                    renorm = float(args.grad_accum) / float(valid_micro_steps)
+                    accum_grads = jax.tree_util.tree_map(lambda g: g * renorm, accum_grads)
+                    loss_val = accum_loss / float(valid_micro_steps)
+                else:
+                    loss_val = accum_loss / float(args.grad_accum)
+
+                params, opt_state = apply_opt_step(params, opt_state, accum_grads, lr)
+            else:
+                loss_val = float("nan")
+
             dt = time.time() - t0
 
-            if ema_loss is None:
-                ema_loss = loss_val
-            else:
-                ema_loss = 0.96 * ema_loss + 0.04 * loss_val
+            if not math.isnan(loss_val):
+                if ema_loss is None:
+                    ema_loss = loss_val
+                else:
+                    ema_loss = 0.96 * ema_loss + 0.04 * loss_val
 
             if step % args.log_every == 0 or step == start_step:
-                ppl = math.exp(min(loss_val, 15.0))
-                ema_ppl = math.exp(min(ema_loss, 15.0))
+                loss_disp = loss_val if not math.isnan(loss_val) else float("nan")
+                ema_disp = ema_loss if (ema_loss is not None and not math.isnan(ema_loss)) else float("nan")
+                ppl = math.exp(min(loss_disp, 15.0)) if not math.isnan(loss_disp) else float("nan")
+                ema_ppl = math.exp(min(ema_disp, 15.0)) if not math.isnan(ema_disp) else float("nan")
                 tok_s = total_step_tokens / max(dt, 1e-4)
                 eta_h = ((args.steps - step) * dt) / 3600.0
                 print(
-                    f"step {step:5d}/{args.steps:,} | {last_bucket_name:<16} (x{args.grad_accum}) | loss {loss_val:6.4f} (ema {ema_loss:6.4f}) | "
+                    f"step {step:5d}/{args.steps:,} | {last_bucket_name:<16} (x{args.grad_accum}) | loss {loss_disp:6.4f} (ema {ema_disp:6.4f}) | "
                     f"ema_ppl {ema_ppl:6.1f} | lr {lr:.2e} | {dt*1000:5.1f} ms/step | {tok_s:7.1f} tok/s | ETA: {eta_h:4.2f}h"
                 )
 
-            # Async checkpointing
-            if step % args.save_every == 0:
-                ckpt_mgr.dispatch(
-                    params,
-                    buffers,
-                    "cerebro_spheroid_v4_jax_latest.pt",
-                    meta_dict={"step": step, "loss": loss_val, "ema_loss": ema_loss, "best_ema_loss": best_ema_loss},
-                )
+            # Async checkpointing (strictly guarded against NaN / Inf corruption)
+            if not math.isnan(loss_val) and not math.isinf(loss_val):
+                if step % args.save_every == 0:
+                    ckpt_mgr.dispatch(
+                        params,
+                        buffers,
+                        "cerebro_spheroid_v4_jax_latest.pt",
+                        meta_dict={"step": step, "loss": loss_val, "ema_loss": ema_loss, "best_ema_loss": best_ema_loss},
+                    )
 
-            if step_offset > 150 and ema_loss < best_ema_loss - 0.01:
-                best_ema_loss = ema_loss
-                print(f"  ⭐ GENUINE RECORD (EMA): Loss {best_ema_loss:.4f} (PPL {math.exp(best_ema_loss):.1f}) -> Syncing best.pt")
-                ckpt_mgr.dispatch(
-                    params,
-                    buffers,
-                    "cerebro_spheroid_v4_jax_best.pt",
-                    meta_dict={"step": step, "loss": loss_val, "ema_loss": best_ema_loss},
-                )
+                if step_offset > 150 and ema_loss is not None and ema_loss < best_ema_loss - 0.01:
+                    best_ema_loss = ema_loss
+                    print(f"  ⭐ GENUINE RECORD (EMA): Loss {best_ema_loss:.4f} (PPL {math.exp(best_ema_loss):.1f}) -> Syncing best.pt")
+                    ckpt_mgr.dispatch(
+                        params,
+                        buffers,
+                        "cerebro_spheroid_v4_jax_best.pt",
+                        meta_dict={"step": step, "loss": loss_val, "ema_loss": best_ema_loss},
+                    )
 
-            if step % args.periodic_every == 0:
-                ckpt_mgr.dispatch(
-                    params,
-                    buffers,
-                    f"cerebro_spheroid_v4_jax_step_{step}.pt",
-                    meta_dict={"step": step, "loss": loss_val, "ema_loss": ema_loss},
-                )
+                if step % args.periodic_every == 0:
+                    ckpt_mgr.dispatch(
+                        params,
+                        buffers,
+                        f"cerebro_spheroid_v4_jax_step_{step}.pt",
+                        meta_dict={"step": step, "loss": loss_val, "ema_loss": ema_loss},
+                    )
 
             # Max wall-clock time limit guard (e.g. Kaggle 8.5-hour safety limit)
             if args.max_hours is not None:
