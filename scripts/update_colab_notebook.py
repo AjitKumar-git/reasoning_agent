@@ -1,0 +1,170 @@
+import json
+
+notebook = {
+    "cells": [
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "# 🧠 CerebroSpheroid V4: Cloud TPU JAX High-Throughput Engine\n",
+                "### Pure JAX Native • Google Colab TPU v5e/v2 • SpheroidOptimizer (Newton-Schulz Polar)\n",
+                "\n",
+                "### **Architecture & Optimization in V4:**\n",
+                "1. **Riemannian SpheroidOptimizer**:\n",
+                "   - **Manifold Matrix Operators** (2D/3D/4D weights, projections, MLPs): Optimized via **Quintic Newton-Schulz Polar Orthogonalization** (Muon-style) with a single-momentum buffer (50% memory saving).\n",
+                "   - **Recurrent Core** (`intra_shell`, `reentrant_field`, `shortcut_tracts`): Contractive spectral clamp ($\\rho \\le 1.0$) prevents gradient explosion during long zero-feedback mental deliberation.\n",
+                "   - **Vocabulary Tables & Heads** (`sensory.embedding`, `motor.head`): Optimized via **AdamW** to handle Zipfian power-law token frequencies and sparse gradients.\n",
+                "   - **1D Vectors & Normalizations**: Optimized via zero-decay AdamW to preserve scale stability.\n",
+                "2. **Elastic Sliding Context Window**: 1,536-token budget dynamically partitioned across 4 cognitive regimes (`deep_reasoning`, `standard_cot`, `balanced`, `long_context`).\n",
+                "3. **Zero-Feedback Mental Deliberation**: True recurrent reasoning without teacher forcing, building genuine attractor dynamics.\n",
+                "4. **Asynchronous Dual Mirroring**: Automatically syncs `.pt` checkpoints to Google Drive and mirrors to `bioflo.in` without TPU stalls.\n"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": ["## Step 1: Verify Google Colab Cloud TPU & JAX Environment"]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "import jax\n",
+                "import jax.numpy as jnp\n",
+                "\n",
+                "print(f\"JAX Version      : {jax.__version__}\")\n",
+                "print(f\"JAX Default Dev  : {jax.default_backend().upper()}\")\n",
+                "devices = jax.devices()\n",
+                "print(f\"Detected Devices : {devices}\")\n",
+                "print(f\"Device type      : {devices[0].device_kind}\")\n",
+                "\n",
+                "is_tpu = any(\"TPU\" in d.device_kind.upper() for d in devices)\n",
+                "if is_tpu:\n",
+                "    print(f\"\\n✅ Successfully connected to Cloud TPU! ({len(devices)} core(s) active)\")\n",
+                "else:\n",
+                "    print(\"\\n⚠️ Running on CPU/GPU. For maximum speed, go to Runtime -> Change runtime type -> TPU.\")\n"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": ["## Step 2: Mount Google Drive for Automatic Checkpoint Persistence"]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "import os, shutil\n",
+                "from google.colab import drive\n",
+                "\n",
+                "# Mount Google Drive\n",
+                "drive.mount(\"/content/drive\", force_remount=False)\n",
+                "\n",
+                "DRIVE_CKPT_DIR = \"/content/drive/MyDrive/cerebro_checkpoints\"\n",
+                "os.makedirs(DRIVE_CKPT_DIR, exist_ok=True)\n",
+                "print(f\"✅ Google Drive successfully mounted!\")\n",
+                "print(f\"📂 Checkpoints destination: {DRIVE_CKPT_DIR}\")\n"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": ["## Step 3: Install Dependencies & Synchronize Repository"]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "!pip install -q transformers datasets sentencepiece optax torch\n",
+                "import os\n",
+                "if not os.path.exists(\"/content/reasoning_agent\"):\n",
+                "    !git clone https://github.com/AjitKumar-git/reasoning_agent.git /content/reasoning_agent\n",
+                "%cd /content/reasoning_agent\n",
+                "!git pull\n",
+                "print(\"\\n✅ Repository synchronized to latest commit!\")\n"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": [
+                "## Step 4: Launch Training with SpheroidOptimizer & Live Cloud Sync\n",
+                "- **Optimizer**: Riemannian `SpheroidOptimizer` (Quintic Newton-Schulz Polar orthogonalization for manifolds + AdamW for vocab/1D)\n",
+                "- **Gradient Accumulation**: `grad_accum=8` (effective batch size: 32 sequences = 49,152 tokens per optimizer step)\n",
+                "- **Context Window**: 1,536 tokens dynamic elastic sliding schedule\n",
+                "- **Live Sync**: Asynchronously mirrors to `bioflo.in` and `/content/drive/MyDrive/cerebro_checkpoints/`"
+            ]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "import sys\n",
+                "sys.path.insert(0, \"/content/reasoning_agent\")\n",
+                "\n",
+                "# Ensure freshly pulled code is active\n",
+                "for mod in list(sys.modules.keys()):\n",
+                "    if mod.startswith(\"src.\") or mod.startswith(\"training.\"):\n",
+                "        del sys.modules[mod]\n",
+                "\n",
+                "from training.train_v4_jax import run_training\n",
+                "\n",
+                "run_training(\n",
+                "    drive_dir=\"/content/drive/MyDrive/cerebro_checkpoints\",\n",
+                "    elastic_window=True,\n",
+                "    total_window=1536,\n",
+                "    batch_size=4,\n",
+                "    grad_accum=8,\n",
+                "    lr=0.002,\n",
+                "    max_steps=50000,\n",
+                "    save_every=100,\n",
+                "    log_every=10,\n",
+                "    cloud_sync=True,\n",
+                ")\n"
+            ]
+        },
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": ["## Step 5: Inspect Checkpoints in Google Drive"]
+        },
+        {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": [
+                "!ls -lh \"/content/drive/MyDrive/cerebro_checkpoints\"\n"
+            ]
+        }
+    ],
+    "metadata": {
+        "accelerator": "TPU",
+        "colab": {
+            "provenance": [],
+            "toc_visible": True
+        },
+        "kernelspec": {
+            "display_name": "Python 3",
+            "name": "python3"
+        },
+        "language_info": {
+            "name": "python"
+        }
+    },
+    "nbformat": 4,
+    "nbformat_minor": 0
+}
+
+with open("training/remote/CerebroSpheroid_V4_Colab_TPU_JAX.ipynb", "w") as f:
+    json.dump(notebook, f, indent=1)
+
+print("✅ Updated Colab TPU JAX notebook cleanly!")
