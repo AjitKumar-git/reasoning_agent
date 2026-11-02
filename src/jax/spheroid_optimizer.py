@@ -126,22 +126,24 @@ def init_spheroid_opt_state(params: Dict[str, jnp.ndarray], key: Optional[jax.Ar
     }
 
 
-def build_train_step_spheroid(
+def build_spheroid_train_engine(
     config: ModelConfigV4,
     buffers: Tuple[jnp.ndarray, jnp.ndarray],
     pad_id: int,
     weight_decay: float = 0.01,
-) -> Callable:
-    """Builds a JIT-compiled train_step function utilizing SpheroidOptimizer."""
+) -> Tuple[Callable, Callable]:
+    """
+    Builds decoupled JIT-compiled gradient computation and optimizer application functions.
+    Enables native, zero-stall gradient accumulation across diverse cognitive window buckets.
+    """
 
     @jax.jit
-    def train_step(p, opt_s, q_batch, r_batch, base_lr):
+    def compute_grad_step(p, q_batch, r_batch):
         target_len = r_batch.shape[1]
 
         def _loss_fn(param_dict):
             logits = training_rollout(param_dict, q_batch, target_len, buffers)
             log_probs = jax.nn.log_softmax(logits, axis=-1)
-            # Memory optimization: Gather target log_probs directly without allocating 2.1 GB one-hot tensor
             safe_targets = jnp.maximum(r_batch, 0)
             target_log_probs = jnp.take_along_axis(log_probs, safe_targets[..., None], axis=-1).squeeze(-1)
             token_loss = -target_log_probs
@@ -149,11 +151,14 @@ def build_train_step_spheroid(
             return jnp.sum(token_loss * mask) / jnp.maximum(jnp.sum(mask), 1.0)
 
         loss_val, grads = jax.value_and_grad(_loss_fn, allow_int=True)(p)
+        return loss_val, grads
 
+    @jax.jit
+    def apply_opt_step(p, opt_s, grads, base_lr):
         # Gradient clipping
         grad_norm = jnp.sqrt(sum(jnp.sum(jnp.square(g)) for g in grads.values() if jnp.issubdtype(g.dtype, jnp.inexact)))
         clip_scale = jnp.minimum(1.0, 1.0 / (grad_norm + 1e-6))
-        grads = jax.tree_util.tree_map(lambda g: g * clip_scale if jnp.issubdtype(g.dtype, jnp.inexact) else g, grads)
+        clipped_grads = jax.tree_util.tree_map(lambda g: g * clip_scale if jnp.issubdtype(g.dtype, jnp.inexact) else g, grads)
 
         cur_step = opt_s["step"] + 1
         new_params = {}
@@ -169,7 +174,7 @@ def build_train_step_spheroid(
                 new_params[k] = param
                 continue
 
-            g = grads[k]
+            g = clipped_grads[k]
             m_prev = opt_s["m"][k]
 
             # -----------------------------------------------------------------
@@ -235,6 +240,23 @@ def build_train_step_spheroid(
             "v": new_v,
             "power_v": new_power_v,
         }
-        return new_params, new_opt_state, loss_val
+        return new_params, new_opt_state
+
+    return compute_grad_step, apply_opt_step
+
+
+def build_train_step_spheroid(
+    config: ModelConfigV4,
+    buffers: Tuple[jnp.ndarray, jnp.ndarray],
+    pad_id: int,
+    weight_decay: float = 0.01,
+) -> Callable:
+    """Builds a combined JIT-compiled train_step function utilizing SpheroidOptimizer."""
+    compute_grad, apply_opt = build_spheroid_train_engine(config, buffers, pad_id, weight_decay)
+
+    def train_step(p, opt_s, q_batch, r_batch, base_lr):
+        loss_val, grads = compute_grad(p, q_batch, r_batch)
+        new_params, new_opt_s = apply_opt(p, opt_s, grads, base_lr)
+        return new_params, new_opt_s, loss_val
 
     return train_step

@@ -30,6 +30,7 @@ from src.jax import (
     PRESETS_V4,
     init_v4_params,
     init_spheroid_opt_state,
+    build_spheroid_train_engine,
     build_train_step_spheroid,
     load_torch_pt_to_jax,
     discover_latest_checkpoint,
@@ -43,6 +44,7 @@ def parse_args(args_list=None):
     parser = argparse.ArgumentParser(description="CerebroSpheroid V4 JAX High-Throughput Trainer")
     parser.add_argument("--steps", "--max_steps", dest="steps", type=int, default=50000, help="Total target steps")
     parser.add_argument("--batch_size", type=int, default=4, help="Batch size per TPU device (default: 4 for 16 GB HBM)")
+    parser.add_argument("--grad_accum", type=int, default=8, help="Gradient accumulation micro-steps per optimizer update (default: 8)")
     parser.add_argument("--total_window", type=int, default=1536, help="Total sequence budget for elastic sliding window")
     parser.add_argument("--prompt_len", type=int, default=256, help="Prompt context length (used when --elastic_window is disabled)")
     parser.add_argument("--target_len", type=int, default=768, help="Deliberated target rollout length (used when --elastic_window is disabled)")
@@ -159,9 +161,9 @@ def main(args=None):
     param_count = sum(p.size for p in params.values() if jnp.issubdtype(p.dtype, jnp.inexact))
     print(f"Model Scale    : {param_count:,} parameters ({param_count * 2 / (1024**2):.1f} MB in bf16)")
 
-    # 4. Initialize SpheroidOptimizer & Build JIT Train Step
+    # 4. Initialize SpheroidOptimizer & Build JIT Train Engine
     opt_state = init_spheroid_opt_state(params)
-    train_step = build_train_step_spheroid(config, buffers, pad_id=pad_id, weight_decay=0.01)
+    compute_grad_step, apply_opt_step = build_spheroid_train_engine(config, buffers, pad_id=pad_id, weight_decay=0.01)
     ckpt_mgr = AsyncCheckpointManager(
         target_dir=args.ckpt_dir,
         local_scratch_dir=args.scratch_dir,
@@ -208,7 +210,6 @@ def main(args=None):
     try:
         for step in range(start_step, args.steps + 1):
             current_step = step
-            b_idx, b_name, q_batch, r_batch = batcher.next_batch()
 
             # Schedule
             step_offset = step - start_step
@@ -220,8 +221,28 @@ def main(args=None):
                 lr = args.min_lr + 0.5 * (args.lr - args.min_lr) * (1.0 + math.cos(math.pi * progress))
 
             t0 = time.time()
-            params, opt_state, loss = train_step(params, opt_state, q_batch, r_batch, lr)
-            loss_val = float(loss)
+            accum_grads = None
+            accum_loss = 0.0
+            last_bucket_name = ""
+            total_step_tokens = 0
+
+            # Gradient accumulation across diverse elastic sliding window buckets
+            for _ in range(args.grad_accum):
+                b_idx, b_name, q_batch, r_batch = batcher.next_batch()
+                last_bucket_name = b_name
+                total_step_tokens += int(q_batch.shape[0] * (q_batch.shape[1] + r_batch.shape[1]))
+
+                micro_loss, micro_grads = compute_grad_step(params, q_batch, r_batch)
+                accum_loss += float(micro_loss)
+
+                scale = 1.0 / float(args.grad_accum)
+                if accum_grads is None:
+                    accum_grads = jax.tree_util.tree_map(lambda g: g * scale, micro_grads)
+                else:
+                    accum_grads = jax.tree_util.tree_map(lambda a, g: a + g * scale, accum_grads, micro_grads)
+
+            params, opt_state = apply_opt_step(params, opt_state, accum_grads, lr)
+            loss_val = accum_loss / float(args.grad_accum)
             dt = time.time() - t0
 
             if ema_loss is None:
@@ -232,11 +253,10 @@ def main(args=None):
             if step % args.log_every == 0 or step == start_step:
                 ppl = math.exp(min(loss_val, 15.0))
                 ema_ppl = math.exp(min(ema_loss, 15.0))
-                seq_len = q_batch.shape[1] + r_batch.shape[1]
-                tok_s = (args.batch_size * seq_len) / max(dt, 1e-4)
+                tok_s = total_step_tokens / max(dt, 1e-4)
                 eta_h = ((args.steps - step) * dt) / 3600.0
                 print(
-                    f"step {step:5d}/{args.steps:,} | {b_name:<16} | loss {loss_val:6.4f} (ema {ema_loss:6.4f}) | "
+                    f"step {step:5d}/{args.steps:,} | {last_bucket_name:<16} (x{args.grad_accum}) | loss {loss_val:6.4f} (ema {ema_loss:6.4f}) | "
                     f"ema_ppl {ema_ppl:6.1f} | lr {lr:.2e} | {dt*1000:5.1f} ms/step | {tok_s:7.1f} tok/s | ETA: {eta_h:4.2f}h"
                 )
 

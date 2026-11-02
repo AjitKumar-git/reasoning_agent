@@ -22,6 +22,7 @@ from .spheroid_optimizer import (
     clamp_spectral_norm_jax,
     is_manifold_operator,
     init_spheroid_opt_state,
+    build_spheroid_train_engine,
     build_train_step_spheroid,
 )
 
