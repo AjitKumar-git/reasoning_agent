@@ -191,10 +191,13 @@ def push_checkpoint(
                 print(f"⏳ [cloud_sync] Best model cooldown active: skipping best.pt upload ({remaining}s remaining until next 5-min window).")
                 return False
 
-        if _IN_FLIGHT_UPLOADS.get(target_type, 0) > step:
-            # A more recent step is already being or has been uploaded
+        if target_type in _IN_FLIGHT_UPLOADS:
+            # An upload for this target_type is already actively transmitting chunks!
             return False
+
         _IN_FLIGHT_UPLOADS[target_type] = step
+        if target_type == "best":
+            _LAST_BEST_UPLOAD_TIME = now
 
     sync_url = url or DEFAULT_URL
     sync_token = token or DEFAULT_TOKEN

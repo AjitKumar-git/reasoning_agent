@@ -107,21 +107,36 @@ def discover_latest_checkpoint(
                     max_step = step_num
                     latest_path = pt_file
 
-    # Check latest.pt
+    # Check latest.pt variants
     for d in search_dirs:
-        candidate_latest = os.path.join(d, "cerebro_spheroid_v4_jax_latest.pt")
-        candidate_json = candidate_latest.replace(".pt", ".json")
-        if os.path.exists(candidate_latest) and os.path.exists(candidate_json):
-            try:
-                with open(candidate_json, "r") as f:
-                    meta = json.load(f)
-                    step_val = meta.get("step", 0)
-                    if step_val >= max_step:
-                        max_step = step_val
-                        latest_path = candidate_latest
-                        latest_meta = meta
-            except Exception:
-                pass
+        if not os.path.exists(d):
+            continue
+        for fname in ["cerebro_spheroid_v4_jax_latest.pt", "cerebro_spheroid_v4_latest.pt", "latest.pt"]:
+            candidate_latest = os.path.join(d, fname)
+            candidate_json = candidate_latest.replace(".pt", ".json")
+            if os.path.exists(candidate_latest):
+                step_val = 0
+                meta = {}
+                if os.path.exists(candidate_json):
+                    try:
+                        with open(candidate_json, "r") as f:
+                            meta = json.load(f)
+                            step_val = meta.get("step", 0)
+                    except Exception:
+                        pass
+                if step_val == 0:
+                    try:
+                        st = torch.load(candidate_latest, map_location="cpu", weights_only=False)
+                        if isinstance(st, dict) and "step" in st:
+                            step_val = int(st["step"])
+                        elif isinstance(st, dict) and "meta" in st and "step" in st["meta"]:
+                            step_val = int(st["meta"]["step"])
+                    except Exception:
+                        pass
+                if step_val >= max_step and step_val > 0:
+                    max_step = step_val
+                    latest_path = candidate_latest
+                    latest_meta = meta
 
     if latest_path and latest_meta is None:
         json_path = latest_path.replace(".pt", ".json")
