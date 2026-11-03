@@ -12,10 +12,24 @@ import os
 import sys
 import time
 import json
+import socket
 import threading
 import urllib.request
 import urllib.error
 from typing import Optional, Dict, Any, Tuple
+
+# Prefer IPv4 to avoid hangs on misconfigured DNS64/NAT64 transitions
+_orig_getaddrinfo = socket.getaddrinfo
+def _preferred_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    try:
+        if family == 0 or family == socket.AF_UNSPEC:
+            res = _orig_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
+            if res:
+                return res
+    except Exception:
+        pass
+    return _orig_getaddrinfo(host, port, family, type, proto, flags)
+socket.getaddrinfo = _preferred_getaddrinfo
 
 DEFAULT_URL = os.environ.get("BIOFLO_SYNC_URL", "https://bioflo.in/api/cerebro/sync.php")
 DEFAULT_TOKEN = os.environ.get("BIOFLO_SYNC_TOKEN", "CerebroSpheroid_Sync_Secure_2026")
