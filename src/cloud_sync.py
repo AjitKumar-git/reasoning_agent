@@ -270,9 +270,9 @@ def push_checkpoint(
                 )
 
                 success = False
-                for attempt in range(1, 4):
+                for attempt in range(1, 6):
                     try:
-                        with urllib.request.urlopen(req, timeout=120) as resp:
+                        with urllib.request.urlopen(req, timeout=240) as resp:
                             resp_json = json.loads(resp.read().decode("utf-8"))
                             if resp_json.get("success"):
                                 success = True
@@ -281,7 +281,7 @@ def push_checkpoint(
                                 print(f"\n⚠️ [cloud_sync] Chunk {idx + 1}/{total_chunks} rejected (attempt {attempt}): {resp_json}")
                     except Exception as e:
                         print(f"\n⚠️ [cloud_sync] Chunk {idx + 1}/{total_chunks} failed (attempt {attempt}): {e}")
-                    time.sleep(attempt * 1.5)
+                    time.sleep(attempt * 2.0)
 
                 # Explicit memory release
                 del payload, body, chunk_data
