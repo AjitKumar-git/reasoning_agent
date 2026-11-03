@@ -125,7 +125,7 @@ notebook = {
                 "    --ckpt_dir /kaggle/working/checkpoints \\\n",
                 "    --elastic_window \\\n",
                 "    --total_window 1536 \\\n",
-                "    --batch_size 4 \\\n",
+                "    --batch_size 8 \\\n",
                 "    --grad_accum 2 \\\n",
                 "    --lr 0.002 \\\n",
                 "    --max_steps 50000 \\\n",

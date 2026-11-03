@@ -96,7 +96,7 @@ notebook = {
             "source": [
                 "## Step 4: Launch Training with SpheroidOptimizer & Live Cloud Sync\n",
                 "- **Optimizer**: Riemannian `SpheroidOptimizer` (Quintic Newton-Schulz Polar orthogonalization for manifolds + AdamW for vocab/1D)\n",
-                "- **Gradient Accumulation**: `grad_accum=8` (effective batch size: 32 sequences = 49,152 tokens per optimizer step)\n",
+                "- **Batch Configuration**: `batch_size=8`, `grad_accum=2` (effective batch size: 16 sequences = 24,576 tokens per step)\n",
                 "- **Context Window**: 1,536 tokens dynamic elastic sliding schedule\n",
                 "- **Live Sync**: Asynchronously mirrors to `bioflo.in` and `/content/drive/MyDrive/cerebro_checkpoints/`"
             ]
@@ -121,8 +121,8 @@ notebook = {
                 "    drive_dir=\"/content/drive/MyDrive/cerebro_checkpoints\",\n",
                 "    elastic_window=True,\n",
                 "    total_window=1536,\n",
-                "    batch_size=4,\n",
-                "    grad_accum=1,  # 1 = maximum throughput (2.7s/step, ~37h ETA); increase to 2 or 4 for larger effective batches\n",
+                "    batch_size=8,\n",
+                "    grad_accum=2,\n",
                 "    lr=0.002,\n",
                 "    max_steps=50000,\n",
                 "    save_every=100,\n",
