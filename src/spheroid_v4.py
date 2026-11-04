@@ -390,6 +390,13 @@ class CerebroSpheroidV4(nn.Module):
             use_plan=use_plan,
             use_shell_tap=use_shell_tap,
         )
+        self.gradient_checkpointing = True
+
+    def gradient_checkpointing_enable(self):
+        self.gradient_checkpointing = True
+
+    def gradient_checkpointing_disable(self):
+        self.gradient_checkpointing = False
 
     @property
     def sensory(self):
@@ -529,6 +536,7 @@ class CerebroSpheroidV4(nn.Module):
         refractory_trace = torch.zeros(B, self.vocab_size, device=prompt_tokens.device, dtype=torch.float32)
         prev_thought = torch.zeros(B, self.surface_dim, device=prompt_tokens.device, dtype=sensory_mem.dtype)
 
+        use_ckpt = self.training and torch.is_grad_enabled() and getattr(self, "gradient_checkpointing", True)
         all_logits = []
         for step_idx in range(response_steps):
             tf_aud = tf_sensory[:, step_idx, :] if step_idx < tf_sensory.shape[1] else torch.zeros_like(prev_thought)
@@ -540,27 +548,37 @@ class CerebroSpheroidV4(nn.Module):
                 internal_feed = tf_aud if step_idx == 0 else prev_thought
                 aud_feed = sampling_p * tf_aud + (1.0 - sampling_p) * internal_feed
 
-            logits, efference, refractory_trace, plan = self.motor_dnn(
-                state=state,
-                sensory_kv=sensory_kv,
-                plan=plan,
-                refractory_trace=refractory_trace,
-                step_idx=step_idx,
-                auditory_feedback=aud_feed,
-                repetition_penalty=repetition_penalty,
-            )
-            all_logits.append(logits)
-
-            # Efference copy injected back into subcortical core + deliberate step
-            state_eff = self.volumetric_core.inject_efference_copy(state, efference)
-            state = self.volumetric_core.deliberate_step(state_eff)
-
-            # Deep thalamic basin retention
-            if thalamic_anchor_weight > 0.0:
-                state[:, :thalamic_end, :] = (
-                    (1.0 - thalamic_anchor_weight) * state[:, :thalamic_end, :]
-                    + thalamic_anchor_weight * thalamic_anchor
+            if use_ckpt:
+                logits, state, plan, refractory_trace = torch.utils.checkpoint.checkpoint(
+                    self._recurrent_step,
+                    state,
+                    plan,
+                    refractory_trace,
+                    aud_feed,
+                    sensory_kv[0],
+                    sensory_kv[1],
+                    step_idx,
+                    thalamic_anchor,
+                    thalamic_end,
+                    thalamic_anchor_weight,
+                    repetition_penalty,
+                    use_reentrant=False,
                 )
+            else:
+                logits, state, plan, refractory_trace = self._recurrent_step(
+                    state,
+                    plan,
+                    refractory_trace,
+                    aud_feed,
+                    sensory_kv[0],
+                    sensory_kv[1],
+                    step_idx,
+                    thalamic_anchor,
+                    thalamic_end,
+                    thalamic_anchor_weight,
+                    repetition_penalty,
+                )
+            all_logits.append(logits)
 
             # Thought re-afference for step t+1 (isolated with detached gradient)
             if deliberation_mode != "teacher_forcing":
@@ -570,6 +588,36 @@ class CerebroSpheroidV4(nn.Module):
                     prev_thought = self.sensory_dnn(soft_emb)
 
         return torch.stack(all_logits, dim=1)
+
+    def _recurrent_step(
+        self,
+        state: torch.Tensor,
+        plan: torch.Tensor,
+        refractory_trace: torch.Tensor,
+        aud_feed: torch.Tensor,
+        sensory_k: torch.Tensor,
+        sensory_v: torch.Tensor,
+        step_idx: int,
+        thalamic_anchor: torch.Tensor,
+        thalamic_end: int,
+        thalamic_anchor_weight: float,
+        repetition_penalty: float,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        logits, efference, next_trace, next_plan = self.motor_dnn(
+            state=state,
+            sensory_kv=(sensory_k, sensory_v),
+            plan=plan,
+            refractory_trace=refractory_trace,
+            step_idx=step_idx,
+            auditory_feedback=aud_feed,
+            repetition_penalty=repetition_penalty,
+        )
+        state_eff = self.volumetric_core.inject_efference_copy(state, efference)
+        next_state = self.volumetric_core.deliberate_step(state_eff)
+        if thalamic_anchor_weight > 0.0:
+            sub = (1.0 - thalamic_anchor_weight) * next_state[:, :thalamic_end, :] + thalamic_anchor_weight * thalamic_anchor
+            next_state = torch.cat([sub, next_state[:, thalamic_end:, :]], dim=1)
+        return logits, next_state, next_plan, next_trace
 
     def forward(
         self,

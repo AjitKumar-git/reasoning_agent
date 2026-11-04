@@ -1,15 +1,15 @@
 # Agent Work State & Activity Tracker
 
-> **Status**: 🟡 `IN_PROGRESS` | **Last Updated**: `2026-11-05T01:08:44.823225+05:30` | **Session**: `d59f7c6a-8bf9-4b08-8476-c661733241be`
+> **Status**: 🟡 `IN_PROGRESS` | **Last Updated**: `2026-11-05T01:21:55.413077+05:30` | **Session**: `d59f7c6a-8bf9-4b08-8476-c661733241be`
 
 ## Current / Active Objective
-**Goal**: /home/ajit/Documents/download.txt check the log
+**Goal**: still oom
 
 - **Phase**: `executing`
-- **Current Task**: Executed run_command: Check git diff on training/remote/
+- **Current Task**: Executed run_command: Check diff on spheroid_v4.py
 
 ## Summary of Completed Work
-The log showed that checkpoint download from `bioflo.in` (`latest.pt`, Step 10,900) succeeded and weights loaded into `CerebroSpheroidV4`, but training aborted during the initial forward pass with:
+Analysis of the latest Kaggle output uncovered two specific issues that caused the training loop to stall at step 10,901:
 
 ## Modified Files
 - [`.agents/WORK_STATE.md`](.agents/WORK_STATE.md)
@@ -66,16 +66,16 @@ The log showed that checkpoint download from `bioflo.in` (`latest.pt`, Step 10,9
 ## Recent Actions (Last 10)
 | Time | Tool | Details |
 | :--- | :--- | :--- |
-| `01:08:44` | `run_command` | Check git diff on training/remote/ |
-| `01:08:28` | `run_command` | Check git diff on spheroid_v4.py |
-| `01:08:25` | `run_command` | Check git status |
-| `01:08:24` | `run_command` | Run architecture and optimizer pytest tests |
-| `01:08:20` | `manage_task` | manage_task |
-| `01:08:15` | `manage_task` | manage_task |
-| `01:08:11` | `manage_task` | manage_task |
-| `01:07:50` | `run_command` | Find test files |
-| `01:07:46` | `run_command` | Run architecture and optimizer tests |
-| `01:07:32` | `edit_file` | edit_file |
+| `01:21:55` | `run_command` | Check diff on spheroid_v4.py |
+| `01:21:49` | `run_command` | Clean up untracked downloaded files |
+| `01:21:42` | `run_command` | Check git status |
+| `01:21:36` | `run_command` | Run architecture and optimizer pytest tests |
+| `01:21:17` | `run_command` | Test batch 32, 48, 64 memory |
+| `01:21:01` | `run_command` | Test batch 32 on local GPU |
+| `01:20:47` | `run_command` | Test batch 24 on local GPU |
+| `01:20:34` | `run_command` | Test batch 8 and 16 on local GPU |
+| `01:20:19` | `run_command` | Test forward and backward with gradient checkpointing |
+| `01:20:06` | `edit_file` | edit_file |
 
 ---
 *This file is automatically maintained by `auto-work-tracker`. Other agents can parse `.agents/work_state.json` or inspect this file directly to resume or review progress.*
