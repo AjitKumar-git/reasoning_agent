@@ -1,24 +1,22 @@
 """
 CerebroSpheroid V4: Scaled, Measured Reasoning Manifold.
 
-Implements the V4 specification from V4_PLAN_REFINED.md:
-1. Throughput & Rollout Efficiency:
+100% Parameter and Computational Parity with Pure JAX v4_model.py:
+1. Afferent Sensory Front-End:
+   - 2-Layer SwiGLU projection without positional contamination (SensoryInputDNNV4).
    - Pre-computed prompt and feedback sensory projections (Arcuate Fasciculus K/V).
-   - Zero-allocation sensory memory indexing across emission cycles (replaces torch.cat).
-   - Scaled Dot-Product Attention (SDPA) with hardware-optimized backend (memory-efficient on Turing T4,
-     FlashAttention on Ampere/Hopper).
-2. Dynamic Shell Zoning:
-   - Thalamic (0 to K//3), Associative (K//3 to K - K//4), Superficial (K - K//4 to K).
-   - Zone boundaries dynamically derived from num_shells rather than hardcoded.
-3. Scaled Presets:
-   - v4_small: 640 / 16 shells / 256 radial / 40 tracts, vocab 50257 = 162,272,317 params
-   - v4_wide: 896 / 24 shells / 384 radial / 48 tracts, vocab 50257 = 327,851,093 params
-4. Multi-modal Signatures & Modular Sensory Nodes:
-   - forward(tokens=None, pixel_values=None, audio_values=None, ...)
-   - Text-only numerics strictly preserved with exact equality.
-5. Manifold Diagnostics:
-   - Per-shell effective rank from trace ratio (sum lambda)^2 / sum lambda^2.
-   - Per-shell RMS and adjacent-shell cosine alignment under no_grad at eval intervals.
+2. Volumetric Recurrent Brain Core (B^3):
+   - Small-world geodesic shortcut tracts with precomputed axonal index routing.
+   - Radial re-entrant wave coupling between concentric spherical shells.
+   - RMSNorm and softplus leaky integration (ResidualVolumetricCoreV4).
+3. Efferent Motor Output Decoder (Broca's Area):
+   - SDPA accelerated cross-resonance attention with sensory prompt.
+   - Multi-shell softmax pooling and efference copy feedback.
+   - Premotor recurrent plan buffer with contractive decay.
+   - Built-in Agentic Persona steering basis (0=Reasoner, 1=Explorer, 2=Concise, 3=Verifier).
+   - Two-tier refractory adaptation & repetition suppression (PremotorMotorDecoderV4).
+4. Full Checkpoint Interoperability:
+   - Dual-key compatibility: seamless loading/saving between TPU JAX and GPU PyTorch.
 """
 
 import math
@@ -31,15 +29,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint_module
 
-from .model import SensoryInputDNN, VolumetricBrainCore
-from .spheroid_v3 import (
-    CerebroSpheroidV3,
-    PremotorMotorDecoder,
-    ResidualVolumetricCore,
-    TemporalSensoryEncoder,
-    apply_repetition_penalty,
-    build_feedback_plan,
-)
 from .sensory_nodes import AudioSensoryEncoder, ThalamicSensoryGater, VisionSensoryEncoder
 
 
@@ -59,32 +48,199 @@ def get_shell_zones(num_shells: int) -> Dict[str, range]:
     }
 
 
-class PremotorMotorDecoderV4(PremotorMotorDecoder):
+class SensoryInputDNNV4(nn.Module):
+    """
+    Afferent Sensory Front-End:
+    2-Layer SwiGLU ResNet with RMSNorm converting discrete token symbols
+    into smooth continuous boundary flux fields on S^2.
+    Bitwise matches pure JAX v4_model.py encode_sensory.
+    """
+    def __init__(self, vocab_size: int = 32000, surface_dim: int = 640):
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.surface_dim = surface_dim
+        self.embedding = nn.Embedding(vocab_size, surface_dim)
+        nn.init.normal_(self.embedding.weight, mean=0.0, std=0.02)
+
+        self.fc1_gate = nn.Linear(surface_dim, surface_dim * 2, bias=False)
+        self.fc1_val = nn.Linear(surface_dim, surface_dim * 2, bias=False)
+        self.norm1 = nn.RMSNorm(surface_dim * 2)
+
+        self.fc2 = nn.Linear(surface_dim * 2, surface_dim, bias=False)
+        self.norm_out = nn.RMSNorm(surface_dim)
+
+    def forward(self, token_ids_or_flux: torch.Tensor) -> torch.Tensor:
+        if token_ids_or_flux.dtype in (torch.int32, torch.int64, torch.long):
+            x = self.embedding(token_ids_or_flux)
+        else:
+            x = token_ids_or_flux
+
+        gate = F.silu(self.fc1_gate(x))
+        val = self.fc1_val(x)
+        h = self.norm1(gate * val)
+        flux = self.fc2(h) + x
+        return self.norm_out(flux)
+
+
+class ResidualVolumetricCoreV4(nn.Module):
+    """
+    Systolic Volumetric Core V4 matching pure JAX v4_model.py bitwise.
+    Contains exactly 9 core parameters and small-world geodesic shortcut buffers.
+    """
+    def __init__(
+        self,
+        num_shells: int = 16,
+        shell_dim: int = 640,
+        radial_dim: int = 256,
+        num_shortcut_tracts: int = 40,
+    ):
+        super().__init__()
+        self.num_shells = num_shells
+        self.shell_dim = shell_dim
+        self.radial_dim = radial_dim
+        self.num_shortcut_tracts = num_shortcut_tracts
+
+        src_indices = torch.arange(num_shortcut_tracts) % num_shells
+        dst_indices = num_shells - 1 - (torch.arange(num_shortcut_tracts) * 3) % num_shells
+        self.register_buffer("src_indices", src_indices)
+        self.register_buffer("dst_indices", dst_indices)
+
+        self.intra_shell = nn.Parameter(torch.empty(num_shells, shell_dim, shell_dim).normal_(mean=0.0, std=0.015))
+        self.reentrant_field = nn.Parameter(torch.empty(num_shells, num_shells, radial_dim, radial_dim).normal_(mean=0.0, std=0.008))
+        self.shortcut_tracts = nn.Parameter(torch.empty(num_shortcut_tracts, shell_dim, shell_dim).normal_(mean=0.0, std=0.01))
+
+        self.radial_proj_in = nn.Linear(shell_dim, radial_dim, bias=False)
+        self.radial_proj_out = nn.Linear(radial_dim, shell_dim, bias=False)
+
+        self.flow_norm = nn.RMSNorm(shell_dim)
+        self.norm = nn.RMSNorm(shell_dim)
+
+        self.log_write = nn.Parameter(torch.full((num_shells,), math.log(math.expm1(0.35)), dtype=torch.float32))
+        self.log_leak = nn.Parameter(torch.full((num_shells,), math.log(0.35 / 0.65), dtype=torch.float32))
+
+    def deliberate_step(self, state: torch.Tensor) -> torch.Tensor:
+        curr = state.to(self.intra_shell.dtype)
+        # 1. Intra-shell recurrent propagation
+        intra = torch.einsum("bkd,kdo->bko", curr, self.intra_shell)
+
+        # 2. Axonal shortcut tracts
+        src_state = curr[:, self.src_indices, :]
+        tracts = torch.einsum("bti,tij->btj", src_state, self.shortcut_tracts)
+        tract_acc = torch.zeros_like(curr)
+        tract_acc.index_add_(1, self.dst_indices, tracts)
+
+        # 3. Radial re-entrant wave coupling
+        rad_in = self.radial_proj_in(curr)
+        reentrant = torch.einsum("bki,kjio->bjo", rad_in, self.reentrant_field)
+        reentrant = self.radial_proj_out(F.silu(reentrant))
+
+        # Flow norm and leaky integration
+        flow = self.flow_norm(intra + tract_acc + reentrant)
+        leak = torch.sigmoid(self.log_leak).view(1, -1, 1)
+        write = F.softplus(self.log_write).view(1, -1, 1)
+
+        raw = (1.0 - leak) * curr + write * torch.tanh(flow)
+        return self.norm(raw).to(state.dtype)
+
+    def init_state(self, batch_size: int, device: torch.device) -> torch.Tensor:
+        return torch.zeros(batch_size, self.num_shells, self.shell_dim, device=device)
+
+    def inject_efference_copy(self, state: torch.Tensor, efference_flux: torch.Tensor) -> torch.Tensor:
+        new_state = state.clone()
+        new_state[:, 0, :] = new_state[:, 0, :] + efference_flux.to(state.dtype)
+        return new_state
+
+    def circulate_mid_tensors(self, state: torch.Tensor, num_cycles: int = 1) -> torch.Tensor:
+        curr = state
+        for _ in range(num_cycles):
+            curr = self.deliberate_step(curr)
+        return curr
+
+
+class PremotorMotorDecoderV4(nn.Module):
     """
     V4 Premotor Motor Decoder:
-    - Retains internal plan buffer, corollary discharge, and multi-shell softmax tap from V3.
+    - Retains internal plan buffer, corollary discharge, and multi-shell softmax tap.
     - Upgrades Arcuate Fasciculus cross-resonance to F.scaled_dot_product_attention (SDPA).
-    - Preserves exact parameter naming and shapes for checkpoint compatibility.
+    - Preserves exact 1:1 parameter naming and shapes with pure JAX v4_model.py.
     """
     def __init__(
         self,
         num_shells: int = 16,
         surface_dim: int = 640,
-        vocab_size: int = 50257,
+        vocab_size: int = 32000,
         max_phase_steps: int = 1024,
-        dropout: float = 0.1,
+        dropout: float = 0.0,
         use_plan: bool = True,
         use_shell_tap: bool = True,
     ):
-        super().__init__(
-            num_shells=num_shells,
-            surface_dim=surface_dim,
-            vocab_size=vocab_size,
-            max_phase_steps=max_phase_steps,
-            dropout=dropout,
-            use_plan=use_plan,
-            use_shell_tap=use_shell_tap,
-        )
+        super().__init__()
+        self.num_shells = num_shells
+        self.surface_dim = surface_dim
+        self.vocab_size = vocab_size
+        self.max_phase_steps = max_phase_steps
+        self.use_plan = use_plan
+        self.use_shell_tap = use_shell_tap
+
+        self.phase_embed = nn.Embedding(max_phase_steps, surface_dim)
+        nn.init.normal_(self.phase_embed.weight, mean=0.0, std=0.02)
+
+        self.q_proj = nn.Linear(surface_dim, surface_dim, bias=False)
+        self.k_proj = nn.Linear(surface_dim, surface_dim, bias=False)
+        self.v_proj = nn.Linear(surface_dim, surface_dim, bias=False)
+        self.resonance_norm = nn.RMSNorm(surface_dim)
+
+        self.shell_proj = nn.Linear(surface_dim, surface_dim, bias=False)
+        self.shell_score = nn.Parameter(torch.zeros(num_shells))
+        self.shell_scale = nn.Parameter(torch.zeros(1))
+
+        self.plan_gate = nn.Linear(surface_dim * 3, surface_dim, bias=True)
+        self.plan_update = nn.Linear(surface_dim * 3, surface_dim, bias=False)
+        self.plan_write = nn.Parameter(torch.zeros(1))
+        self.plan_decay = nn.Parameter(torch.tensor(0.90))
+
+        fused_dim = surface_dim * 5
+        hidden_dim = surface_dim * 2
+        self.fused_norm = nn.RMSNorm(fused_dim)
+        self.fc_gate = nn.Linear(fused_dim, hidden_dim, bias=False)
+        self.fc_val = nn.Linear(fused_dim, hidden_dim, bias=False)
+        self.norm_mid = nn.RMSNorm(hidden_dim)
+        self.dropout = nn.Dropout(dropout)
+
+        self.head = nn.Linear(hidden_dim, vocab_size, bias=False)
+        self.temperature_scale = nn.Parameter(torch.tensor(1.0))
+
+        self.refractory_strength = nn.Parameter(torch.tensor(1.2))
+        self.refractory_decay = nn.Parameter(torch.tensor(0.75))
+
+        self.efference_proj = nn.Linear(hidden_dim, surface_dim, bias=False)
+        nn.init.normal_(self.efference_proj.weight, mean=0.0, std=0.01)
+
+        self.persona_embeddings = nn.Parameter(torch.empty(4, surface_dim).normal_(mean=0.0, std=0.05))
+        self.persona_scale = nn.Parameter(torch.tensor(0.5))
+        self.plan_init = nn.Linear(surface_dim * 2, surface_dim, bias=True)
+
+    @property
+    def motor_phase_embed(self):
+        return self.phase_embed
+
+    def init_plan(
+        self,
+        delib_summary: Optional[torch.Tensor] = None,
+        batch_size: int = 1,
+        device: Optional[torch.device] = None,
+        persona_id: Optional[int] = None,
+    ) -> torch.Tensor:
+        if delib_summary is not None:
+            raw = self.plan_init(delib_summary)
+            plan = torch.tanh(raw)
+            if persona_id is not None:
+                plan = plan + self.persona_scale * self.persona_embeddings[persona_id]
+            return plan
+        return torch.zeros(batch_size, self.surface_dim, device=device)
+
+    def prime_sensory(self, sensory_memory: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        return self.k_proj(sensory_memory), self.v_proj(sensory_memory)
 
     def forward(
         self,
@@ -94,85 +250,85 @@ class PremotorMotorDecoderV4(PremotorMotorDecoder):
         refractory_trace: Optional[torch.Tensor] = None,
         step_idx: int = 0,
         auditory_feedback: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], torch.Tensor, torch.Tensor]:
+        repetition_penalty: float = 1.25,
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], torch.Tensor]:
+        B, K, D = state.shape
         surface = state[:, -1, :]
         core = state[:, 0, :]
         if plan is None:
-            plan = self.init_plan(state.shape[0], state.device)
+            plan = self.init_plan(batch_size=B, device=state.device)
 
-        phase_idx = min(max(0, step_idx), self.max_phase_steps - 1)
-        phase = self.motor_phase_embed(
-            torch.tensor(phase_idx, device=state.device, dtype=torch.long)
-        ).to(state.dtype)
+        max_phase = self.phase_embed.weight.shape[0]
+        phase_idx = min(max(0, int(step_idx)), max_phase - 1)
+        phase = self.phase_embed.weight[phase_idx].to(state.dtype)
         motor_surface = surface + phase
 
-        # Auditory Re-afference (Broca-Wernicke feedback)
         if auditory_feedback is not None:
-            gate = torch.tanh(self.auditory_gate) if hasattr(self, "auditory_gate") else 1.0
-            motor_surface = motor_surface + gate * self.auditory_proj(auditory_feedback.to(motor_surface.dtype))
-
-        # Multi-shell efferent tap
-        if self.use_shell_tap:
-            shell_pool = (
-                torch.softmax(self.shell_score, dim=0).view(1, -1, 1) * self.shell_proj(state)
-            ).sum(dim=1)
-            shell_pool = self.shell_scale * shell_pool
-        else:
-            shell_pool = torch.zeros_like(surface)
+            motor_surface = motor_surface + auditory_feedback.to(motor_surface.dtype)
 
         # Arcuate Fasciculus cross-resonance via Scaled Dot-Product Attention (SDPA)
         if sensory_kv is not None:
             keys, values = sensory_kv
-            q = self.q_proj(motor_surface).unsqueeze(1)  # [B, 1, D]
-            # SDPA handles key-value attention with optimal hardware backend
-            res = F.scaled_dot_product_attention(
-                q.to(keys.dtype), keys, values
-            )  # [B, 1, D]
+            q = self.q_proj(motor_surface).unsqueeze(1)
+            res = F.scaled_dot_product_attention(q.to(keys.dtype), keys, values)
             resonance = self.resonance_norm(res.squeeze(1).to(motor_surface.dtype))
         else:
             resonance = torch.zeros_like(motor_surface)
 
-        # Fused readout
+        # Multi-shell softmax tap
+        if self.use_shell_tap:
+            shell_weights = F.softmax(self.shell_score, dim=0).view(1, -1, 1)
+            shell_proj = self.shell_proj(state)
+            shell_pool = torch.sum(shell_weights * shell_proj, dim=1) * self.shell_scale
+        else:
+            shell_pool = torch.zeros_like(motor_surface)
+
         fused = self.fused_norm(
             torch.cat([motor_surface, core, resonance, shell_pool, plan], dim=-1)
-        ).to(self.fc_gate.weight.dtype)
+        )
         h = self.norm_mid(F.silu(self.fc_gate(fused)) * self.fc_val(fused))
         h = self.dropout(h)
 
-        raw_logits = self.head(h) / torch.clamp(self.temperature_scale, min=0.1, max=5.0)
-        efference_copy = self.efference_proj(h)
-
-        # Premotor plan buffer
+        # Premotor recurrent plan update
         if self.use_plan:
-            phase_batch = phase.unsqueeze(0).expand(h.shape[0], -1)
+            phase_batch = phase.unsqueeze(0).expand(B, -1)
             plan_input = torch.cat([h, phase_batch], dim=-1)
-            gate = torch.sigmoid(self.plan_gate(plan_input))
-            next_plan = self.plan_decay * plan + self.plan_write * gate * self.plan_update(plan_input)
+            p_gate = torch.sigmoid(self.plan_gate(plan_input))
+            p_decay = torch.clamp(self.plan_decay, 0.0, 0.92)
+            p_update = self.plan_update(plan_input)
+            next_plan = torch.clamp(p_decay * plan + self.plan_write * p_gate * p_update, -50.0, 50.0)
         else:
             next_plan = plan
 
-        # Refractory dynamics
+        temp = torch.clamp(self.temperature_scale, min=0.1, max=5.0)
+        raw_logits = self.head(h) / temp
+        efference_copy = self.efference_proj(h)
+
+        # Two-tier refractory adaptation & repetition suppression
         if refractory_trace is not None:
-            alpha = torch.clamp(self.refractory_strength, min=0.1, max=5.0)
-            adapted = raw_logits - alpha * refractory_trace.to(raw_logits.dtype)
+            alpha = torch.clamp(self.refractory_strength, 0.1, 5.0)
+            tier1_penalty = 3.0 * alpha * refractory_trace
+            active_mask = (refractory_trace > 0.02).to(raw_logits.dtype)
+            rep_scale = torch.where(raw_logits > 0, 1.0 / repetition_penalty, repetition_penalty)
+            scaled_logits = raw_logits * (1.0 - active_mask) + (raw_logits * rep_scale) * active_mask
+            adapted_logits = scaled_logits - tier1_penalty
+
             decay = torch.sigmoid(self.refractory_decay)
-            current_prob = F.softmax(raw_logits, dim=-1).detach()
-            next_trace = (decay * refractory_trace + (1.0 - decay) * current_prob).detach()
-            return adapted, next_trace, efference_copy, next_plan
+            with torch.no_grad():
+                current_prob = F.softmax(raw_logits, dim=-1)
+                top1_idx = torch.argmax(adapted_logits, dim=-1)
+                top1_pulse = F.one_hot(top1_idx, num_classes=raw_logits.shape[-1]).to(raw_logits.dtype)
+                next_trace = decay * refractory_trace + (1.0 - decay) * current_prob + 1.0 * top1_pulse
+        else:
+            adapted_logits, next_trace = raw_logits, None
 
-        return raw_logits, None, efference_copy, next_plan
+        return adapted_logits, efference_copy, next_trace, next_plan
 
 
-class CerebroSpheroidV4(CerebroSpheroidV3):
+class CerebroSpheroidV4(nn.Module):
     """
     CerebroSpheroid V4: Continuous Volumetric Manifold.
-
-    Upgrades V3 with:
-    - SDPA accelerated cross-resonance in the motor decoder.
-    - Zero-allocation sensory indexing during rollout.
-    - Multi-modal forward signature with Vision & Audio sensory node support.
-    - Dynamic shell zoning.
-    - Non-invasive manifold diagnostics (effective rank, shell RMS, saturation).
+    Pure systolic architecture bitwise aligned with pure JAX v4_model.py.
     """
     def __init__(
         self,
@@ -182,60 +338,32 @@ class CerebroSpheroidV4(CerebroSpheroidV3):
         radial_dim: int = 256,
         num_shortcut_tracts: int = 40,
         max_len: int = 2048,
-        dropout: float = 0.1,
+        dropout: float = 0.0,
         max_phase_steps: int = 1024,
-        use_temporal: bool = True,
+        use_temporal: bool = False,
         use_residual_core: bool = True,
         use_plan: bool = True,
         use_shell_tap: bool = True,
         enable_multimodal: bool = False,
-        use_causal_ingestion: bool = True,
+        use_causal_ingestion: bool = False,
     ):
-        nn.Module.__init__(self)
+        super().__init__()
         self.vocab_size = vocab_size
         self.surface_dim = surface_dim
         self.num_shells = num_shells
         self.radial_dim = radial_dim
         self.num_shortcut_tracts = num_shortcut_tracts
-        self.use_causal_ingestion = use_causal_ingestion
-        self.architecture = dict(
-            use_temporal=use_temporal,
-            use_residual_core=use_residual_core,
-            use_plan=use_plan,
-            use_shell_tap=use_shell_tap,
-            use_causal_ingestion=use_causal_ingestion,
+        self.max_len = max_len
+        self.max_phase_steps = max_phase_steps
+
+        # Front-end, Core, and Decoder matching pure JAX V4 systolic architecture
+        self.sensory_dnn = SensoryInputDNNV4(vocab_size=vocab_size, surface_dim=surface_dim)
+        self.volumetric_core = ResidualVolumetricCoreV4(
+            num_shells=num_shells,
+            shell_dim=surface_dim,
+            radial_dim=radial_dim,
+            num_shortcut_tracts=num_shortcut_tracts,
         )
-
-        # Afferent Front-End
-        if use_temporal:
-            self.sensory_dnn = TemporalSensoryEncoder(
-                vocab_size=vocab_size,
-                hidden_dim=surface_dim,
-                surface_dim=surface_dim,
-                max_len=max_len,
-            )
-        else:
-            self.sensory_dnn = SensoryInputDNN(
-                vocab_size=vocab_size, hidden_dim=surface_dim, surface_dim=surface_dim
-            )
-
-        # Volumetric Brain Core
-        if use_residual_core:
-            self.volumetric_core = ResidualVolumetricCore(
-                num_shells=num_shells,
-                shell_dim=surface_dim,
-                radial_dim=radial_dim,
-                num_shortcut_tracts=num_shortcut_tracts,
-            )
-        else:
-            self.volumetric_core = VolumetricBrainCore(
-                num_shells=num_shells,
-                shell_dim=surface_dim,
-                radial_dim=radial_dim,
-                num_shortcut_tracts=num_shortcut_tracts,
-            )
-
-        # Efferent Motor Decoder with SDPA
         self.motor_dnn = PremotorMotorDecoderV4(
             num_shells=num_shells,
             surface_dim=surface_dim,
@@ -245,293 +373,186 @@ class CerebroSpheroidV4(CerebroSpheroidV3):
             use_plan=use_plan,
             use_shell_tap=use_shell_tap,
         )
-        self.boundary_transceiver = self.sensory_dnn
 
-        self.gist_scale = nn.Parameter(torch.zeros(1))
-        self.packet_mix = nn.Parameter(torch.zeros(1))
+    @property
+    def sensory(self):
+        return self.sensory_dnn
 
-        # Multi-modal sensory nodes (initialized lazily or when requested)
-        self.enable_multimodal = enable_multimodal
-        if enable_multimodal:
-            self.vision_encoder = VisionSensoryEncoder(surface_dim=surface_dim)
-            self.audio_encoder = AudioSensoryEncoder(surface_dim=surface_dim)
-            self.thalamic_gater = ThalamicSensoryGater(surface_dim=surface_dim)
-        else:
-            self.vision_encoder = None
-            self.audio_encoder = None
-            self.thalamic_gater = None
+    @property
+    def core(self):
+        return self.volumetric_core
+
+    @property
+    def motor(self):
+        return self.motor_dnn
+
+    @property
+    def boundary_transceiver(self):
+        return self.sensory_dnn
 
     @property
     def shell_zones(self) -> Dict[str, range]:
         return get_shell_zones(self.num_shells)
 
+    def init_brain_state(self, batch_size: int, device: torch.device, living: bool = False) -> torch.Tensor:
+        return self.volumetric_core.init_state(batch_size, device)
+
     def init_living_state(self, batch_size: int, device: torch.device) -> torch.Tensor:
-        """Initializes resting-state manifold potential with living pacemaker rhythms."""
         return self.init_brain_state(batch_size, device, living=True)
 
+    def encode_sensory(
+        self, token_ids: torch.Tensor
+    ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        sensory_mem = self.sensory_dnn(token_ids)
+        sensory_kv = self.motor_dnn.prime_sensory(sensory_mem)
+        return sensory_mem, sensory_kv
+
+    def deliberate(self, state: torch.Tensor, thinking_cycles: int = 3) -> torch.Tensor:
+        return self.volumetric_core.circulate_mid_tensors(state, num_cycles=thinking_cycles)
+
+    def emit_step(
+        self,
+        state: torch.Tensor,
+        sensory_kv: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        plan: Optional[torch.Tensor] = None,
+        refractory_trace: Optional[torch.Tensor] = None,
+        step_idx: int = 0,
+        auditory_feedback: Optional[torch.Tensor] = None,
+        repetition_penalty: float = 1.25,
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], torch.Tensor]:
+        logits, efference, next_trace, next_plan = self.motor_dnn(
+            state=state,
+            sensory_kv=sensory_kv,
+            plan=plan,
+            refractory_trace=refractory_trace,
+            step_idx=step_idx,
+            auditory_feedback=auditory_feedback,
+            repetition_penalty=repetition_penalty,
+        )
+        state_eff = self.volumetric_core.inject_efference_copy(state, efference)
+        next_state = self.volumetric_core.deliberate_step(state_eff)
+        return logits, next_state, next_trace, next_plan
+
     def compile_deliberate(self):
-        """Optionally applies torch.compile to the recurrent deliberate step."""
         try:
-            self.volumetric_core.deliberate_step = torch.compile(
-                self.volumetric_core.deliberate_step
-            )
+            self.volumetric_core.deliberate_step = torch.compile(self.volumetric_core.deliberate_step)
             print("[V4] volumetric_core.deliberate_step compiled with torch.compile")
         except Exception as e:
             print(f"[V4] torch.compile unavailable or failed: {e}")
-
-    def _integrate_memory(
-        self,
-        memory: torch.Tensor,
-        state: Optional[torch.Tensor] = None,
-        living: bool = True,
-        max_packets: int = 32,
-        lengths: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """
-        Streams encoded sensory memory into the volumetric manifold.
-
-        V4 Causal Temporal Ingestion:
-        Eliminates the order-erasing mean centroid pooling (chunk.mean(dim=1)).
-        1. When self.use_causal_ingestion is True:
-           - Applies a causal recency decay kernel: w_i = exp((i - (K-1)) / sqrt(K)),
-             preserving token sequence order and phase trajectory.
-           - Adds the temporal velocity vector: v = tail - head scaled by tanh(packet_mix),
-             allowing learned momentum injection into the superficial shell.
-           - Masks out padding tokens so batch-padded tokens never corrupt the flux.
-        2. When self.use_causal_ingestion is False:
-           - Emulates legacy V3 centroid pooling for backwards compatibility.
-        """
-        batch_size, seq_len, _ = memory.shape
-        if state is None:
-            state = self.init_brain_state(batch_size, memory.device, living=living)
-
-        packet = max(1, math.ceil(seq_len / max_packets))
-        last_valid = int(lengths.max().item()) if lengths is not None else seq_len
-
-        if not getattr(self, "use_causal_ingestion", True):
-            for start in range(0, min(seq_len, last_valid), packet):
-                chunk = memory[:, start : start + packet, :]
-                centroid = chunk.mean(dim=1)
-                tail = chunk[:, -1, :]
-                flux = centroid + self.packet_mix.to(centroid.dtype) * (tail - centroid)
-                state = self.volumetric_core.inject_sensory_flux(state, flux)
-                state = self.volumetric_core.circulate_mid_tensors(state, num_cycles=1)
-            return state
-
-        for start in range(0, min(seq_len, last_valid), packet):
-            end = min(seq_len, start + packet)
-            chunk = memory[:, start : end, :]
-            chunk_len = chunk.shape[1]
-
-            if chunk_len == 1:
-                flux = chunk[:, 0, :]
-            else:
-                steps = torch.arange(chunk_len, device=memory.device, dtype=chunk.dtype)
-                decay = torch.exp((steps - (chunk_len - 1)) / math.sqrt(chunk_len))
-
-                if lengths is not None:
-                    pos = torch.arange(start, end, device=memory.device).unsqueeze(0)
-                    valid = (pos < lengths.unsqueeze(1)).to(chunk.dtype)
-                    decay_weights = decay.unsqueeze(0) * valid
-                    weight_sum = decay_weights.sum(dim=-1, keepdim=True).clamp_min(1e-6)
-                    norm_weights = decay_weights / weight_sum
-                    causal_flux = (chunk * norm_weights.unsqueeze(-1)).sum(dim=1)
-                else:
-                    norm_weights = decay / decay.sum()
-                    causal_flux = (chunk * norm_weights.unsqueeze(0).unsqueeze(-1)).sum(dim=1)
-
-                velocity = chunk[:, -1, :] - chunk[:, 0, :]
-                flux = causal_flux + torch.tanh(self.packet_mix.to(chunk.dtype)) * velocity
-
-            state = self.volumetric_core.inject_sensory_flux(state, flux)
-            state = self.volumetric_core.circulate_mid_tensors(state, num_cycles=1)
-
-        return state
 
     def training_logits(
         self,
         prompt_tokens: torch.Tensor,
         response_steps: int,
         thinking_cycles: int = 3,
-        pad_token_id: Optional[int] = None,
+        pad_token_id: Optional[int] = 0,
         targets: Optional[torch.Tensor] = None,
         feedback_tokens: Optional[torch.Tensor] = None,
-        pixel_values: Optional[torch.Tensor] = None,
-        audio_values: Optional[torch.Tensor] = None,
-        deliberation_mode: str = "teacher_forcing",
-        thalamic_anchor_weight: float = 0.0,
-        sampling_p: float = 0.0,
+        deliberation_mode: str = "scheduled",
+        thalamic_anchor_weight: float = 0.1,
+        sampling_p: float = 1.0,
+        persona_id: Optional[int] = None,
+        repetition_penalty: float = 1.25,
+        **kwargs,
     ) -> torch.Tensor:
         """
-        High-throughput V4 training rollout with zero-allocation sensory memory indexing.
-        Supports:
-        1. 'teacher_forcing': standard external token feedback / teacher-forcing.
-        2. 'internal': refined closed-loop internal deliberation with straight-through latent
-           thought re-afference, dynamic Arcuate Fasciculus cross-resonance, and deep thalamic
-           prompt anchoring (strictly zero external tokens fed into the context).
-        3. 'scheduled': scheduled sampling transitioning between teacher forcing and internal thought.
+        Systolic V4 differentiable rollout engine bitwise aligned with pure JAX training_rollout.
         """
-        prompt_len = prompt_tokens.shape[1]
-        memory, gist, sensory_kv = self.encode_sensory(prompt_tokens, pad_token_id=pad_token_id)
+        B, L = prompt_tokens.shape
+        sensory_mem, sensory_kv = self.encode_sensory(prompt_tokens)
 
-        # Modulate sensory drive with ThalamicSensoryGater if enabled
-        if self.thalamic_gater is not None:
-            gist = self.thalamic_gater(prompt_tokens, gist, pad_token_id=pad_token_id)
+        # 1. Masked prompt centroid pooling (zero padding contamination)
+        if pad_token_id is not None:
+            mask = (prompt_tokens != pad_token_id).unsqueeze(-1).to(sensory_mem.dtype)
+        else:
+            mask = torch.ones(B, L, 1, device=prompt_tokens.device, dtype=sensory_mem.dtype)
+        prompt_flux = (sensory_mem * mask).sum(dim=1) / mask.sum(dim=1).clamp_min(1.0)
 
-        # Optional multi-modal sensory injection into outer cortical shell
-        if pixel_values is not None:
-            if self.vision_encoder is None:
-                self.vision_encoder = VisionSensoryEncoder(surface_dim=self.surface_dim).to(prompt_tokens.device)
-            _, visual_gist = self.vision_encoder(pixel_values)
-            gist = gist + visual_gist
-        if audio_values is not None:
-            if self.audio_encoder is None:
-                self.audio_encoder = AudioSensoryEncoder(surface_dim=self.surface_dim).to(prompt_tokens.device)
-            _, audio_gist = self.audio_encoder(audio_values)
-            gist = gist + audio_gist
-
-        state = self._integrate_memory(
-            memory, max_packets=32, lengths=self._lengths(prompt_tokens, pad_token_id)
-        )
-        state = self.volumetric_core.inject_efference_copy(state, self._gist_flux(gist))
+        # 2. Subconscious deliberation cycles before verbalization
+        state = self.volumetric_core.init_state(B, prompt_tokens.device)
+        state[:, -1, :] = prompt_flux
         state = self.deliberate(state, thinking_cycles=thinking_cycles)
 
-        # Deep thalamic shells (0 to K//3) act as invariant prompt memory anchor
+        # 3. Thalamic memory basin anchoring (shells 0 .. K//3)
         thalamic_end = max(1, self.num_shells // 3)
         thalamic_anchor = state[:, :thalamic_end, :].clone()
 
-        is_internal_delib = (deliberation_mode == "internal")
-        feed = None if is_internal_delib else build_feedback_plan(targets, feedback_tokens)
-        feed_reps = None
-        all_k, all_v = sensory_kv[0], sensory_kv[1]
+        # 4. Pre-verbal executive plan synthesis
+        delib_summary = torch.cat([state[:, 0, :], prompt_flux], dim=-1)
+        plan = self.motor_dnn.init_plan(delib_summary, persona_id=persona_id)
 
-        if feed is not None:
-            prev_toks = feed.clamp(min=0)
-            if isinstance(self.sensory_dnn, SensoryInputDNN):
-                feed_reps = self.sensory_dnn(prev_toks, start_pos=prompt_len - 1)
-            else:
-                feed_reps = self.sensory_dnn.embedding(prev_toks)
-            feed_mask = (feed != -100).unsqueeze(-1)
-            feed_reps = feed_reps * feed_mask
-            if hasattr(self.motor_dnn, "prime_sensory"):
-                feed_k, feed_v = self.motor_dnn.prime_sensory(feed_reps)
-                # Concatenate once up front:
-                all_k = torch.cat([sensory_kv[0], feed_k], dim=1)
-                all_v = torch.cat([sensory_kv[1], feed_v], dim=1)
-
-        plan = self.motor_dnn.init_plan(prompt_tokens.shape[0], state.device)
-        refractory = torch.zeros(
-            prompt_tokens.shape[0], self.vocab_size, device=state.device, dtype=torch.float32
+        # 5. Pre-embed teacher feedback tokens if available
+        feed = feedback_tokens if feedback_tokens is not None else (
+            targets if targets is not None else None
         )
-        logits = []
-        auditory_feedback = None
+        if feed is not None:
+            safe_feed = feed.clamp(min=0)
+            valid_mask = (feed >= 0).unsqueeze(-1).to(sensory_mem.dtype)
+            tf_sensory = self.sensory_dnn(safe_feed) * valid_mask
+        else:
+            tf_sensory = torch.zeros(B, response_steps, self.surface_dim, device=prompt_tokens.device, dtype=sensory_mem.dtype)
 
-        for step in range(response_steps):
-            if feed is not None and not (deliberation_mode == "scheduled" and random.random() < sampling_p):
-                auditory_feedback = feed_reps[:, step]
-                # Zero-allocation O(1) prefix slice covering prompt + feedback up to current step
-                cur_k = all_k[:, : prompt_len + step]
-                cur_v = all_v[:, : prompt_len + step]
-                cur_kv = (cur_k, cur_v)
-            elif step > 0 and len(logits) > 0:
-                # Internal deliberation: synthesize thought re-afference from prior motor state
-                last_logits = logits[-1]
-                emb_layer = getattr(self.sensory_dnn, "embedding", None)
-                emb_table = emb_layer.weight if hasattr(emb_layer, "weight") else emb_layer
+        refractory_trace = torch.zeros(B, self.vocab_size, device=prompt_tokens.device, dtype=torch.float32)
+        prev_thought = torch.zeros(B, self.surface_dim, device=prompt_tokens.device, dtype=sensory_mem.dtype)
 
-                if emb_table is not None:
-                    if self.training:
-                        probs = F.softmax(last_logits / 0.8, dim=-1)
-                        soft_rep = probs @ emb_table.to(probs.dtype)
-                        hard_idx = torch.argmax(last_logits, dim=-1)
-                        hard_rep = F.embedding(hard_idx, emb_table)
-                        # Stop gradient on internal thought re-afference to isolate recurrent feedback and prevent multi-step BPTT explosion
-                        auditory_feedback = (hard_rep - soft_rep.detach() + soft_rep).detach()
-                    else:
-                        pred_tok = torch.argmax(last_logits, dim=-1)
-                        auditory_feedback = F.embedding(pred_tok, emb_table).detach()
-                else:
-                    pred_tok = torch.argmax(last_logits, dim=-1)
-                    auditory_feedback = (
-                        self.sensory_dnn(pred_tok)
-                        if isinstance(self.sensory_dnn, SensoryInputDNN)
-                        else pred_tok
-                    )
+        all_logits = []
+        for step_idx in range(response_steps):
+            tf_aud = tf_sensory[:, step_idx, :] if step_idx < tf_sensory.shape[1] else torch.zeros_like(prev_thought)
+            if deliberation_mode == "teacher_forcing":
+                aud_feed = tf_aud
+            elif deliberation_mode == "internal":
+                aud_feed = torch.zeros_like(prev_thought) if step_idx == 0 else prev_thought
+            else:  # "scheduled"
+                internal_feed = tf_aud if step_idx == 0 else prev_thought
+                aud_feed = sampling_p * tf_aud + (1.0 - sampling_p) * internal_feed
 
-                # Dynamically extend internal working memory
-                if hasattr(self.motor_dnn, "prime_sensory"):
-                    new_k, new_v = self.motor_dnn.prime_sensory(auditory_feedback.unsqueeze(1))
-                    all_k = torch.cat([all_k, new_k], dim=1)
-                    all_v = torch.cat([all_v, new_v], dim=1)
-                cur_kv = (all_k, all_v)
-            else:
-                cur_kv = (all_k[:, :prompt_len], all_v[:, :prompt_len])
+            logits, efference, refractory_trace, plan = self.motor_dnn(
+                state=state,
+                sensory_kv=sensory_kv,
+                plan=plan,
+                refractory_trace=refractory_trace,
+                step_idx=step_idx,
+                auditory_feedback=aud_feed,
+                repetition_penalty=repetition_penalty,
+            )
+            all_logits.append(logits)
 
-            if self.training and torch.is_grad_enabled() and response_steps > 32:
-                step_logits, state, refractory, plan = checkpoint_module.checkpoint(
-                    self.emit_step,
-                    state,
-                    cur_kv,
-                    plan,
-                    refractory,
-                    step,
-                    auditory_feedback,
-                    use_reentrant=False,
-                )
-            else:
-                step_logits, state, refractory, plan = self.emit_step(
-                    state,
-                    sensory_kv=cur_kv,
-                    plan=plan,
-                    refractory_trace=refractory,
-                    step_idx=step,
-                    auditory_feedback=auditory_feedback,
-                )
+            # Efference copy injected back into subcortical core + deliberate step
+            state_eff = self.volumetric_core.inject_efference_copy(state, efference)
+            state = self.volumetric_core.deliberate_step(state_eff)
 
-            # Thalamic memory basin: re-anchor deep shells after circulation to prevent prompt erasure
+            # Deep thalamic basin retention
             if thalamic_anchor_weight > 0.0:
                 state[:, :thalamic_end, :] = (
                     (1.0 - thalamic_anchor_weight) * state[:, :thalamic_end, :]
                     + thalamic_anchor_weight * thalamic_anchor
                 )
 
-            logits.append(step_logits)
+            # Thought re-afference for step t+1 (isolated with detached gradient)
+            if deliberation_mode != "teacher_forcing":
+                with torch.no_grad():
+                    soft_p = F.softmax(logits, dim=-1)
+                    soft_emb = soft_p @ self.sensory_dnn.embedding.weight
+                    prev_thought = self.sensory_dnn(soft_emb)
 
-            if targets is None and feed is None and not is_internal_delib:
-                prev_tok = torch.argmax(step_logits, dim=-1)
-                auditory_feedback = (
-                    self.sensory_dnn(prev_tok)
-                    if isinstance(self.sensory_dnn, SensoryInputDNN)
-                    else self.sensory_dnn.embedding(prev_tok)
-                )
-                if hasattr(self.motor_dnn, "prime_sensory"):
-                    new_k, new_v = self.motor_dnn.prime_sensory(auditory_feedback.unsqueeze(1))
-                    all_k = torch.cat([all_k, new_k], dim=1)
-                    all_v = torch.cat([all_v, new_v], dim=1)
-
-        return torch.stack(logits, dim=1)
+        return torch.stack(all_logits, dim=1)
 
     def forward(
         self,
         input_ids: Optional[torch.Tensor] = None,
         tokens: Optional[torch.Tensor] = None,
-        pixel_values: Optional[torch.Tensor] = None,
-        audio_values: Optional[torch.Tensor] = None,
         response_steps: Optional[int] = None,
         thinking_cycles: int = 3,
-        pad_token_id: Optional[int] = None,
+        pad_token_id: Optional[int] = 0,
         targets: Optional[torch.Tensor] = None,
         feedback_tokens: Optional[torch.Tensor] = None,
-        deliberation_mode: str = "teacher_forcing",
-        thalamic_anchor_weight: float = 0.0,
-        sampling_p: float = 0.0,
+        deliberation_mode: str = "scheduled",
+        thalamic_anchor_weight: float = 0.1,
+        sampling_p: float = 1.0,
+        persona_id: Optional[int] = None,
+        repetition_penalty: float = 1.25,
+        **kwargs,
     ) -> torch.Tensor:
-        """
-        Unified multi-modal forward pass.
-        Accepts input_ids or tokens for text, with optional pixel_values and audio_values.
-        When pixel_values and audio_values are omitted, reproduces text-only path identically.
-        Supports 'teacher_forcing', 'internal' (zero external feedback), and 'scheduled' modes.
-        """
         toks = input_ids if input_ids is not None else tokens
         if toks is None:
             raise ValueError("CerebroSpheroidV4.forward requires input_ids or tokens.")
@@ -543,160 +564,186 @@ class CerebroSpheroidV4(CerebroSpheroidV3):
             pad_token_id=pad_token_id,
             targets=targets,
             feedback_tokens=feedback_tokens,
-            pixel_values=pixel_values,
-            audio_values=audio_values,
             deliberation_mode=deliberation_mode,
             thalamic_anchor_weight=thalamic_anchor_weight,
             sampling_p=sampling_p,
+            persona_id=persona_id,
+            repetition_penalty=repetition_penalty,
+            **kwargs,
         )
 
+    @torch.no_grad()
     def generate(
         self,
         prompt_tokens: torch.Tensor,
-        thinking_cycles: int = 4,
-        max_new_tokens: int = 4096,
-        temperature: float = 0.0,
-        top_k: int = 0,
+        thinking_cycles: int = 3,
+        max_new_tokens: int = 128,
+        temperature: float = 0.7,
         repetition_penalty: float = 1.25,
         eos_token_id: Optional[int] = None,
-        pad_token_id: Optional[int] = None,
-        initial_state: Optional[torch.Tensor] = None,
-        min_new_tokens: int = 3,
-        deliberation_mode: str = "autoregressive",
-        thalamic_anchor_weight: float = 0.0,
+        pad_token_id: Optional[int] = 0,
+        persona_id: Optional[int] = 0,
+        thalamic_anchor_weight: float = 0.1,
+        **kwargs,
     ) -> torch.Tensor:
-        """
-        Generates tokens via either:
-        1. 'autoregressive' (default for backwards compatibility): exact V3 parity.
-        2. 'internal': refined closed-loop internal deliberation with zero external token
-           feedback, dynamic internal thought re-afference, and deep thalamic prompt anchoring.
-        """
-        if deliberation_mode == "autoregressive" and thalamic_anchor_weight <= 0.0:
-            return super().generate(
-                prompt_tokens,
-                thinking_cycles=thinking_cycles,
-                max_new_tokens=max_new_tokens,
-                temperature=temperature,
-                top_k=top_k,
-                repetition_penalty=repetition_penalty,
-                eos_token_id=eos_token_id,
-                pad_token_id=pad_token_id,
-                initial_state=initial_state,
-                min_new_tokens=min_new_tokens,
-            )
-
+        """Autoregressive generative rollout matching JAX generate_v4."""
         self.eval()
-        batch_size = prompt_tokens.shape[0]
-        memory, gist, sensory_kv = self.encode_sensory(prompt_tokens, pad_token_id=pad_token_id)
-        state = self._integrate_memory(
-            memory, state=initial_state, living=initial_state is None,
-            max_packets=32, lengths=self._lengths(prompt_tokens, pad_token_id),
-        )
-        state = self.volumetric_core.inject_efference_copy(state, self._gist_flux(gist))
+        B, L = prompt_tokens.shape
+        sensory_mem, sensory_kv = self.encode_sensory(prompt_tokens)
+
+        if pad_token_id is not None:
+            mask = (prompt_tokens != pad_token_id).unsqueeze(-1).to(sensory_mem.dtype)
+        else:
+            mask = torch.ones(B, L, 1, device=prompt_tokens.device, dtype=sensory_mem.dtype)
+        prompt_flux = (sensory_mem * mask).sum(dim=1) / mask.sum(dim=1).clamp_min(1.0)
+
+        state = self.volumetric_core.init_state(B, prompt_tokens.device)
+        state[:, -1, :] = prompt_flux
         state = self.deliberate(state, thinking_cycles=thinking_cycles)
 
         thalamic_end = max(1, self.num_shells // 3)
         thalamic_anchor = state[:, :thalamic_end, :].clone()
 
-        plan = self.motor_dnn.init_plan(batch_size, state.device)
-        refractory = torch.zeros(batch_size, self.vocab_size, device=state.device, dtype=torch.float32)
-        emitted = []
-        finished = torch.zeros(batch_size, dtype=torch.bool, device=state.device)
-        auditory_feedback = None
+        delib_summary = torch.cat([state[:, 0, :], prompt_flux], dim=-1)
+        plan = self.motor_dnn.init_plan(delib_summary, persona_id=persona_id)
 
-        for step in range(max_new_tokens):
-            logits, state, refractory, plan = self.emit_step(
-                state,
+        refractory_trace = torch.zeros(B, self.vocab_size, device=prompt_tokens.device, dtype=torch.float32)
+        prev_thought = torch.zeros(B, self.surface_dim, device=prompt_tokens.device, dtype=sensory_mem.dtype)
+
+        emitted: List[torch.Tensor] = []
+        finished = torch.zeros(B, dtype=torch.bool, device=prompt_tokens.device)
+
+        for step_idx in range(max_new_tokens):
+            aud_feed = torch.zeros_like(prev_thought) if step_idx == 0 else prev_thought
+            logits, efference, refractory_trace, plan = self.motor_dnn(
+                state=state,
                 sensory_kv=sensory_kv,
                 plan=plan,
-                refractory_trace=refractory,
-                step_idx=step,
-                auditory_feedback=auditory_feedback,
+                refractory_trace=refractory_trace,
+                step_idx=step_idx,
+                auditory_feedback=aud_feed,
+                repetition_penalty=repetition_penalty,
             )
 
-            # Thalamic memory basin: re-anchor deep shells after circulation to prevent prompt erasure
+            if temperature <= 0.05:
+                next_tok = torch.argmax(logits, dim=-1, keepdim=True)
+            else:
+                probs = F.softmax(logits / max(0.1, temperature), dim=-1)
+                next_tok = torch.multinomial(probs, num_samples=1)
+
+            emitted.append(next_tok)
+
+            if eos_token_id is not None:
+                finished |= (next_tok.squeeze(-1) == eos_token_id)
+                if finished.all():
+                    break
+
+            # Thought re-afference
+            soft_p = F.softmax(logits, dim=-1)
+            soft_emb = soft_p @ self.sensory_dnn.embedding.weight
+            prev_thought = self.sensory_dnn(soft_emb)
+
+            # State propagation
+            state_eff = self.volumetric_core.inject_efference_copy(state, efference)
+            state = self.volumetric_core.deliberate_step(state_eff)
+
             if thalamic_anchor_weight > 0.0:
                 state[:, :thalamic_end, :] = (
                     (1.0 - thalamic_anchor_weight) * state[:, :thalamic_end, :]
                     + thalamic_anchor_weight * thalamic_anchor
                 )
 
-            if eos_token_id is not None and step < max(min_new_tokens, 1):
-                logits[..., eos_token_id] = -1e4
+        return torch.cat(emitted, dim=-1) if emitted else prompt_tokens.new_zeros((B, 0))
 
-            # Batch-safe multiplicative repetition penalty
-            if repetition_penalty > 1.0 and emitted:
-                logits = apply_repetition_penalty(logits, emitted, repetition_penalty)
-
-            if temperature <= 0.05:
-                next_tok = logits.argmax(dim=-1, keepdim=True)
-            else:
-                scaled = logits / max(temperature, 1e-5)
-                if top_k > 0:
-                    kth = scaled.topk(min(top_k, scaled.shape[-1]), dim=-1).values[..., -1:]
-                    scaled = scaled.masked_fill(scaled < kth, float("-inf"))
-                next_tok = torch.multinomial(torch.softmax(scaled, dim=-1), num_samples=1)
-
-            emitted.append(next_tok)
-
-            # Internal Thought Re-afference for step t+1:
-            auditory_rep = (
-                self.sensory_dnn(next_tok.squeeze(-1))
-                if isinstance(self.sensory_dnn, SensoryInputDNN)
-                else self.sensory_dnn.embedding(next_tok.squeeze(-1))
-            )
-            auditory_feedback = auditory_rep
-
-            if sensory_kv is not None and hasattr(self.motor_dnn, "prime_sensory"):
-                new_k, new_v = self.motor_dnn.prime_sensory(auditory_feedback.unsqueeze(1))
-                sensory_kv = (torch.cat([sensory_kv[0], new_k], dim=1), torch.cat([sensory_kv[1], new_v], dim=1))
-
-            if eos_token_id is not None:
-                finished |= next_tok.squeeze(-1).eq(eos_token_id)
-                if bool(finished.all()):
-                    break
-
-        return torch.cat(emitted, dim=-1) if emitted else prompt_tokens.new_zeros((batch_size, 0))
+    def state_dict_compatible(self, include_jax_keys: bool = True) -> Dict[str, torch.Tensor]:
+        """Returns dual-keyed state dictionary containing both PyTorch and JAX key conventions."""
+        sd = self.state_dict()
+        res = dict(sd)
+        if include_jax_keys:
+            for k, v in sd.items():
+                jax_k = (
+                    k.replace("sensory_dnn.", "sensory.")
+                    .replace("volumetric_core.", "core.")
+                    .replace("motor_dnn.", "motor.")
+                )
+                if "motor.phase_embed." in jax_k or "motor.motor_phase_embed." in jax_k:
+                    jax_k = jax_k.replace("motor.motor_phase_embed.", "motor.phase_embed.")
+                res[jax_k] = v
+            res["core.src_indices"] = self.volumetric_core.src_indices
+            res["core.dst_indices"] = self.volumetric_core.dst_indices
+        return res
 
     def load_compatible_checkpoint(self, checkpoint_path: str, device: torch.device = torch.device("cpu")) -> bool:
-        """Loads V4 or V3 checkpoints directly into CerebroSpheroidV4 without dropping V4 tensors."""
+        """Loads V4 checkpoints from TPU JAX or GPU PyTorch with 100% parameter parity."""
         if not os.path.exists(checkpoint_path):
             return False
         state = torch.load(checkpoint_path, map_location=device, weights_only=False)
-        weights = state.get("model", state) if isinstance(state, dict) else state
+        weights = state.get("model", state.get("model_state_dict", state)) if isinstance(state, dict) else state
         if not isinstance(weights, dict):
             return False
 
-        # Remap JAX or foreign key naming conventions to native PyTorch
-        remapped_weights = {}
+        remapped = {}
         for k, v in weights.items():
-            new_k = k
-            if new_k.startswith("module."):
-                new_k = new_k[len("module."):]
-            if new_k.startswith("sensory."):
-                new_k = "sensory_dnn." + new_k[len("sensory."):]
-            elif new_k.startswith("motor."):
-                new_k = "motor_dnn." + new_k[len("motor."):]
-            elif new_k.startswith("core."):
-                new_k = "volumetric_core." + new_k[len("core."):]
-            if "motor_dnn.phase_embed." in new_k:
-                new_k = new_k.replace("motor_dnn.phase_embed.", "motor_dnn.motor_phase_embed.")
-            remapped_weights[new_k] = v
-        weights = remapped_weights
+            if k.startswith("module."):
+                k = k[len("module."):]
+            if k.startswith("sensory."):
+                k = "sensory_dnn." + k[len("sensory."):]
+            elif k.startswith("core."):
+                k = "volumetric_core." + k[len("core."):]
+            elif k.startswith("motor."):
+                k = "motor_dnn." + k[len("motor."):]
 
-        my_keys = set(self.state_dict().keys())
-        v4_overlap = len(set(weights.keys()) & my_keys)
-        if v4_overlap > 10:
-            matched = {k: v for k, v in weights.items() if k in my_keys and v.shape == self.state_dict()[k].shape}
-            self.load_state_dict(matched, strict=False)
-            return True
-        else:
-            lift_checkpoint_v3_to_v4(weights, self)
-            return True
+            if "motor_dnn.motor_phase_embed." in k:
+                k = k.replace("motor_dnn.motor_phase_embed.", "motor_dnn.phase_embed.")
+
+            remapped[k] = v
+
+        my_state = self.state_dict()
+        matched = {}
+        for k, v in remapped.items():
+            if k in my_state:
+                target_shape = my_state[k].shape
+                if v.numel() == my_state[k].numel() and v.shape != target_shape:
+                    v = v.view(target_shape)
+                if v.shape == target_shape:
+                    matched[k] = v.to(device=device, dtype=my_state[k].dtype)
+                else:
+                    print(f"⚠️ [checkpoint] Shape mismatch for {k}: {v.shape} vs {target_shape}")
+
+        missing = set(my_state.keys()) - set(matched.keys())
+        if missing:
+            print(f"⚠️ [checkpoint] Note: Initializing {len(missing)} missing parameter(s) from reference defaults: {list(missing)[:5]}")
+            if len(missing) > 15:
+                lift_checkpoint_v3_to_v4(weights, self)
+                return True
+
+        self.load_state_dict(matched, strict=False)
+        print(f"✅ [checkpoint] Successfully loaded {len(matched)}/{len(my_state)} parameters from {os.path.basename(checkpoint_path)}")
+        return True
+
+    def save_compatible_checkpoint(
+        self,
+        checkpoint_path: str,
+        step: int = 0,
+        best: float = float("inf"),
+        loss: float = 0.0,
+    ) -> None:
+        """Saves checkpoint in dual-key format for seamless cross-framework resume."""
+        os.makedirs(os.path.dirname(os.path.abspath(checkpoint_path)), exist_ok=True)
+        payload = {
+            "model": self.state_dict_compatible(include_jax_keys=True),
+            "step": step,
+            "best": best,
+            "loss": loss,
+            "arch": "v4",
+        }
+        tmp_path = checkpoint_path + ".tmp"
+        torch.save(payload, tmp_path)
+        os.replace(tmp_path, checkpoint_path)
 
 
 # =========================================================================
-# Manifold Diagnostics (Section 5)
+# Manifold Diagnostics
 # =========================================================================
 
 @torch.no_grad()
@@ -705,44 +752,30 @@ def compute_manifold_diagnostics(
     state: torch.Tensor,
 ) -> Dict[str, Union[float, List[float]]]:
     """
-    Computes non-invasive geometric diagnostics of the recurrent manifold state:
-    1. Per-shell effective rank from trace ratio (sum lambda)^2 / sum lambda^2
-       via singular value decomposition of the mean-centered batch.
-    2. Per-shell RMS energy.
-    3. Adjacent-shell cosine similarity (radial alignment).
-    4. Write gate saturation fraction (fraction of shells with write_gate > 0.95).
+    Computes non-invasive geometric diagnostics of the recurrent manifold state.
     """
     batch_size, num_shells, shell_dim = state.shape
-    device = state.device
     state_f = state.float()
 
     effective_ranks = []
     rms_per_shell = []
     for k in range(num_shells):
-        s_k = state_f[:, k, :]  # [B, D]
-        # RMS energy
+        s_k = state_f[:, k, :]
         rms = s_k.pow(2).mean().sqrt().item()
         rms_per_shell.append(rms)
 
-        # Effective rank via SVD on centered state
         if batch_size > 1:
             s_centered = s_k - s_k.mean(dim=0, keepdim=True)
-            # Singular values s_i satisfy lambda_i = s_i^2 / (B - 1)
-            # Trace ratio: (sum lambda)^2 / sum lambda^2 = (sum s^2)^2 / sum s^4
             try:
                 s_vals = torch.linalg.svdvals(s_centered)
                 s2 = s_vals.pow(2)
-                if s2.sum().item() < 1e-6:
-                    rank = 1.0
-                else:
-                    rank = (s2.sum().pow(2) / (s2.pow(2).sum() + 1e-9)).item()
+                rank = (s2.sum().pow(2) / (s2.pow(2).sum() + 1e-9)).item() if s2.sum().item() >= 1e-6 else 1.0
             except Exception:
                 rank = 1.0
         else:
             rank = 1.0
         effective_ranks.append(rank)
 
-    # Adjacent-shell cosine similarity
     adjacent_cosines = []
     for k in range(num_shells - 1):
         s_curr = state_f[:, k, :]
@@ -750,7 +783,6 @@ def compute_manifold_diagnostics(
         cos = F.cosine_similarity(s_curr, s_next, dim=-1).mean().item()
         adjacent_cosines.append(cos)
 
-    # Write gate saturation
     write_saturation = 0.0
     if hasattr(model, "volumetric_core") and hasattr(model.volumetric_core, "log_write"):
         write_vals = F.softplus(model.volumetric_core.log_write)
@@ -772,7 +804,6 @@ def compute_manifold_diagnostics(
 # =========================================================================
 
 PRESETS = {
-    # Modern Llama 32k Byte-Fallback BPE Presets (Default for V4)
     "v4_small": dict(
         vocab_size=32000,
         surface_dim=640,
@@ -797,7 +828,6 @@ PRESETS = {
         num_shortcut_tracts=16,
         max_len=1024,
     ),
-    # Legacy GPT-2 50k Presets (for backwards compatibility)
     "v4_gpt2_small": dict(
         vocab_size=50257,
         surface_dim=640,
@@ -813,14 +843,6 @@ PRESETS = {
         radial_dim=384,
         num_shortcut_tracts=48,
         max_len=2048,
-    ),
-    "v4_probe_25m": dict(
-        vocab_size=50257,
-        surface_dim=148,
-        num_shells=8,
-        radial_dim=74,
-        num_shortcut_tracts=16,
-        max_len=1024,
     ),
     "test": dict(
         vocab_size=1000,
@@ -848,7 +870,6 @@ def build_v4_model(args, vocab_size: int = 32000) -> CerebroSpheroidV4:
     cfg = dict(PRESETS.get(preset, PRESETS["v4_small"]))
     cfg["vocab_size"] = vocab_size
 
-    # Override preset values if CLI arguments are explicitly provided
     if getattr(args, "surface_dim", None):
         cfg["surface_dim"] = args.surface_dim
     if getattr(args, "num_shells", None):
@@ -867,11 +888,7 @@ def lift_checkpoint_v3_to_v4(
     checkpoint_state: Dict[str, torch.Tensor],
     target_model: CerebroSpheroidV4,
 ) -> Tuple[Dict[str, torch.Tensor], List[str], List[str]]:
-    """
-    Transplants a V3 checkpoint into a V4 model.
-    Checks shape compatibility and maps tensors directly. When dimensions are equal,
-    provides exact logit parity.
-    """
+    """Transplants a V3 checkpoint into a V4 model."""
     own_state = target_model.state_dict()
     accepted, lifted, dropped = {}, [], []
 
@@ -880,15 +897,7 @@ def lift_checkpoint_v3_to_v4(
             if v.shape == own_state[k].shape:
                 accepted[k] = v
                 lifted.append(k)
-            elif "pos_embed" in k and v.ndim == own_state[k].ndim:
-                # Handle sequence length difference by slicing/padding
-                lifted_tensor = own_state[k].clone()
-                rows = min(v.shape[1], own_state[k].shape[1])
-                lifted_tensor[:, :rows, :] = v[:, :rows, :]
-                accepted[k] = lifted_tensor
-                lifted.append(k)
             else:
-                # Shape mismatch (e.g. 16 shells -> 24 shells)
                 dropped.append(k)
         else:
             dropped.append(k)

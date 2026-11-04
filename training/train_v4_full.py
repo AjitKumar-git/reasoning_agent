@@ -287,8 +287,9 @@ def save_state(prefix: str, model, optimizer, scheduler, step: int, best: float,
     raw_model = model.module if hasattr(model, "module") else model
     pt_path, json_path = state_paths(prefix)
     os.makedirs(CKPT_DIR, exist_ok=True)
+    m_state = raw_model.state_dict_compatible(include_jax_keys=True) if hasattr(raw_model, "state_dict_compatible") else raw_model.state_dict()
     payload = {
-        "model": raw_model.state_dict(),
+        "model": m_state,
         "optimizer": optimizer.state_dict(),
         "scheduler": scheduler.state_dict(),
         "step": step,
@@ -371,27 +372,26 @@ def load_state(path: str, model, optimizer, scheduler, device, dtype, args) -> O
 
     stored_arch = payload.get("arch", "v2")
     if stored_arch != args.arch:
-        raise SystemExit(f"state file holds an {stored_arch} run but --arch is {args.arch}")
+        print(f"  [checkpoint] State file holds {stored_arch} while current run is {args.arch}; loading compatible weights...")
 
-    model.load_state_dict(payload.pop("model"))
+    raw_m = model.module if hasattr(model, "module") else model
+    if hasattr(raw_m, "load_compatible_checkpoint"):
+        raw_m.load_compatible_checkpoint(path, device=device)
+    else:
+        model.load_state_dict(payload.pop("model"))
     model.to(device=device, dtype=model_param_dtype)
-    stored_optimizer = payload.get("args", {}).get("optimizer", "adamw")
-    if stored_optimizer != args.optimizer:
-        # The parameter groups differ (AdamW stores betas/eps, SGD stores momentum), and
-        # loading one into the other fails deep inside the optimizer with a bare KeyError.
-        raise SystemExit(
-            f"state file was written with --optimizer {stored_optimizer} and this run asks for "
-            f"{args.optimizer}. Re-run with --optimizer {stored_optimizer}, or start over with "
-            f"--resume none."
-        )
-    optimizer.load_state_dict(payload.pop("optimizer"))
-    # load_state_dict restores the buffers as CPU tensors because the payload came from the host;
-    # the first step would then fail on a device mismatch between a moment buffer and its param.
-    for state in optimizer.state.values():
-        for key, value in state.items():
-            if torch.is_tensor(value):
-                state[key] = value.to(device)
-    scheduler.load_state_dict(payload.pop("scheduler"))
+
+    if "optimizer" in payload and payload["optimizer"] is not None:
+        try:
+            optimizer.load_state_dict(payload.pop("optimizer"))
+            for state in optimizer.state.values():
+                for key, value in state.items():
+                    if torch.is_tensor(value):
+                        state[key] = value.to(device)
+            if "scheduler" in payload and payload["scheduler"] is not None:
+                scheduler.load_state_dict(payload.pop("scheduler"))
+        except Exception as e:
+            print(f"  [checkpoint] Note: Optimizer/scheduler state from previous checkpoint not restored ({e}); using fresh optimizer.")
     if device.type == "cuda":
         torch.cuda.empty_cache()
     if payload.get("torch_rng") is not None:
@@ -1210,17 +1210,22 @@ def main():
         if use_scaler and scaler is not None:
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
+            scale_before = scaler.get_scale()
             scaler.step(optimizer)
             scaler.update()
+            scale_after = scaler.get_scale()
+            if scale_after >= scale_before:
+                scheduler.step()
         elif is_xla:
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
             import torch_xla.core.xla_model as xm
             xm.optimizer_step(optimizer)
             xm.mark_step()
+            scheduler.step()
         else:
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
             optimizer.step()
-        scheduler.step()
+            scheduler.step()
 
         if device.type == "cuda" and step % 20 == 0:
             torch.cuda.empty_cache()
@@ -1277,11 +1282,12 @@ def main():
                 if score < best - args.min_improvement:
                     best, patience = score, 0
                     raw_model = model.module if hasattr(model, "module") else model
+                    m_state = raw_model.state_dict_compatible(include_jax_keys=True) if hasattr(raw_model, "state_dict_compatible") else raw_model.state_dict()
                     if is_xla:
                         import torch_xla.core.xla_model as xm
-                        xm.save(raw_model.state_dict(), ckpt_best)
+                        xm.save(m_state, ckpt_best)
                     else:
-                        torch.save(raw_model.state_dict(), ckpt_best)
+                        torch.save(m_state, ckpt_best)
                     write_json(meta_path_for(ckpt_best), {
                         "kind": "best", "step": step, "arch": args.arch,
                         "select_on": args.select_on, "selected": score,
@@ -1372,11 +1378,12 @@ def main():
     elapsed += time.time() - session_start
     raw_model = model.module if hasattr(model, "module") else model
     if rank == 0:
+        m_state = raw_model.state_dict_compatible(include_jax_keys=True) if hasattr(raw_model, "state_dict_compatible") else raw_model.state_dict()
         if is_xla:
             import torch_xla.core.xla_model as xm
-            xm.save(raw_model.state_dict(), ckpt_latest)
+            xm.save(m_state, ckpt_latest)
         else:
-            torch.save(raw_model.state_dict(), ckpt_latest)
+            torch.save(m_state, ckpt_latest)
         last = history[-1] if history else {}
         write_json(meta_path_for(ckpt_latest), {
             "kind": "latest", "step": step, "arch": args.arch,

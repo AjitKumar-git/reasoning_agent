@@ -59,13 +59,26 @@ def save_jax_to_torch_pt(
     save_path: str,
     meta: Optional[dict] = None,
 ) -> None:
-    """Converts JAX PyTree into standard PyTorch state_dict and saves to .pt format."""
+    """Converts JAX PyTree into dual-key PyTorch state_dict and saves to .pt format."""
     os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
     torch_state: Dict[str, torch.Tensor] = {}
     for k, v in params.items():
-        torch_state[k] = _safe_torch_tensor(v)
+        t = _safe_torch_tensor(v)
+        torch_state[k] = t
+        py_k = (
+            k.replace("sensory.", "sensory_dnn.")
+            .replace("core.", "volumetric_core.")
+            .replace("motor.", "motor_dnn.")
+        )
+        torch_state[py_k] = t
+        if "motor.phase_embed." in k:
+            torch_state["motor_dnn.phase_embed.weight"] = t
+            torch_state["motor_dnn.motor_phase_embed.weight"] = t
+
     torch_state["core.src_indices"] = _safe_torch_tensor(buffers[0])
     torch_state["core.dst_indices"] = _safe_torch_tensor(buffers[1])
+    torch_state["volumetric_core.src_indices"] = _safe_torch_tensor(buffers[0])
+    torch_state["volumetric_core.dst_indices"] = _safe_torch_tensor(buffers[1])
 
     tmp_path = save_path + ".tmp"
     torch.save(torch_state, tmp_path)
@@ -85,7 +98,9 @@ def load_torch_pt_to_jax(
         raise FileNotFoundError(f"Checkpoint not found at: {ckpt_path}")
 
     state_dict = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-    if "model_state_dict" in state_dict:
+    if isinstance(state_dict, dict) and "model" in state_dict:
+        state_dict = state_dict["model"]
+    elif isinstance(state_dict, dict) and "model_state_dict" in state_dict:
         state_dict = state_dict["model_state_dict"]
 
     # Pre-initialize fallback reference parameters if config is provided
@@ -245,9 +260,22 @@ class AsyncCheckpointManager:
 
             torch_state: Dict[str, torch.Tensor] = {}
             for k, v in params_cpu.items():
-                torch_state[k] = _safe_torch_tensor(v)
+                t = _safe_torch_tensor(v)
+                torch_state[k] = t
+                py_k = (
+                    k.replace("sensory.", "sensory_dnn.")
+                    .replace("core.", "volumetric_core.")
+                    .replace("motor.", "motor_dnn.")
+                )
+                torch_state[py_k] = t
+                if "motor.phase_embed." in k:
+                    torch_state["motor_dnn.phase_embed.weight"] = t
+                    torch_state["motor_dnn.motor_phase_embed.weight"] = t
+
             torch_state["core.src_indices"] = _safe_torch_tensor(buffers_cpu[0])
             torch_state["core.dst_indices"] = _safe_torch_tensor(buffers_cpu[1])
+            torch_state["volumetric_core.src_indices"] = _safe_torch_tensor(buffers_cpu[0])
+            torch_state["volumetric_core.dst_indices"] = _safe_torch_tensor(buffers_cpu[1])
 
             tmp_local = local_path + ".tmp"
             torch.save(torch_state, tmp_local)
