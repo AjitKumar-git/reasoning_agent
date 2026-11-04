@@ -575,8 +575,12 @@ def main():
                              "or 'scheduled' (scheduled sampling between teacher forcing and internal thought).")
     parser.add_argument("--thalamic_anchor_weight", type=float, default=0.2,
                         help="Retention weight for deep thalamic shells (0 to K//3) to prevent prompt erasure.")
-    parser.add_argument("--schedule_steps", type=int, default=5000,
-                        help="Number of steps over which sampling_p linearly ramps from 0 to 1 in scheduled mode.")
+    parser.add_argument("--schedule_steps", type=int, default=10000,
+                        help="Number of steps over which sampling_p smoothly ramps in scheduled mode.")
+    parser.add_argument("--min_sampling_p", type=float, default=0.35,
+                        help="Minimum teacher sampling floor for scheduled sampling (default: 0.35)")
+    parser.add_argument("--repetition_penalty", type=float, default=1.25,
+                        help="Two-tier repetition suppression penalty (default: 1.25)")
     parser.add_argument("--sampling_p", type=float, default=0.0,
                         help="Probability of sampling internal thoughts instead of teacher forcing (scheduled mode).")
     parser.add_argument("--resume", default="auto",
@@ -1135,9 +1139,13 @@ def main():
         accum_steps = args.grad_accum
         delib_mode = getattr(args, "deliberation_mode", "teacher_forcing")
         if delib_mode == "scheduled":
-            cur_sampling_p = min(1.0, float(step) / float(max(1, getattr(args, "schedule_steps", 5000))))
+            prog = min(1.0, max(0.0, float(step) / float(max(1, getattr(args, "schedule_steps", 10000)))))
+            min_teacher_p = getattr(args, "min_sampling_p", 0.35)
+            max_internal_p = 1.0 - min_teacher_p
+            # Cosine smooth transition from 0.0 internal deliberation up to max_internal_p (65%)
+            cur_sampling_p = float(max_internal_p * 0.5 * (1.0 - math.cos(math.pi * prog)))
         elif delib_mode == "internal":
-            cur_sampling_p = 1.0
+            cur_sampling_p = float(1.0 - getattr(args, "min_sampling_p", 0.35))
         else:
             cur_sampling_p = 0.0
 

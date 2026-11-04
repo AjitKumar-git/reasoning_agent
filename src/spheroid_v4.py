@@ -445,11 +445,11 @@ class CerebroSpheroidV4(CerebroSpheroidV3):
                         soft_rep = probs @ emb_table.to(probs.dtype)
                         hard_idx = torch.argmax(last_logits, dim=-1)
                         hard_rep = F.embedding(hard_idx, emb_table)
-                        # Straight-through estimator: hard discrete thought forward, smooth gradient backward
-                        auditory_feedback = hard_rep - soft_rep.detach() + soft_rep
+                        # Stop gradient on internal thought re-afference to isolate recurrent feedback and prevent multi-step BPTT explosion
+                        auditory_feedback = (hard_rep - soft_rep.detach() + soft_rep).detach()
                     else:
                         pred_tok = torch.argmax(last_logits, dim=-1)
-                        auditory_feedback = F.embedding(pred_tok, emb_table)
+                        auditory_feedback = F.embedding(pred_tok, emb_table).detach()
                 else:
                     pred_tok = torch.argmax(last_logits, dim=-1)
                     auditory_feedback = (
