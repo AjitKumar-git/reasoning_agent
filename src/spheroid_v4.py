@@ -126,7 +126,7 @@ class ResidualVolumetricCoreV4(nn.Module):
         # 2. Axonal shortcut tracts
         src_state = curr[:, self.src_indices, :]
         tracts = torch.einsum("bti,tij->btj", src_state, self.shortcut_tracts)
-        tract_acc = torch.zeros_like(curr)
+        tract_acc = torch.zeros(curr.shape, dtype=tracts.dtype, device=curr.device)
         tract_acc.index_add_(1, self.dst_indices, tracts)
 
         # 3. Radial re-entrant wave coupling
@@ -135,11 +135,11 @@ class ResidualVolumetricCoreV4(nn.Module):
         reentrant = self.radial_proj_out(F.silu(reentrant))
 
         # Flow norm and leaky integration
-        flow = self.flow_norm(intra + tract_acc + reentrant)
-        leak = torch.sigmoid(self.log_leak).view(1, -1, 1)
-        write = F.softplus(self.log_write).view(1, -1, 1)
+        flow = self.flow_norm(intra + tract_acc.to(intra.dtype) + reentrant.to(intra.dtype))
+        leak = torch.sigmoid(self.log_leak).view(1, -1, 1).to(curr.dtype)
+        write = F.softplus(self.log_write).view(1, -1, 1).to(curr.dtype)
 
-        raw = (1.0 - leak) * curr + write * torch.tanh(flow)
+        raw = (1.0 - leak) * curr + write * torch.tanh(flow.to(curr.dtype))
         return self.norm(raw).to(state.dtype)
 
     def init_state(self, batch_size: int, device: torch.device) -> torch.Tensor:
@@ -399,6 +399,23 @@ class CerebroSpheroidV4(nn.Module):
 
     def init_living_state(self, batch_size: int, device: torch.device) -> torch.Tensor:
         return self.init_brain_state(batch_size, device, living=True)
+
+    def ingest_stimulus(self, token_ids: torch.Tensor, pad_token_id: Optional[int] = 0) -> torch.Tensor:
+        B, L = token_ids.shape
+        sensory_mem, _ = self.encode_sensory(token_ids)
+        if pad_token_id is not None:
+            mask = (token_ids != pad_token_id).unsqueeze(-1).to(sensory_mem.dtype)
+        else:
+            mask = torch.ones(B, L, 1, device=token_ids.device, dtype=sensory_mem.dtype)
+        prompt_flux = (sensory_mem * mask).sum(dim=1) / mask.sum(dim=1).clamp_min(1.0)
+        state = self.volumetric_core.init_state(B, token_ids.device)
+        state[:, -1, :] = prompt_flux
+        return state
+
+    def solve_with_active_thinking(
+        self, prompt_tokens: torch.Tensor, thinking_cycles: int = 1, max_answer_tokens: int = 4, **kwargs
+    ) -> torch.Tensor:
+        return self.generate(prompt_tokens, thinking_cycles=thinking_cycles, max_new_tokens=max_answer_tokens, **kwargs)
 
     def encode_sensory(
         self, token_ids: torch.Tensor
@@ -843,6 +860,14 @@ PRESETS = {
         radial_dim=384,
         num_shortcut_tracts=48,
         max_len=2048,
+    ),
+    "v4_probe_25m": dict(
+        vocab_size=50257,
+        surface_dim=148,
+        num_shells=8,
+        radial_dim=74,
+        num_shortcut_tracts=16,
+        max_len=1024,
     ),
     "test": dict(
         vocab_size=1000,
