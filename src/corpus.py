@@ -28,7 +28,7 @@ Pair = Tuple[str, str]
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 DATA_DIR = os.path.join(ROOT_DIR, "data")
 
-SOURCES = ("openhermes", "lmsys", "knowledge", "cognitive", "gsm8k", "cosmopedia")
+SOURCES = ("openhermes", "lmsys", "knowledge", "cognitive", "gsm8k", "cosmopedia", "fineweb_edu")
 
 
 # --------------------------------------------------------------------------------------------
@@ -218,6 +218,71 @@ def cosmopedia_pairs(path: str, seed: int = 0, holdout_every: int = 0,
             yield (str(q).strip(), str(a).strip())
 
 
+def fineweb_edu_pairs(path: str, seed: int = 0, holdout_every: int = 0,
+                      want_heldout: bool = False, max_records: int = 50000,
+                      min_score: float = 3.0) -> Iterator[Pair]:
+    """Capped FineWeb-Edu reader (bounded subset of HuggingFaceFW/fineweb-edu, sample-10BT).
+    Filters for high educational score (score >= 3.0) to deliver maximum reasoning density.
+    """
+    if not os.path.exists(path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        try:
+            from datasets import load_dataset
+            print(f"[corpus] Downloading bounded FineWeb-Edu sample (min_score={min_score}, max_records={max_records})...")
+            ds = load_dataset("HuggingFaceFW/fineweb-edu", name="sample-10BT", split="train", streaming=True)
+            records = []
+            for item in ds:
+                score = float(item.get("score", 0.0) or item.get("educational_score", 0.0))
+                if score < min_score:
+                    continue
+                text = (item.get("text") or item.get("content") or "").strip()
+                if len(text) < 50:
+                    continue
+                if "\n\n" in text:
+                    parts = text.split("\n\n", 1)
+                    prompt, response = parts[0].strip(), parts[1].strip()
+                else:
+                    lines = text.split(". ", 1)
+                    prompt, response = (lines[0] + ".").strip(), lines[1].strip() if len(lines) > 1 else text
+                if len(prompt) < 15:
+                    prompt = "Explain the educational context of the following subject:\n" + prompt
+                records.append({"prompt": prompt, "response": response})
+                if len(records) >= max_records:
+                    break
+            import pyarrow as pa
+            table = pa.Table.from_pylist(records)
+            pq.write_table(table, path)
+            print(f"[corpus] Saved bounded FineWeb-Edu ({len(records)} records) to {path}")
+        except Exception as e:
+            print(f"[corpus] Warning: unable to auto-download FineWeb-Edu subset: {e}")
+            return
+
+    table = pq.read_table(path)
+    cols = table.column_names
+    if "prompt" in cols and "response" in cols:
+        prompts = table["prompt"].to_pylist()
+        responses = table["response"].to_pylist()
+    elif "text" in cols:
+        texts = table["text"].to_pylist()
+        prompts, responses = [], []
+        for t in texts:
+            if "\n\n" in str(t):
+                p, r = str(t).split("\n\n", 1)
+            else:
+                p, r = "Explain the following educational concept:", str(t)
+            prompts.append(p)
+            responses.append(r)
+    else:
+        prompts = table[cols[0]].to_pylist()
+        responses = table[cols[1]].to_pylist() if len(cols) > 1 else prompts
+
+    n = min(len(prompts), max_records)
+    for idx in row_plan(n, seed, holdout_every, want_heldout):
+        q, a = prompts[idx], responses[idx]
+        if q and a and str(q).strip() and str(a).strip():
+            yield (str(q).strip(), str(a).strip())
+
+
 # --------------------------------------------------------------------------------------------
 # mixture
 # --------------------------------------------------------------------------------------------
@@ -230,6 +295,7 @@ def default_paths() -> Dict[str, str]:
         "cognitive": os.path.join(DATA_DIR, "cerebro_cognitive", "cerebro_cognitive_train.parquet"),
         "gsm8k": os.path.join(DATA_DIR, "gsm8k", "gsm8k_train.parquet"),
         "cosmopedia": os.path.join(DATA_DIR, "cosmopedia", "cosmopedia_v2_train.parquet"),
+        "fineweb_edu": os.path.join(DATA_DIR, "fineweb_edu", "fineweb_edu_sample.parquet"),
     }
 
 
@@ -277,9 +343,11 @@ class Mixture:
         for name in self.names:
             path = paths[name]
             if not os.path.exists(path):
-                # Cosmopedia can be auto-downloaded on demand if missing
+                # Cosmopedia and FineWeb-Edu can be auto-downloaded on demand if missing
                 if name == "cosmopedia":
                     cosmopedia_pairs(path)
+                elif name == "fineweb_edu":
+                    fineweb_edu_pairs(path)
                 else:
                     raise FileNotFoundError(f"source {name!r} not found at {path}")
             # Only the sources that carry an eval slice are split.
@@ -290,6 +358,8 @@ class Mixture:
                 factory = lambda p=path, e=every: lmsys_pairs(p, seed, e, want_heldout)
             elif name == "cosmopedia":
                 factory = lambda p=path, e=every: cosmopedia_pairs(p, seed, e, want_heldout)
+            elif name == "fineweb_edu":
+                factory = lambda p=path, e=every: fineweb_edu_pairs(p, seed, e, want_heldout)
             else:
                 factory = lambda p=path, e=every: small_parquet_pairs(p, seed, e, want_heldout)
             self._factories[name] = factory

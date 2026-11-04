@@ -66,6 +66,11 @@ def parse_args(args_list=None):
     parser.add_argument("--deliberation_mode", type=str, default="scheduled", choices=["scheduled", "teacher_forcing", "internal"])
     parser.add_argument("--repetition_penalty", type=float, default=1.25, help="Two-tier refractory repetition penalty multiplier (default: 1.25)")
     parser.add_argument("--persona_id", type=int, default=None, help="Agentic persona ID (0=Reasoner, 1=Explorer, 2=Concise, 3=Verifier, or None for round-robin curriculum)")
+    parser.add_argument("--dataset_source", type=str, default="openhermes",
+                        choices=["openhermes", "fineweb_edu", "balanced_mix"],
+                        help="Streaming training dataset: 'openhermes' (default stable reasoning corpus), "
+                             "'fineweb_edu' (HuggingFaceFW/fineweb-edu sample-10BT educational text), "
+                             "or 'balanced_mix' (50%% OpenHermes, 50%% FineWeb-Edu)")
     parser.add_argument("--cloud_sync", action="store_true", default=False, help="Enable automatic checkpoint syncing with bioflo.in")
     parser.add_argument("--cloud_url", type=str, default="https://bioflo.in/api/cerebro/sync.php", help="bioflo.in sync endpoint")
     parser.add_argument("--cloud_token", type=str, default="CerebroSpheroid_Sync_Secure_2026", help="Secret sync token")
@@ -189,9 +194,65 @@ def main(args=None):
     from datasets import load_dataset
     from src.elastic_window import ElasticBucketBatcher, get_default_elastic_buckets
 
-    print("\n📦 Initializing streaming reasoning data (teknium/OpenHermes-2.5)...")
-    dataset = load_dataset("teknium/OpenHermes-2.5", split="train", streaming=True)
-    data_iter = iter(dataset)
+    ds_choice = getattr(args, "dataset_source", "openhermes")
+    if ds_choice == "fineweb_edu":
+        print("\n📦 Initializing streaming educational data (HuggingFaceFW/fineweb-edu: sample-10BT)...")
+        raw_ds = load_dataset("HuggingFaceFW/fineweb-edu", name="sample-10BT", split="train", streaming=True)
+        def _fineweb_stream():
+            for row in raw_ds:
+                score = float(row.get("score", 0.0) or row.get("educational_score", 0.0))
+                if score < 3.0:
+                    continue
+                text = (row.get("text") or "").strip()
+                if len(text) < 50:
+                    continue
+                if "\n\n" in text:
+                    p, r = text.split("\n\n", 1)
+                else:
+                    lines = text.split(". ", 1)
+                    p = lines[0] + "."
+                    r = lines[1] if len(lines) > 1 else text
+                if len(p) < 15:
+                    p = "Explain the educational context of the following topic:\n" + p
+                yield {"conversations": [{"from": "human", "value": p.strip()}, {"from": "gpt", "value": r.strip()}]}
+        data_iter = _fineweb_stream()
+    elif ds_choice == "balanced_mix":
+        print("\n📦 Initializing balanced streaming mix (50% OpenHermes-2.5 + 50% FineWeb-Edu)...")
+        oh_ds = iter(load_dataset("teknium/OpenHermes-2.5", split="train", streaming=True))
+        fw_raw = iter(load_dataset("HuggingFaceFW/fineweb-edu", name="sample-10BT", split="train", streaming=True))
+        def _balanced_stream():
+            turn = 0
+            while True:
+                if turn % 2 == 0:
+                    try:
+                        yield next(oh_ds)
+                    except StopIteration:
+                        break
+                else:
+                    try:
+                        for row in fw_raw:
+                            score = float(row.get("score", 0.0) or row.get("educational_score", 0.0))
+                            if score >= 3.0:
+                                text = (row.get("text") or "").strip()
+                                if len(text) >= 50:
+                                    if "\n\n" in text:
+                                        p, r = text.split("\n\n", 1)
+                                    else:
+                                        lines = text.split(". ", 1)
+                                        p = lines[0] + "."
+                                        r = lines[1] if len(lines) > 1 else text
+                                    if len(p) < 15:
+                                        p = "Explain the educational context of the following topic:\n" + p
+                                    yield {"conversations": [{"from": "human", "value": p.strip()}, {"from": "gpt", "value": r.strip()}]}
+                                    break
+                    except StopIteration:
+                        break
+                turn += 1
+        data_iter = _balanced_stream()
+    else:
+        print("\n📦 Initializing streaming reasoning data (teknium/OpenHermes-2.5)...")
+        dataset = load_dataset("teknium/OpenHermes-2.5", split="train", streaming=True)
+        data_iter = iter(dataset)
 
     if args.elastic_window:
         buckets = get_default_elastic_buckets(args.total_window)
