@@ -271,8 +271,8 @@ class AsyncCheckpointManager:
             if self.cloud_sync and ("latest" in filename or "best" in filename):
                 try:
                     from src.cloud_sync import push_checkpoint_async
-                    step_val = meta_dict.get("step", 0) if meta_dict else 0
-                    loss_val = meta_dict.get("loss", 0.0) if meta_dict else 0.0
+                    step_val = int(meta_dict.get("step", 0)) if meta_dict else 0
+                    loss_val = float(meta_dict.get("eval_loss", meta_dict.get("loss", 0.0))) if meta_dict else 0.0
                     target_type = "best" if "best" in filename else "latest"
                     push_checkpoint_async(
                         local_path,

@@ -150,7 +150,7 @@ def main(args=None):
                     push_checkpoint_async(
                         latest_ckpt,
                         step=max_step,
-                        loss=float(meta.get("loss", 0.0)) if meta else 0.0,
+                        loss=float(meta.get("loss", meta.get("eval_loss", 0.0))) if meta else 0.0,
                         target_type="latest",
                         url=args.cloud_url,
                         token=args.cloud_token,
@@ -395,7 +395,12 @@ def main(args=None):
                         params,
                         buffers,
                         "cerebro_spheroid_v4_jax_best.pt",
-                        meta_dict={"step": step, "eval_loss": best_eval_loss, "eval_ppl": held_out_ppl},
+                        meta_dict={
+                            "step": step,
+                            "loss": float(best_eval_loss),
+                            "eval_loss": float(best_eval_loss),
+                            "eval_ppl": float(held_out_ppl),
+                        },
                     )
 
             # Async checkpointing (strictly guarded against NaN / Inf corruption)

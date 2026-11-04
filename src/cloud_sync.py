@@ -200,13 +200,14 @@ def push_checkpoint(
         now = time.time()
         if target_type == "best":
             elapsed = now - _LAST_BEST_UPLOAD_TIME
-            if elapsed < _BEST_COOLDOWN_SECONDS:
+            if elapsed < _BEST_COOLDOWN_SECONDS and _IN_FLIGHT_UPLOADS.get(target_type) != step:
                 remaining = int(_BEST_COOLDOWN_SECONDS - elapsed)
                 print(f"⏳ [cloud_sync] Best model cooldown active: skipping best.pt upload ({remaining}s remaining until next 5-min window).")
                 return False
 
-        if target_type in _IN_FLIGHT_UPLOADS:
-            # An upload for this target_type is already actively transmitting chunks!
+        if target_type in _IN_FLIGHT_UPLOADS and _IN_FLIGHT_UPLOADS[target_type] != step:
+            prev_step = _IN_FLIGHT_UPLOADS[target_type]
+            print(f"⏳ [cloud_sync] Upload in flight for {target_type}.pt (step {prev_step}): skipping duplicate step {step}.")
             return False
 
         _IN_FLIGHT_UPLOADS[target_type] = step
@@ -315,6 +316,25 @@ def push_checkpoint_async(
     chunk_size_mb: int = 10
 ):
     """Asynchronous background upload. 0 ms interruption to training loops."""
+    global _LAST_BEST_UPLOAD_TIME
+    with _UPLOAD_LOCK:
+        now = time.time()
+        if target_type == "best":
+            elapsed = now - _LAST_BEST_UPLOAD_TIME
+            if elapsed < _BEST_COOLDOWN_SECONDS:
+                remaining = int(_BEST_COOLDOWN_SECONDS - elapsed)
+                print(f"⏳ [cloud_sync] Best model cooldown active: skipping best.pt upload ({remaining}s remaining until next 5-min window).")
+                return None
+
+        if target_type in _IN_FLIGHT_UPLOADS:
+            prev_step = _IN_FLIGHT_UPLOADS[target_type]
+            print(f"⏳ [cloud_sync] Upload in flight for {target_type}.pt (step {prev_step}): skipping duplicate dispatch for step {step}.")
+            return None
+
+        _IN_FLIGHT_UPLOADS[target_type] = step
+        if target_type == "best":
+            _LAST_BEST_UPLOAD_TIME = now
+
     thread = threading.Thread(
         target=push_checkpoint,
         args=(file_path, step, loss, target_type, source_node, url, token, chunk_size_mb),
