@@ -60,6 +60,7 @@ def parse_args(args_list=None):
     parser.add_argument("--periodic_every", type=int, default=500, help="Steps between milestone archive saves")
     parser.add_argument("--log_every", type=int, default=25, help="Steps between console progress lines")
     parser.add_argument("--schedule_steps", type=int, default=5000, help="Steps to anneal from teacher-forcing to internal deliberation")
+    parser.add_argument("--min_sampling_p", type=float, default=0.35, help="Minimum teacher sampling floor for scheduled sampling (default: 0.35)")
     parser.add_argument("--eval_interval", type=int, default=200, help="Steps between held-out validation evaluations")
     parser.add_argument("--thalamic_anchor_weight", type=float, default=0.1, help="Thalamic memory basin retention strength (0.0 to 0.3)")
     parser.add_argument("--deliberation_mode", type=str, default="scheduled", choices=["scheduled", "teacher_forcing", "internal"])
@@ -274,15 +275,15 @@ def main(args=None):
 
             # Learning Rate Schedule (Gentle warmup on start/resume, global cosine decay)
             step_offset = step - start_step
-            if step_offset < 100 and start_step == 1:
-                lr = args.min_lr + (args.lr - args.min_lr) * (float(step_offset) / 100.0)
-            elif step_offset < 50 and start_step > 1:
-                lr = args.min_lr + (args.lr - args.min_lr) * (float(step_offset) / 50.0)
+            progress = float(step) / max(1.0, float(args.steps))
+            target_lr = args.min_lr + 0.5 * (args.lr - args.min_lr) * (1.0 + math.cos(math.pi * min(1.0, progress)))
+            if step_offset < 100:
+                # 100-step ramp from min_lr to target_lr on session start/resume
+                lr = args.min_lr + (target_lr - args.min_lr) * (float(step_offset) / 100.0)
             else:
-                progress = float(step) / max(1.0, float(args.steps))
-                lr = args.min_lr + 0.5 * (args.lr - args.min_lr) * (1.0 + math.cos(math.pi * min(1.0, progress)))
+                lr = target_lr
 
-            # Scheduled sampling curriculum (Smooth Cosine Transition over global training horizon)
+            # Scheduled sampling curriculum (Smooth Cosine Transition down to min_sampling_p)
             if args.deliberation_mode == "teacher_forcing":
                 sampling_p = 1.0
             elif args.deliberation_mode == "internal":
@@ -290,9 +291,10 @@ def main(args=None):
             else:  # "scheduled"
                 if args.schedule_steps > 0:
                     prog = min(1.0, max(0.0, float(step) / float(args.schedule_steps)))
-                    sampling_p = float(0.5 * (1.0 + math.cos(math.pi * prog)))
+                    min_p = getattr(args, "min_sampling_p", 0.35)
+                    sampling_p = float(min_p + 0.5 * (1.0 - min_p) * (1.0 + math.cos(math.pi * prog)))
                 else:
-                    sampling_p = 0.0
+                    sampling_p = float(getattr(args, "min_sampling_p", 0.35))
 
             # Dynamic Persona Curriculum (0: Reasoner, 1: Explorer, 2: Concise, 3: Verifier)
             if args.persona_id is not None:

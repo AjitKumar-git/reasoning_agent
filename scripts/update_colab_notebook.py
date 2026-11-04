@@ -139,6 +139,7 @@ notebook = {
                 "    lr=0.002,\n",
                 "    deliberation_mode=\"scheduled\",\n",
                 "    schedule_steps=10000,\n",
+                "    min_sampling_p=0.35,\n",
                 "    repetition_penalty=1.25,\n",
                 "    eval_interval=200,\n",
                 "    thalamic_anchor_weight=0.1,\n",
