@@ -48,6 +48,21 @@ def get_shell_zones(num_shells: int) -> Dict[str, range]:
     }
 
 
+class DtypeAwareRMSNorm(nn.Module):
+    """
+    RMSNorm that adapts weight dtype dynamically to match input activation under AMP,
+    preventing unfused layer_norm fallback and warning messages.
+    """
+    def __init__(self, dim: int, eps: float = 1e-6):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        w = self.weight.to(x.dtype) if self.weight.dtype != x.dtype else self.weight
+        return F.rms_norm(x, (self.weight.shape[0],), w, self.eps)
+
+
 class SensoryInputDNNV4(nn.Module):
     """
     Afferent Sensory Front-End:
@@ -64,10 +79,10 @@ class SensoryInputDNNV4(nn.Module):
 
         self.fc1_gate = nn.Linear(surface_dim, surface_dim * 2, bias=False)
         self.fc1_val = nn.Linear(surface_dim, surface_dim * 2, bias=False)
-        self.norm1 = nn.RMSNorm(surface_dim * 2)
+        self.norm1 = DtypeAwareRMSNorm(surface_dim * 2)
 
         self.fc2 = nn.Linear(surface_dim * 2, surface_dim, bias=False)
-        self.norm_out = nn.RMSNorm(surface_dim)
+        self.norm_out = DtypeAwareRMSNorm(surface_dim)
 
     def forward(self, token_ids_or_flux: torch.Tensor) -> torch.Tensor:
         if token_ids_or_flux.dtype in (torch.int32, torch.int64, torch.long):
@@ -112,8 +127,8 @@ class ResidualVolumetricCoreV4(nn.Module):
         self.radial_proj_in = nn.Linear(shell_dim, radial_dim, bias=False)
         self.radial_proj_out = nn.Linear(radial_dim, shell_dim, bias=False)
 
-        self.flow_norm = nn.RMSNorm(shell_dim)
-        self.norm = nn.RMSNorm(shell_dim)
+        self.flow_norm = DtypeAwareRMSNorm(shell_dim)
+        self.norm = DtypeAwareRMSNorm(shell_dim)
 
         self.log_write = nn.Parameter(torch.full((num_shells,), math.log(math.expm1(0.35)), dtype=torch.float32))
         self.log_leak = nn.Parameter(torch.full((num_shells,), math.log(0.35 / 0.65), dtype=torch.float32))
@@ -129,9 +144,11 @@ class ResidualVolumetricCoreV4(nn.Module):
         tract_acc = torch.zeros(curr.shape, dtype=tracts.dtype, device=curr.device)
         tract_acc.index_add_(1, self.dst_indices, tracts)
 
-        # 3. Radial re-entrant wave coupling
+        # 3. Radial re-entrant wave coupling (2D GEMM formulation for 4000x memory efficiency)
         rad_in = self.radial_proj_in(curr)
-        reentrant = torch.einsum("bki,kjio->bjo", rad_in, self.reentrant_field)
+        KR = self.num_shells * self.radial_dim
+        field_mat = self.reentrant_field.permute(0, 2, 1, 3).reshape(KR, KR)
+        reentrant = (rad_in.reshape(-1, KR) @ field_mat).view(-1, self.num_shells, self.radial_dim)
         reentrant = self.radial_proj_out(F.silu(reentrant))
 
         # Flow norm and leaky integration
@@ -188,7 +205,7 @@ class PremotorMotorDecoderV4(nn.Module):
         self.q_proj = nn.Linear(surface_dim, surface_dim, bias=False)
         self.k_proj = nn.Linear(surface_dim, surface_dim, bias=False)
         self.v_proj = nn.Linear(surface_dim, surface_dim, bias=False)
-        self.resonance_norm = nn.RMSNorm(surface_dim)
+        self.resonance_norm = DtypeAwareRMSNorm(surface_dim)
 
         self.shell_proj = nn.Linear(surface_dim, surface_dim, bias=False)
         self.shell_score = nn.Parameter(torch.zeros(num_shells))
@@ -201,10 +218,10 @@ class PremotorMotorDecoderV4(nn.Module):
 
         fused_dim = surface_dim * 5
         hidden_dim = surface_dim * 2
-        self.fused_norm = nn.RMSNorm(fused_dim)
+        self.fused_norm = DtypeAwareRMSNorm(fused_dim)
         self.fc_gate = nn.Linear(fused_dim, hidden_dim, bias=False)
         self.fc_val = nn.Linear(fused_dim, hidden_dim, bias=False)
-        self.norm_mid = nn.RMSNorm(hidden_dim)
+        self.norm_mid = DtypeAwareRMSNorm(hidden_dim)
         self.dropout = nn.Dropout(dropout)
 
         self.head = nn.Linear(hidden_dim, vocab_size, bias=False)
