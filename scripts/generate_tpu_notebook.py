@@ -11,10 +11,10 @@ notebook = {
                 "\n",
                 "### **Architecture & Capabilities in V4-Small:**\n",
                 "1. **Modern Llama 32,000 Vocabulary**: Byte-fallback BPE with atomic single-digit arithmetic (`0`-`9`) and zero OOV tokens (127M total parameters).\n",
-                "2. **Elastic Sliding Context Window**: 1,536-token budget dynamically partitioned across 4 complementary cognitive regimes (`deep_reasoning`, `standard_cot`, `balanced`, `long_context`).\n",
-                "3. **SpheroidOptimizer**: Polar Quintic Newton-Schulz Riemannian optimizer with single-moment memory and contractive spectral bounds ($\\rho \\le 1.0$).\n",
-                "4. **Pure JAX / XLA Fused Kernel**: The entire multi-step deliberation and zero-feedback emission unroll runs natively on the TPU MXU systolic array without PyTorch/XLA recompilation lags.\n",
-                "5. **Autonomous Multi-Session Resumption**: Safely trains under Kaggle's 9-hour limit via `--max_hours 8.5` and automatically mirrors checkpoints into `/kaggle/working/checkpoints/` and bioflo.in.\n",
+                "2. **Elastic Sliding Context Window**: High-density dynamic reasoning buckets without padding traps.\n",
+                "3. **Curriculum Scheduled Sampling**: Linearly transitions from teacher forcing ($p=1.0$) to closed-loop internal deliberation ($p=0.0$) over 5,000 steps.\n",
+                "4. **Riemannian SpheroidOptimizer**: Polar Quintic Newton-Schulz optimizer with single-moment memory and contractive spectral bounds ($\\rho \\le 1.0$).\n",
+                "5. **Held-Out Validation & Direct Cloud Sync**: Continuously evaluates generalization loss on OpenHermes-2.5 and GSM8K and mirrors checkpoints chunk-by-chunk to `bioflo.in` without TPU stalls.\n",
                 "\n",
                 "---\n",
                 "### ⚡ Kaggle Settings:\n",
@@ -61,9 +61,8 @@ notebook = {
             "outputs": [],
             "source": [
                 "import os\n",
-                "%cd /kaggle/working\n",
-                "if not os.path.exists(\"reasoning_agent\"):\n",
-                "    !git clone https://github.com/AjitKumar-git/reasoning_agent.git\n",
+                "if not os.path.exists(\"/kaggle/working/reasoning_agent\"):\n",
+                "    !git clone https://github.com/AjitKumar-git/reasoning_agent.git /kaggle/working/reasoning_agent\n",
                 "%cd /kaggle/working/reasoning_agent\n",
                 "!git fetch origin main\n",
                 "!git reset --hard origin/main\n",
@@ -110,7 +109,9 @@ notebook = {
             "source": [
                 "## Step 4: Launch CerebroSpheroid V4 JAX Cloud TPU Training\n",
                 "- **Engine**: Pure JAX native execution with XLA fusion\n",
-                "- **Context**: Elastic Sliding Window (1,536 tokens)\n",
+                "- **Context**: Elastic Sliding Window (1,024 tokens budget)\n",
+                "- **Curriculum**: Scheduled sampling over 5,000 steps\n",
+                "- **Validation**: Frozen held-out OpenHermes + GSM8K eval every 200 steps\n",
                 "- **Time Safety**: `--max_hours 8.5` safely exits before Kaggle's 9.0-hr hard timeout\n",
                 "- **Cloud Sync**: 0ms TPU pause asynchronous mirroring to bioflo.in"
             ]
@@ -124,10 +125,14 @@ notebook = {
                 "!python3 training/train_v4_jax.py \\\n",
                 "    --ckpt_dir /kaggle/working/checkpoints \\\n",
                 "    --elastic_window \\\n",
-                "    --total_window 1536 \\\n",
+                "    --total_window 1024 \\\n",
                 "    --batch_size 8 \\\n",
                 "    --grad_accum 2 \\\n",
                 "    --lr 0.002 \\\n",
+                "    --deliberation_mode scheduled \\\n",
+                "    --schedule_steps 5000 \\\n",
+                "    --eval_interval 200 \\\n",
+                "    --thalamic_anchor_weight 0.1 \\\n",
                 "    --max_steps 50000 \\\n",
                 "    --max_hours 8.5 \\\n",
                 "    --save_every 100 \\\n",
@@ -138,7 +143,7 @@ notebook = {
         {
             "cell_type": "markdown",
             "metadata": {},
-            "source": ["## Step 5: Archive Checkpoints for Download & Multi-Session Chaining"]
+            "source": ["## Step 5: Archive Checkpoints & Verify Bioflo Cloud Sync"]
         },
         {
             "cell_type": "code",
@@ -146,13 +151,17 @@ notebook = {
             "metadata": {},
             "outputs": [],
             "source": [
-                "import os, glob\n",
+                "import os, glob, json\n",
+                "from src.cloud_sync import check_remote_manifest\n",
+                "\n",
                 "!mkdir -p /kaggle/working/checkpoints_tpu\n",
                 "!cp -r /kaggle/working/checkpoints/* /kaggle/working/checkpoints_tpu/ 2>/dev/null || true\n",
                 "!zip -r /kaggle/working/cerebro_spheroid_v4_jax_checkpoints.zip /kaggle/working/checkpoints_tpu\n",
                 "!ls -lh /kaggle/working/*.zip\n",
-                "print(\"\\n✅ Checkpoints successfully archived to /kaggle/working/cerebro_spheroid_v4_jax_checkpoints.zip!\")\n",
-                "print(\"Download it directly from the Kaggle Output panel or attach as input to your next session!\")\n"
+                "\n",
+                "print(\"\\n🌐 Remote bioflo.in manifest:\")\n",
+                "print(json.dumps(check_remote_manifest(), indent=2))\n",
+                "print(\"\\n✅ Checkpoints successfully archived and mirrored!\")\n"
             ]
         }
     ],

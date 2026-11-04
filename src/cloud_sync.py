@@ -348,15 +348,28 @@ def auto_sync_checkpoints(
     local_latest_path = None
 
     import glob
-    candidates = glob.glob(os.path.join(local_dir, "*_step_*.pt")) + glob.glob(os.path.join(local_dir, "*latest*.pt"))
+    candidates = glob.glob(os.path.join(local_dir, "*.pt"))
     for cand in candidates:
         import re
         m = re.search(r"step_(\d+)", os.path.basename(cand))
+        s = -1
         if m:
             s = int(m.group(1))
-            if s > local_latest_step:
-                local_latest_step = s
-                local_latest_path = cand
+        else:
+            base = cand[:-3] if cand.endswith(".pt") else cand
+            for meta_cand in [base + ".meta.json", base + ".json", base.replace("_latest", "_state") + ".json", base.replace("_best", "_state") + ".json"]:
+                if os.path.exists(meta_cand):
+                    try:
+                        with open(meta_cand, "r") as mf:
+                            m_data = json.load(mf)
+                            s = int(m_data.get("step", -1))
+                            if s >= 0:
+                                break
+                    except Exception:
+                        pass
+        if s > local_latest_step:
+            local_latest_step = s
+            local_latest_path = cand
 
     print(f"🔍 [cloud_sync] Checkpoint Assessment: Local Step = {local_latest_step:,} | Remote Step = {remote_step:,}")
 

@@ -997,10 +997,12 @@ def main():
         if args.init_from != "none":
             init_path = args.init_from
             if init_path == "auto":
-                for candidate in ("cerebro_spheroid_v3_colab_best.pt",
-                                  "cerebro_spheroid_distill_v2_best.pt",
-                                  "cerebro_spheroid_1m_latest.pt",
-                                  "cerebro_spheroid_100m.pt"):
+                candidates = (
+                    ("cerebro_spheroid_v4_latest.pt", "cerebro_spheroid_v4_best.pt", "cerebro_spheroid_v4_small_kaggle_best.pt")
+                    if args.arch == "v4"
+                    else ("cerebro_spheroid_v3_colab_best.pt", "cerebro_spheroid_distill_v2_best.pt")
+                )
+                for candidate in candidates:
                     full = os.path.join(CKPT_DIR, candidate)
                     if os.path.exists(full):
                         init_path = full

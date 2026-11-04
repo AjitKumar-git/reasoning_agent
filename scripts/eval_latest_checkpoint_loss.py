@@ -32,31 +32,58 @@ from training.train_v4_full import build_batch
 def load_openhermes_eval_records(count: int = 50):
     """Loads held-out prompt-target pairs from OpenHermes-2.5."""
     path = os.path.join(ROOT_DIR, "data/openhermes/openhermes_2_5.parquet")
-    pf = pq.ParquetFile(path)
-    table = pf.read_row_group(0)
-    convs = table["conversations"].to_pylist()
-    records = []
-    for conv in convs:
-        pairs = _conversation_pairs(conv)
-        for p, a in pairs:
-            if len(p.strip()) > 10 and len(a.strip()) > 10:
-                records.append(("openhermes", p.strip(), a.strip()))
-                if len(records) >= count:
-                    return records
-    return records
+    if os.path.exists(path):
+        pf = pq.ParquetFile(path)
+        table = pf.read_row_group(0)
+        convs = table["conversations"].to_pylist()
+        records = []
+        for conv in convs:
+            pairs = _conversation_pairs(conv)
+            for p, a in pairs:
+                if len(p.strip()) > 10 and len(a.strip()) > 10:
+                    records.append(("openhermes", p.strip(), a.strip()))
+                    if len(records) >= count:
+                        return records
+        return records
+    else:
+        from datasets import load_dataset
+        ds = load_dataset("teknium/OpenHermes-2.5", split="train", streaming=True)
+        records = []
+        for row in ds:
+            conv = row.get("conversations", [])
+            pairs = _conversation_pairs(conv)
+            for p, a in pairs:
+                if len(p.strip()) > 10 and len(a.strip()) > 10:
+                    records.append(("openhermes", p.strip(), a.strip()))
+                    if len(records) >= count:
+                        return records
+        return records
 
 
 def load_gsm8k_eval_records(count: int = 50):
     """Loads held-out prompt-target pairs from GSM8K."""
     path = os.path.join(ROOT_DIR, "data/gsm8k/gsm8k_train.parquet")
-    pf = pq.ParquetFile(path)
-    table = pf.read()
-    questions = table["question"].to_pylist()
-    answers = table["answer"].to_pylist()
-    records = []
-    for q, a in zip(questions[-count:], answers[-count:]):
-        records.append(("gsm8k", f"Question: {q.strip()}\nAnswer:", f" {a.strip()}"))
-    return records
+    if os.path.exists(path):
+        pf = pq.ParquetFile(path)
+        table = pf.read()
+        questions = table["question"].to_pylist()
+        answers = table["answer"].to_pylist()
+        records = []
+        for q, a in zip(questions[-count:], answers[-count:]):
+            records.append(("gsm8k", f"Question: {q.strip()}\nAnswer:", f" {a.strip()}"))
+        return records
+    else:
+        from datasets import load_dataset
+        ds = load_dataset("openai/gsm8k", "main", split="test", streaming=True)
+        records = []
+        for row in ds:
+            q = row.get("question", "")
+            a = row.get("answer", "")
+            if q and a:
+                records.append(("gsm8k", f"Question: {q.strip()}\nAnswer:", f" {a.strip()}"))
+                if len(records) >= count:
+                    return records
+        return records
 
 
 class BitwiseJAXEngine:
