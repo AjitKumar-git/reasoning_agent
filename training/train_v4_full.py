@@ -306,7 +306,8 @@ def save_state(prefix: str, model, optimizer, scheduler, step: int, best: float,
         "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
         "python_rng": random.getstate(),
     }
-    if getattr(device, "type", "") == "xla":
+    model_device = getattr(next(raw_model.parameters(), None), "device", None)
+    if getattr(model_device, "type", "") == "xla":
         import torch_xla.core.xla_model as xm
         xm.save(payload, pt_path)
     else:
