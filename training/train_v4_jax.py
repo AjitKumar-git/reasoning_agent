@@ -395,8 +395,24 @@ def main(args=None):
                     )
                     break
 
-    except (KeyboardInterrupt, Exception) as e:
-        print(f"\n⚠️ Interrupted or stopped: {e}")
+    except KeyboardInterrupt:
+        print(f"\n⚠️ Training interrupted by user.")
+        print(f"💾 Synchronously saving emergency state for step {current_step}...")
+        ckpt_mgr.flush(
+            params,
+            buffers,
+            "cerebro_spheroid_v4_jax_latest.pt",
+            meta_dict={
+                "step": current_step,
+                "loss": loss_val if "loss_val" in locals() else 0,
+                "ema_loss": ema_loss if "ema_loss" in locals() else 0,
+            },
+        )
+        print("✅ Emergency backup completed!")
+    except Exception as e:
+        import traceback
+        print(f"\n⚠️ Training exception encountered: {e}")
+        traceback.print_exc()
         print(f"💾 Synchronously saving emergency state for step {current_step}...")
         ckpt_mgr.flush(
             params,

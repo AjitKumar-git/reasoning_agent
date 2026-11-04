@@ -28,6 +28,31 @@ import jax.numpy as jnp
 from .v4_model import ModelConfigV4, precompute_axonal_indices
 
 
+def _safe_torch_tensor(arr) -> torch.Tensor:
+    """Safely converts an array (including ml_dtypes.bfloat16 from TPU/JAX) into a torch.Tensor."""
+    if isinstance(arr, torch.Tensor):
+        return arr
+    if hasattr(arr, "dtype") and str(arr.dtype) == "bfloat16":
+        np_f32 = np.array(arr, dtype=np.float32)
+        return torch.from_numpy(np_f32).to(torch.bfloat16)
+    np_arr = np.array(arr)
+    if str(np_arr.dtype) == "bfloat16":
+        np_arr = np_arr.astype(np.float32)
+        return torch.from_numpy(np_arr).to(torch.bfloat16)
+    return torch.from_numpy(np_arr)
+
+
+def normalize_torch_key_to_jax(k: str) -> str:
+    """Normalizes PyTorch checkpoint parameter keys to JAX parameter naming convention."""
+    k = k.replace("module.", "")
+    k = k.replace("sensory_dnn.", "sensory.")
+    k = k.replace("volumetric_core.", "core.")
+    k = k.replace("motor_dnn.", "motor.")
+    if k == "motor.motor_phase_embed.weight":
+        k = "motor.phase_embed.weight"
+    return k
+
+
 def save_jax_to_torch_pt(
     params: Dict[str, jnp.ndarray],
     buffers: Tuple[jnp.ndarray, jnp.ndarray],
@@ -38,9 +63,9 @@ def save_jax_to_torch_pt(
     os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
     torch_state: Dict[str, torch.Tensor] = {}
     for k, v in params.items():
-        torch_state[k] = torch.from_numpy(np.array(v))
-    torch_state["core.src_indices"] = torch.from_numpy(np.array(buffers[0]))
-    torch_state["core.dst_indices"] = torch.from_numpy(np.array(buffers[1]))
+        torch_state[k] = _safe_torch_tensor(v)
+    torch_state["core.src_indices"] = _safe_torch_tensor(buffers[0])
+    torch_state["core.dst_indices"] = _safe_torch_tensor(buffers[1])
 
     tmp_path = save_path + ".tmp"
     torch.save(torch_state, tmp_path)
@@ -59,21 +84,50 @@ def load_torch_pt_to_jax(
     if not os.path.exists(ckpt_path):
         raise FileNotFoundError(f"Checkpoint not found at: {ckpt_path}")
 
-    state_dict = torch.load(ckpt_path, map_location="cpu")
+    state_dict = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     if "model_state_dict" in state_dict:
         state_dict = state_dict["model_state_dict"]
 
+    # Pre-initialize fallback reference parameters if config is provided
+    ref_params = None
+    if config is not None:
+        try:
+            ref_params, _ = init_v4_params(config, jax.random.PRNGKey(0))
+        except Exception:
+            ref_params = None
+
     params: Dict[str, jnp.ndarray] = {}
     for k, v in state_dict.items():
-        if k not in ("core.src_indices", "core.dst_indices"):
-            if v.dtype == torch.bfloat16:
-                arr = jnp.array(v.detach().cpu().float().numpy(), dtype=jnp.bfloat16)
+        if k in ("core.src_indices", "core.dst_indices", "volumetric_core.src_indices", "volumetric_core.dst_indices"):
+            continue
+
+        nk = normalize_torch_key_to_jax(k)
+        if v.dtype == torch.bfloat16:
+            arr = jnp.array(v.detach().cpu().float().numpy(), dtype=jnp.bfloat16)
+        else:
+            arr = jnp.array(v.detach().cpu().numpy())
+
+        # Enforce contractive boundary on premotor plan decay
+        if nk == "motor.plan_decay":
+            arr = jnp.clip(arr, 0.0, 0.90)
+
+        # If ref_params is known, verify shape compatibility
+        if ref_params is not None and nk in ref_params:
+            if arr.shape == ref_params[nk].shape:
+                params[nk] = arr
             else:
-                arr = jnp.array(v.detach().cpu().numpy())
-            # Enforce contractive boundary on premotor plan decay
-            if k == "motor.plan_decay":
-                arr = jnp.clip(arr, 0.0, 0.90)
-            params[k] = arr
+                print(f"⚠️ [checkpoint] Shape mismatch for {nk}: file {arr.shape} vs expected {ref_params[nk].shape}. Using reference.")
+                params[nk] = ref_params[nk]
+        else:
+            params[nk] = arr
+
+    # If reference parameters were created, fill any missing keys
+    if ref_params is not None:
+        missing = set(ref_params.keys()) - set(params.keys())
+        if missing:
+            print(f"⚠️ [checkpoint] Initializing {len(missing)} missing key(s) from reference: {list(missing)[:5]}")
+            for m_key in missing:
+                params[m_key] = ref_params[m_key]
 
     if config is None:
         shells = 16
@@ -83,8 +137,8 @@ def load_torch_pt_to_jax(
         tracts = config.num_shortcut_tracts
 
     default_src, default_dst = precompute_axonal_indices(shells, tracts)
-    src_idx = jnp.array(state_dict.get("core.src_indices", default_src))
-    dst_idx = jnp.array(state_dict.get("core.dst_indices", default_dst))
+    src_idx = jnp.array(state_dict.get("core.src_indices", state_dict.get("volumetric_core.src_indices", default_src)))
+    dst_idx = jnp.array(state_dict.get("core.dst_indices", state_dict.get("volumetric_core.dst_indices", default_dst)))
     buffers = (src_idx.astype(jnp.int32), dst_idx.astype(jnp.int32))
 
     return params, buffers
@@ -191,9 +245,9 @@ class AsyncCheckpointManager:
 
             torch_state: Dict[str, torch.Tensor] = {}
             for k, v in params_cpu.items():
-                torch_state[k] = torch.from_numpy(v)
-            torch_state["core.src_indices"] = torch.from_numpy(buffers_cpu[0])
-            torch_state["core.dst_indices"] = torch.from_numpy(buffers_cpu[1])
+                torch_state[k] = _safe_torch_tensor(v)
+            torch_state["core.src_indices"] = _safe_torch_tensor(buffers_cpu[0])
+            torch_state["core.dst_indices"] = _safe_torch_tensor(buffers_cpu[1])
 
             tmp_local = local_path + ".tmp"
             torch.save(torch_state, tmp_local)
