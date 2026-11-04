@@ -9,15 +9,14 @@ notebook = {
                 "# 🧠 CerebroSpheroid V4: Cloud TPU JAX High-Throughput Engine\n",
                 "### Pure JAX Native • Google Colab TPU v5e/v2 • SpheroidOptimizer (Newton-Schulz Polar)\n",
                 "\n",
-                "### **Architecture & Optimization in V4:**\n",
+                "### **Architecture & Cloud Persistence in V4:**\n",
                 "1. **Riemannian SpheroidOptimizer**:\n",
-                "   - **Manifold Matrix Operators** (2D/3D/4D weights, projections, MLPs): Optimized via **Quintic Newton-Schulz Polar Orthogonalization** (Muon-style) with a single-momentum buffer (50% memory saving).\n",
-                "   - **Recurrent Core** (`intra_shell`, `reentrant_field`, `shortcut_tracts`): Contractive spectral clamp ($\\rho \\le 1.0$) prevents gradient explosion during long zero-feedback mental deliberation.\n",
-                "   - **Vocabulary Tables & Heads** (`sensory.embedding`, `motor.head`): Optimized via **AdamW** to handle Zipfian power-law token frequencies and sparse gradients.\n",
-                "   - **1D Vectors & Normalizations**: Optimized via zero-decay AdamW to preserve scale stability.\n",
-                "2. **Elastic Sliding Context Window**: 1,536-token budget dynamically partitioned across 4 cognitive regimes (`deep_reasoning`, `standard_cot`, `balanced`, `long_context`).\n",
-                "3. **Zero-Feedback Mental Deliberation**: True recurrent reasoning without teacher forcing, building genuine attractor dynamics.\n",
-                "4. **Asynchronous Dual Mirroring**: Automatically syncs `.pt` checkpoints to Google Drive and mirrors to `bioflo.in` without TPU stalls.\n"
+                "   - **Manifold Matrix Operators**: Optimized via **Quintic Newton-Schulz Polar Orthogonalization** (single-moment memory, 50% RAM savings).\n",
+                "   - **Recurrent Core**: Contractive spectral clamp ($\\rho \\le 1.0$) prevents gradient explosion during long internal deliberation.\n",
+                "   - **Vocabulary Tables & Heads**: Optimized via **AdamW**.\n",
+                "2. **Elastic Sliding Context Window**: Dynamic high-density reasoning buckets with zero padding traps.\n",
+                "3. **Curriculum Scheduled Sampling**: Smoothly transitions from teacher forcing ($p=1.0$) to internal deliberation ($p=0.0$) over 5,000 steps.\n",
+                "4. **Direct Bioflo Cloud Sync (No Google Drive Required)**: Models are securely stored and auto-resumed via chunked streaming to `bioflo.in` without eating up Google Drive quota or requiring OAuth mount approval.\n"
             ]
         },
         {
@@ -50,7 +49,10 @@ notebook = {
         {
             "cell_type": "markdown",
             "metadata": {},
-            "source": ["## Step 2: Mount Google Drive for Automatic Checkpoint Persistence"]
+            "source": [
+                "## Step 2: Initialize Local Scratch Checkpoint Storage & Bioflo.in Sync\n",
+                "Checkpoints are saved locally on the Colab instance and mirrored to `bioflo.in` in the background (no Google Drive mount needed)."
+            ]
         },
         {
             "cell_type": "code",
@@ -58,16 +60,26 @@ notebook = {
             "metadata": {},
             "outputs": [],
             "source": [
-                "import os, shutil\n",
-                "from google.colab import drive\n",
+                "import os\n",
+                "import urllib.request\n",
+                "import json\n",
                 "\n",
-                "# Mount Google Drive\n",
-                "drive.mount(\"/content/drive\", force_remount=False)\n",
+                "CKPT_DIR = \"/content/checkpoints\"\n",
+                "os.makedirs(CKPT_DIR, exist_ok=True)\n",
+                "print(f\"📁 Local scratch checkpoint directory: {CKPT_DIR}\")\n",
                 "\n",
-                "DRIVE_CKPT_DIR = \"/content/drive/MyDrive/cerebro_checkpoints\"\n",
-                "os.makedirs(DRIVE_CKPT_DIR, exist_ok=True)\n",
-                "print(f\"✅ Google Drive successfully mounted!\")\n",
-                "print(f\"📂 Checkpoints destination: {DRIVE_CKPT_DIR}\")\n"
+                "# Verify Bioflo.in synchronization endpoint status\n",
+                "try:\n",
+                "    req = urllib.request.Request(\n",
+                "        \"https://bioflo.in/api/cerebro/sync.php?action=status\",\n",
+                "        headers={\"Authorization\": \"Bearer CerebroSpheroid_Sync_Secure_2026\", \"User-Agent\": \"CerebroCloudSync/1.0\"}\n",
+                "    )\n",
+                "    with urllib.request.urlopen(req, timeout=10) as resp:\n",
+                "        manifest = json.loads(resp.read().decode('utf-8'))\n",
+                "        print(\"🌐 [bioflo.in] Remote sync hub online!\")\n",
+                "        print(f\"   Latest remote step: {manifest.get('manifest', {}).get('latest', {}).get('step', 'N/A')}\")\n",
+                "except Exception as e:\n",
+                "    print(f\"⚠️ Remote sync hub notice: {e}\")\n"
             ]
         },
         {
@@ -94,11 +106,12 @@ notebook = {
             "cell_type": "markdown",
             "metadata": {},
             "source": [
-                "## Step 4: Launch Training with SpheroidOptimizer & Live Cloud Sync\n",
-                "- **Optimizer**: Riemannian `SpheroidOptimizer` (Quintic Newton-Schulz Polar orthogonalization for manifolds + AdamW for vocab/1D)\n",
-                "- **Batch Configuration**: `batch_size=8`, `grad_accum=2` (effective batch size: 16 sequences = 24,576 tokens per step)\n",
-                "- **Context Window**: 1,536 tokens dynamic elastic sliding schedule\n",
-                "- **Live Sync**: Asynchronously mirrors to `bioflo.in` and `/content/drive/MyDrive/cerebro_checkpoints/`"
+                "## Step 4: Launch TPU Training with SpheroidOptimizer & Bioflo Cloud Sync\n",
+                "- **Optimizer**: Riemannian `SpheroidOptimizer` (Quintic Newton-Schulz Polar)\n",
+                "- **Batch Configuration**: `batch_size=8`, `grad_accum=2` (effective batch size: 16 sequences)\n",
+                "- **Deliberation**: Scheduled sampling curriculum over 5,000 steps\n",
+                "- **Validation**: Evaluates held-out OpenHermes + GSM8K every 200 steps\n",
+                "- **Cloud Persistence**: Asynchronously mirrors checkpoints to `bioflo.in`"
             ]
         },
         {
@@ -118,12 +131,16 @@ notebook = {
                 "from training.train_v4_jax import run_training\n",
                 "\n",
                 "run_training(\n",
-                "    drive_dir=\"/content/drive/MyDrive/cerebro_checkpoints\",\n",
+                "    ckpt_dir=\"/content/checkpoints\",\n",
                 "    elastic_window=True,\n",
-                "    total_window=1536,\n",
+                "    total_window=1024,\n",
                 "    batch_size=8,\n",
                 "    grad_accum=2,\n",
                 "    lr=0.002,\n",
+                "    deliberation_mode=\"scheduled\",\n",
+                "    schedule_steps=5000,\n",
+                "    eval_interval=200,\n",
+                "    thalamic_anchor_weight=0.1,\n",
                 "    max_steps=50000,\n",
                 "    save_every=100,\n",
                 "    log_every=10,\n",
@@ -134,7 +151,7 @@ notebook = {
         {
             "cell_type": "markdown",
             "metadata": {},
-            "source": ["## Step 5: Inspect Checkpoints in Google Drive"]
+            "source": ["## Step 5: Inspect Local Checkpoints & Remote Manifest"]
         },
         {
             "cell_type": "code",
@@ -142,7 +159,11 @@ notebook = {
             "metadata": {},
             "outputs": [],
             "source": [
-                "!ls -lh \"/content/drive/MyDrive/cerebro_checkpoints\"\n"
+                "!ls -lh /content/checkpoints\n",
+                "import json\n",
+                "from src.cloud_sync import check_remote_manifest\n",
+                "print(\"\\n🌐 Remote bioflo.in manifest:\")\n",
+                "print(json.dumps(check_remote_manifest(), indent=2))\n"
             ]
         }
     ],
@@ -167,4 +188,4 @@ notebook = {
 with open("training/remote/CerebroSpheroid_V4_Colab_TPU_JAX.ipynb", "w") as f:
     json.dump(notebook, f, indent=1)
 
-print("✅ Updated Colab TPU JAX notebook cleanly!")
+print("✅ Updated Colab TPU JAX notebook cleanly without Google Drive!")

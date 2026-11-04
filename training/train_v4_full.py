@@ -568,6 +568,17 @@ def main():
                         help="bioflo.in sync endpoint")
     parser.add_argument("--cloud_token", default="CerebroSpheroid_Sync_Secure_2026",
                         help="Secret sync token")
+    parser.add_argument("--deliberation_mode", default="teacher_forcing",
+                        choices=["teacher_forcing", "internal", "scheduled"],
+                        help="Internal deliberation mode: 'teacher_forcing' (standard autoregressive context), "
+                             "'internal' (refined closed-loop internal deliberation with zero external token feedback), "
+                             "or 'scheduled' (scheduled sampling between teacher forcing and internal thought).")
+    parser.add_argument("--thalamic_anchor_weight", type=float, default=0.2,
+                        help="Retention weight for deep thalamic shells (0 to K//3) to prevent prompt erasure.")
+    parser.add_argument("--schedule_steps", type=int, default=5000,
+                        help="Number of steps over which sampling_p linearly ramps from 0 to 1 in scheduled mode.")
+    parser.add_argument("--sampling_p", type=float, default=0.0,
+                        help="Probability of sampling internal thoughts instead of teacher forcing (scheduled mode).")
     parser.add_argument("--resume", default="auto",
                         help="'auto' (default), 'none', or a path to a *_state.pt")
     parser.add_argument("--init_from", default="none",
@@ -1120,6 +1131,14 @@ def main():
 
         oom = False
         accum_steps = args.grad_accum
+        delib_mode = getattr(args, "deliberation_mode", "teacher_forcing")
+        if delib_mode == "scheduled":
+            cur_sampling_p = min(1.0, float(step) / float(max(1, getattr(args, "schedule_steps", 5000))))
+        elif delib_mode == "internal":
+            cur_sampling_p = 1.0
+        else:
+            cur_sampling_p = 0.0
+
         for accum_idx in range(accum_steps):
             if elastic_batcher is not None:
                 _, _, prompts, targets, feedback = elastic_batcher.next_batch()
@@ -1138,10 +1157,18 @@ def main():
                 sync_ctx = model.no_sync() if (is_distributed and accum_idx < accum_steps - 1 and hasattr(model, "no_sync")) else contextlib.nullcontext()
                 with sync_ctx:
                     with autocast_ctx(device, dtype):
-                        logits = training_rollout(model, prompts, targets.shape[1],
-                                                  thinking_cycles=args.thinking_cycles,
-                                                  pad_token_id=pad_token_id,
-                                                  targets=targets, feedback_tokens=feedback)
+                        logits = training_rollout(
+                            model,
+                            prompts,
+                            targets.shape[1],
+                            thinking_cycles=args.thinking_cycles,
+                            pad_token_id=pad_token_id,
+                            targets=targets,
+                            feedback_tokens=feedback,
+                            deliberation_mode=delib_mode,
+                            thalamic_anchor_weight=getattr(args, "thalamic_anchor_weight", 0.2),
+                            sampling_p=cur_sampling_p,
+                        )
                         loss = criterion(logits.reshape(-1, vocab_size), targets.reshape(-1))
                     if use_scaler and scaler is not None:
                         scaler.scale(loss / accum_steps).backward()

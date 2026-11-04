@@ -192,14 +192,18 @@ def emit_step(
     step_idx: int,
     buffers: Tuple[jnp.ndarray, jnp.ndarray],
     config: Optional[ModelConfigV4] = None,
+    auditory_feedback: Optional[jnp.ndarray] = None,
 ) -> Tuple[jnp.ndarray, jnp.ndarray, Optional[jnp.ndarray], jnp.ndarray]:
-    """Single autoregressive/zero-feedback motor emission step."""
+    """Single autoregressive / deliberative motor emission step with auditory feedback support."""
     B, K, D = state.shape
     surface, core = state[:, -1, :], state[:, 0, :]
     max_phase = params["motor.phase_embed.weight"].shape[0]
     phase_idx = jnp.clip(step_idx, 0, max_phase - 1)
     phase = params["motor.phase_embed.weight"][phase_idx]
     motor_surface = surface + phase
+
+    if auditory_feedback is not None:
+        motor_surface = motor_surface + auditory_feedback
 
     # Cross-resonance with sensory prompt (Arcuate Fasciculus)
     keys, values = sensory_kv
@@ -259,17 +263,31 @@ def training_rollout(
     target_len: int,
     buffers: Tuple[jnp.ndarray, jnp.ndarray],
     config: Optional[ModelConfigV4] = None,
+    feedback_tokens: Optional[jnp.ndarray] = None,
+    deliberation_mode: str = "scheduled",
+    sampling_p: float = 1.0,
+    thalamic_anchor_weight: float = 0.1,
+    pad_id: int = 0,
 ) -> jnp.ndarray:
-    """Full unrolled zero-feedback training rollout over target_len steps."""
+    """
+    Production-grade differentiable rollout engine with:
+    1. Masked prompt centroid pooling (zero padding contamination).
+    2. Scheduled sampling bridging teacher-forcing to internal thought re-afference.
+    3. Thalamic memory basin anchoring deep shells (0 .. K//3) to prevent prompt erasure.
+    """
     B, L = prompts.shape
     sensory_mem, sensory_kv = encode_sensory(params, prompts)
     num_shells = config.num_shells if config is not None else params["core.intra_shell"].shape[0]
     surface_dim = config.surface_dim if config is not None else params["sensory.fc2.weight"].shape[0]
     vocab_size = config.vocab_size if config is not None else params["sensory.embedding.weight"].shape[0]
-    thinking_cycles = config.thinking_cycles if config is not None else 4
+    thinking_cycles = config.thinking_cycles if config is not None else 3
+
+    # Masked mean centroid so padding tokens never dilute prompt semantics
+    mask = (prompts != pad_id)[:, :, None].astype(jnp.float32)
+    prompt_flux = jnp.sum(sensory_mem * mask, axis=1) / jnp.maximum(jnp.sum(mask, axis=1), 1.0)
 
     init_state = jnp.zeros((B, num_shells, surface_dim), dtype=jnp.float32)
-    state = init_state.at[:, -1, :].set(jnp.mean(sensory_mem, axis=1))
+    state = init_state.at[:, -1, :].set(prompt_flux)
 
     # Subconscious deliberation cycles before verbalization
     deliberate_remat = jax.checkpoint(deliberate_step)
@@ -278,18 +296,57 @@ def training_rollout(
 
     state, _ = lax.scan(_delib, state, None, length=thinking_cycles)
 
+    # Thalamic memory basin anchoring
+    thalamic_end = max(1, num_shells // 3)
+    thalamic_anchor = state[:, :thalamic_end, :]
+
     init_plan = jnp.zeros((B, surface_dim), dtype=jnp.float32)
     init_refractory = jnp.zeros((B, vocab_size), dtype=jnp.float32)
+    init_thought = jnp.zeros((B, surface_dim), dtype=jnp.float32)
 
-    # Gradient checkpointing on sequential emission reduces HBM temporaries from O(T) to O(1)
+    # Pre-embed teacher feedback tokens if available
+    if feedback_tokens is not None:
+        safe_feed = jnp.maximum(feedback_tokens, 0)
+        valid_feed = (feedback_tokens >= 0)[:, :, None].astype(jnp.float32)
+        tf_sensory, _ = encode_sensory(params, safe_feed, config=config)
+        tf_sensory = tf_sensory * valid_feed
+    else:
+        tf_sensory = jnp.zeros((B, target_len, surface_dim), dtype=jnp.float32)
+
     emit_step_remat = jax.checkpoint(emit_step)
 
     def _emit(carry, step_idx):
-        cur_state, cur_trace, cur_plan = carry
-        logits, nxt_s, nxt_t, nxt_p = emit_step_remat(
-            params, cur_state, sensory_kv, cur_plan, cur_trace, step_idx, buffers
-        )
-        return (nxt_s, nxt_t, nxt_p), logits
+        cur_state, cur_trace, cur_plan, prev_thought = carry
 
-    _, all_logits = lax.scan(_emit, (state, init_refractory, init_plan), jnp.arange(target_len))
+        # Determine auditory feed based on deliberation mode and sampling probability
+        tf_aud = tf_sensory[:, step_idx, :]
+        if deliberation_mode == "teacher_forcing":
+            feed = tf_aud
+        elif deliberation_mode == "internal":
+            feed = jnp.where(step_idx == 0, jnp.zeros_like(prev_thought), prev_thought)
+        else:  # "scheduled"
+            internal_feed = jnp.where(step_idx == 0, tf_aud, prev_thought)
+            feed = sampling_p * tf_aud + (1.0 - sampling_p) * internal_feed
+
+        logits, nxt_s, nxt_t, nxt_p = emit_step_remat(
+            params, cur_state, sensory_kv, cur_plan, cur_trace, step_idx, buffers, config=config, auditory_feedback=feed
+        )
+
+        # Straight-through thought re-afference for step t+1
+        soft_p = jax.nn.softmax(logits, axis=-1)
+        soft_emb = jnp.matmul(soft_p, params["sensory.embedding.weight"])
+        g = jax.nn.silu(jnp.matmul(soft_emb, params["sensory.fc1_gate.weight"].T))
+        v = jnp.matmul(soft_emb, params["sensory.fc1_val.weight"].T)
+        h_norm = rms_norm(g * v, params["sensory.norm1.weight"])
+        nxt_thought = rms_norm(jnp.matmul(h_norm, params["sensory.fc2.weight"].T) + soft_emb, params["sensory.norm_out.weight"])
+
+        # Deep thalamic basin retention
+        if thalamic_anchor_weight > 0.0:
+            nxt_s = nxt_s.at[:, :thalamic_end, :].set(
+                (1.0 - thalamic_anchor_weight) * nxt_s[:, :thalamic_end, :] + thalamic_anchor_weight * thalamic_anchor
+            )
+
+        return (nxt_s, nxt_t, nxt_p, nxt_thought), logits
+
+    _, all_logits = lax.scan(_emit, (state, init_refractory, init_plan, init_thought), jnp.arange(target_len))
     return jnp.swapaxes(all_logits, 0, 1)

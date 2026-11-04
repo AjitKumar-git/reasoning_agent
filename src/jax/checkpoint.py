@@ -66,7 +66,10 @@ def load_torch_pt_to_jax(
     params: Dict[str, jnp.ndarray] = {}
     for k, v in state_dict.items():
         if k not in ("core.src_indices", "core.dst_indices"):
-            arr = jnp.array(v.detach().cpu().numpy())
+            if v.dtype == torch.bfloat16:
+                arr = jnp.array(v.detach().cpu().float().numpy(), dtype=jnp.bfloat16)
+            else:
+                arr = jnp.array(v.detach().cpu().numpy())
             # Enforce contractive boundary on premotor plan decay
             if k == "motor.plan_decay":
                 arr = jnp.clip(arr, 0.0, 0.90)

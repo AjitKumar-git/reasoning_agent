@@ -996,6 +996,7 @@ def training_rollout(
     pad_token_id: Optional[int] = None,
     targets: Optional[torch.Tensor] = None,
     feedback_tokens: Optional[torch.Tensor] = None,
+    **kwargs,
 ) -> torch.Tensor:
     """
     Shared training rollout returning [B, response_steps, vocab] logits.
@@ -1014,6 +1015,7 @@ def training_rollout(
             pad_token_id=pad_token_id,
             targets=targets,
             feedback_tokens=feedback_tokens,
+            **kwargs,
         )
     state, sensory_memory = raw_model.ingest_stimulus_with_memory(prompts, living=True)
     state = raw_model.deliberate(state, thinking_cycles=thinking_cycles)

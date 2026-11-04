@@ -131,6 +131,7 @@ def build_spheroid_train_engine(
     buffers: Tuple[jnp.ndarray, jnp.ndarray],
     pad_id: int,
     weight_decay: float = 0.01,
+    thalamic_anchor_weight: float = 0.1,
 ) -> Tuple[Callable, Callable]:
     """
     Builds decoupled JIT-compiled gradient computation and optimizer application functions.
@@ -138,16 +139,28 @@ def build_spheroid_train_engine(
     """
 
     @jax.jit
-    def compute_grad_step(p, q_batch, r_batch):
+    def compute_grad_step(p, q_batch, r_batch, feedback_tokens=None, sampling_p=1.0):
         target_len = r_batch.shape[1]
 
         def _loss_fn(param_dict):
-            logits = training_rollout(param_dict, q_batch, target_len, buffers)
+            logits = training_rollout(
+                param_dict,
+                q_batch,
+                target_len,
+                buffers,
+                config=config,
+                feedback_tokens=feedback_tokens,
+                deliberation_mode="scheduled",
+                sampling_p=sampling_p,
+                thalamic_anchor_weight=thalamic_anchor_weight,
+                pad_id=pad_id,
+            )
             log_probs = jax.nn.log_softmax(logits, axis=-1)
             safe_targets = jnp.maximum(r_batch, 0)
             target_log_probs = jnp.take_along_axis(log_probs, safe_targets[..., None], axis=-1).squeeze(-1)
             token_loss = -target_log_probs
-            mask = ((r_batch != pad_id) & (r_batch >= 0)).astype(jnp.float32)
+            # Valid tokens: any token >= 0 (target_pad_id is -100). Do not mask out EOS.
+            mask = (r_batch >= 0).astype(jnp.float32)
             return jnp.sum(token_loss * mask) / jnp.maximum(jnp.sum(mask), 1.0)
 
         loss_val, grads = jax.value_and_grad(_loss_fn, allow_int=True)(p)
@@ -257,12 +270,15 @@ def build_train_step_spheroid(
     buffers: Tuple[jnp.ndarray, jnp.ndarray],
     pad_id: int,
     weight_decay: float = 0.01,
+    thalamic_anchor_weight: float = 0.1,
 ) -> Callable:
     """Builds a combined JIT-compiled train_step function utilizing SpheroidOptimizer."""
-    compute_grad, apply_opt = build_spheroid_train_engine(config, buffers, pad_id, weight_decay)
+    compute_grad, apply_opt = build_spheroid_train_engine(
+        config, buffers, pad_id, weight_decay, thalamic_anchor_weight=thalamic_anchor_weight
+    )
 
-    def train_step(p, opt_s, q_batch, r_batch, base_lr):
-        loss_val, grads = compute_grad(p, q_batch, r_batch)
+    def train_step(p, opt_s, q_batch, r_batch, base_lr, feedback_tokens=None, sampling_p=1.0):
+        loss_val, grads = compute_grad(p, q_batch, r_batch, feedback_tokens=feedback_tokens, sampling_p=sampling_p)
         new_params, new_opt_s = apply_opt(p, opt_s, grads, base_lr)
         return new_params, new_opt_s, loss_val
 

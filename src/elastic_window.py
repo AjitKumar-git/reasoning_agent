@@ -21,14 +21,26 @@ import numpy as np
 
 
 def get_default_elastic_buckets(total_window: int = 1024) -> List[Tuple[str, int, int]]:
-    """Returns the 4 canonical complementary sliding window buckets summing to total_window."""
+    """Returns high-density complementary sliding window buckets avoiding extreme padding traps."""
     assert total_window >= 256, "total_window must be at least 256 tokens"
-    return [
-        ("deep_reasoning", 64, total_window - 64),
-        ("standard_cot", 256, total_window - 256),
-        ("balanced", total_window // 2, total_window // 2),
-        ("long_context", total_window - 128, 128),
-    ]
+    if total_window >= 1024:
+        return [
+            ("short_cot", 256, 256),
+            ("standard_cot", 256, 384),
+            ("balanced", 384, 384),
+            ("deep_reasoning", 256, 512),
+            ("long_context", 768, 256),
+        ]
+    elif total_window >= 512:
+        return [
+            ("short_cot", 128, 128),
+            ("standard_cot", 128, 256),
+            ("balanced", 256, 256),
+            ("long_context", 384, 128),
+        ]
+    else:
+        half = total_window // 2
+        return [("balanced", half, half)]
 
 
 def select_best_bucket(p_len: int, t_len: int, buckets: List[Tuple[str, int, int]]) -> int:

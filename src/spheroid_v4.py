@@ -23,6 +23,7 @@ Implements the V4 specification from V4_PLAN_REFINED.md:
 
 import math
 import os
+import random
 from typing import Dict, List, Optional, Tuple, Union
 
 import torch
@@ -357,11 +358,18 @@ class CerebroSpheroidV4(CerebroSpheroidV3):
         feedback_tokens: Optional[torch.Tensor] = None,
         pixel_values: Optional[torch.Tensor] = None,
         audio_values: Optional[torch.Tensor] = None,
+        deliberation_mode: str = "teacher_forcing",
+        thalamic_anchor_weight: float = 0.0,
+        sampling_p: float = 0.0,
     ) -> torch.Tensor:
         """
         High-throughput V4 training rollout with zero-allocation sensory memory indexing.
-        Pre-embeds feedback and pre-projects Arcuate Fasciculus keys/values up front,
-        attending via continuous prefix slices without torch.cat inside the emission loop.
+        Supports:
+        1. 'teacher_forcing': standard external token feedback / teacher-forcing.
+        2. 'internal': refined closed-loop internal deliberation with straight-through latent
+           thought re-afference, dynamic Arcuate Fasciculus cross-resonance, and deep thalamic
+           prompt anchoring (strictly zero external tokens fed into the context).
+        3. 'scheduled': scheduled sampling transitioning between teacher forcing and internal thought.
         """
         prompt_len = prompt_tokens.shape[1]
         memory, gist, sensory_kv = self.encode_sensory(prompt_tokens, pad_token_id=pad_token_id)
@@ -388,7 +396,12 @@ class CerebroSpheroidV4(CerebroSpheroidV3):
         state = self.volumetric_core.inject_efference_copy(state, self._gist_flux(gist))
         state = self.deliberate(state, thinking_cycles=thinking_cycles)
 
-        feed = build_feedback_plan(targets, feedback_tokens)
+        # Deep thalamic shells (0 to K//3) act as invariant prompt memory anchor
+        thalamic_end = max(1, self.num_shells // 3)
+        thalamic_anchor = state[:, :thalamic_end, :].clone()
+
+        is_internal_delib = (deliberation_mode == "internal")
+        feed = None if is_internal_delib else build_feedback_plan(targets, feedback_tokens)
         feed_reps = None
         all_k, all_v = sensory_kv[0], sensory_kv[1]
 
@@ -414,19 +427,38 @@ class CerebroSpheroidV4(CerebroSpheroidV3):
         auditory_feedback = None
 
         for step in range(response_steps):
-            if feed is not None:
+            if feed is not None and not (deliberation_mode == "scheduled" and random.random() < sampling_p):
                 auditory_feedback = feed_reps[:, step]
                 # Zero-allocation O(1) prefix slice covering prompt + feedback up to current step
                 cur_k = all_k[:, : prompt_len + step]
                 cur_v = all_v[:, : prompt_len + step]
                 cur_kv = (cur_k, cur_v)
-            elif step > 0 and auditory_feedback is None and len(logits) > 0:
-                prev_tok = torch.argmax(logits[-1], dim=-1)
-                auditory_feedback = (
-                    self.sensory_dnn(prev_tok)
-                    if isinstance(self.sensory_dnn, SensoryInputDNN)
-                    else self.sensory_dnn.embedding(prev_tok)
-                )
+            elif step > 0 and len(logits) > 0:
+                # Internal deliberation: synthesize thought re-afference from prior motor state
+                last_logits = logits[-1]
+                emb_layer = getattr(self.sensory_dnn, "embedding", None)
+                emb_table = emb_layer.weight if hasattr(emb_layer, "weight") else emb_layer
+
+                if emb_table is not None:
+                    if self.training:
+                        probs = F.softmax(last_logits / 0.8, dim=-1)
+                        soft_rep = probs @ emb_table.to(probs.dtype)
+                        hard_idx = torch.argmax(last_logits, dim=-1)
+                        hard_rep = F.embedding(hard_idx, emb_table)
+                        # Straight-through estimator: hard discrete thought forward, smooth gradient backward
+                        auditory_feedback = hard_rep - soft_rep.detach() + soft_rep
+                    else:
+                        pred_tok = torch.argmax(last_logits, dim=-1)
+                        auditory_feedback = F.embedding(pred_tok, emb_table)
+                else:
+                    pred_tok = torch.argmax(last_logits, dim=-1)
+                    auditory_feedback = (
+                        self.sensory_dnn(pred_tok)
+                        if isinstance(self.sensory_dnn, SensoryInputDNN)
+                        else pred_tok
+                    )
+
+                # Dynamically extend internal working memory
                 if hasattr(self.motor_dnn, "prime_sensory"):
                     new_k, new_v = self.motor_dnn.prime_sensory(auditory_feedback.unsqueeze(1))
                     all_k = torch.cat([all_k, new_k], dim=1)
@@ -455,9 +487,17 @@ class CerebroSpheroidV4(CerebroSpheroidV3):
                     step_idx=step,
                     auditory_feedback=auditory_feedback,
                 )
+
+            # Thalamic memory basin: re-anchor deep shells after circulation to prevent prompt erasure
+            if thalamic_anchor_weight > 0.0:
+                state[:, :thalamic_end, :] = (
+                    (1.0 - thalamic_anchor_weight) * state[:, :thalamic_end, :]
+                    + thalamic_anchor_weight * thalamic_anchor
+                )
+
             logits.append(step_logits)
 
-            if targets is None and feed is None:
+            if targets is None and feed is None and not is_internal_delib:
                 prev_tok = torch.argmax(step_logits, dim=-1)
                 auditory_feedback = (
                     self.sensory_dnn(prev_tok)
@@ -482,11 +522,15 @@ class CerebroSpheroidV4(CerebroSpheroidV3):
         pad_token_id: Optional[int] = None,
         targets: Optional[torch.Tensor] = None,
         feedback_tokens: Optional[torch.Tensor] = None,
+        deliberation_mode: str = "teacher_forcing",
+        thalamic_anchor_weight: float = 0.0,
+        sampling_p: float = 0.0,
     ) -> torch.Tensor:
         """
         Unified multi-modal forward pass.
         Accepts input_ids or tokens for text, with optional pixel_values and audio_values.
         When pixel_values and audio_values are omitted, reproduces text-only path identically.
+        Supports 'teacher_forcing', 'internal' (zero external feedback), and 'scheduled' modes.
         """
         toks = input_ids if input_ids is not None else tokens
         if toks is None:
@@ -501,7 +545,118 @@ class CerebroSpheroidV4(CerebroSpheroidV3):
             feedback_tokens=feedback_tokens,
             pixel_values=pixel_values,
             audio_values=audio_values,
+            deliberation_mode=deliberation_mode,
+            thalamic_anchor_weight=thalamic_anchor_weight,
+            sampling_p=sampling_p,
         )
+
+    def generate(
+        self,
+        prompt_tokens: torch.Tensor,
+        thinking_cycles: int = 4,
+        max_new_tokens: int = 4096,
+        temperature: float = 0.0,
+        top_k: int = 0,
+        repetition_penalty: float = 1.25,
+        eos_token_id: Optional[int] = None,
+        pad_token_id: Optional[int] = None,
+        initial_state: Optional[torch.Tensor] = None,
+        min_new_tokens: int = 3,
+        deliberation_mode: str = "autoregressive",
+        thalamic_anchor_weight: float = 0.0,
+    ) -> torch.Tensor:
+        """
+        Generates tokens via either:
+        1. 'autoregressive' (default for backwards compatibility): exact V3 parity.
+        2. 'internal': refined closed-loop internal deliberation with zero external token
+           feedback, dynamic internal thought re-afference, and deep thalamic prompt anchoring.
+        """
+        if deliberation_mode == "autoregressive" and thalamic_anchor_weight <= 0.0:
+            return super().generate(
+                prompt_tokens,
+                thinking_cycles=thinking_cycles,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_k=top_k,
+                repetition_penalty=repetition_penalty,
+                eos_token_id=eos_token_id,
+                pad_token_id=pad_token_id,
+                initial_state=initial_state,
+                min_new_tokens=min_new_tokens,
+            )
+
+        self.eval()
+        batch_size = prompt_tokens.shape[0]
+        memory, gist, sensory_kv = self.encode_sensory(prompt_tokens, pad_token_id=pad_token_id)
+        state = self._integrate_memory(
+            memory, state=initial_state, living=initial_state is None,
+            max_packets=32, lengths=self._lengths(prompt_tokens, pad_token_id),
+        )
+        state = self.volumetric_core.inject_efference_copy(state, self._gist_flux(gist))
+        state = self.deliberate(state, thinking_cycles=thinking_cycles)
+
+        thalamic_end = max(1, self.num_shells // 3)
+        thalamic_anchor = state[:, :thalamic_end, :].clone()
+
+        plan = self.motor_dnn.init_plan(batch_size, state.device)
+        refractory = torch.zeros(batch_size, self.vocab_size, device=state.device, dtype=torch.float32)
+        emitted = []
+        finished = torch.zeros(batch_size, dtype=torch.bool, device=state.device)
+        auditory_feedback = None
+
+        for step in range(max_new_tokens):
+            logits, state, refractory, plan = self.emit_step(
+                state,
+                sensory_kv=sensory_kv,
+                plan=plan,
+                refractory_trace=refractory,
+                step_idx=step,
+                auditory_feedback=auditory_feedback,
+            )
+
+            # Thalamic memory basin: re-anchor deep shells after circulation to prevent prompt erasure
+            if thalamic_anchor_weight > 0.0:
+                state[:, :thalamic_end, :] = (
+                    (1.0 - thalamic_anchor_weight) * state[:, :thalamic_end, :]
+                    + thalamic_anchor_weight * thalamic_anchor
+                )
+
+            if eos_token_id is not None and step < max(min_new_tokens, 1):
+                logits[..., eos_token_id] = -1e4
+
+            # Batch-safe multiplicative repetition penalty
+            if repetition_penalty > 1.0 and emitted:
+                logits = apply_repetition_penalty(logits, emitted, repetition_penalty)
+
+            if temperature <= 0.05:
+                next_tok = logits.argmax(dim=-1, keepdim=True)
+            else:
+                scaled = logits / max(temperature, 1e-5)
+                if top_k > 0:
+                    kth = scaled.topk(min(top_k, scaled.shape[-1]), dim=-1).values[..., -1:]
+                    scaled = scaled.masked_fill(scaled < kth, float("-inf"))
+                next_tok = torch.multinomial(torch.softmax(scaled, dim=-1), num_samples=1)
+
+            emitted.append(next_tok)
+
+            # Internal Thought Re-afference for step t+1:
+            auditory_rep = (
+                self.sensory_dnn(next_tok.squeeze(-1))
+                if isinstance(self.sensory_dnn, SensoryInputDNN)
+                else self.sensory_dnn.embedding(next_tok.squeeze(-1))
+            )
+            auditory_feedback = auditory_rep
+
+            if sensory_kv is not None and hasattr(self.motor_dnn, "prime_sensory"):
+                new_k, new_v = self.motor_dnn.prime_sensory(auditory_feedback.unsqueeze(1))
+                sensory_kv = (torch.cat([sensory_kv[0], new_k], dim=1), torch.cat([sensory_kv[1], new_v], dim=1))
+
+            if eos_token_id is not None:
+                finished |= next_tok.squeeze(-1).eq(eos_token_id)
+                if bool(finished.all()):
+                    break
+
+        return torch.cat(emitted, dim=-1) if emitted else prompt_tokens.new_zeros((batch_size, 0))
 
     def load_compatible_checkpoint(self, checkpoint_path: str, device: torch.device = torch.device("cpu")) -> bool:
         """Loads V4 or V3 checkpoints directly into CerebroSpheroidV4 without dropping V4 tensors."""
