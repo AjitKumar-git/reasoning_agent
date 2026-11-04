@@ -12,7 +12,7 @@ Biological & Mathematical Principles:
 """
 
 from dataclasses import dataclass
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, Union, List
 import math
 
 import numpy as np
@@ -80,7 +80,7 @@ def init_v4_params(
     config: ModelConfigV4, key: jax.Array
 ) -> Tuple[Dict[str, jnp.ndarray], Tuple[jnp.ndarray, jnp.ndarray]]:
     """Initializes CerebroSpheroid V4 parameters in pure JAX matching PyTorch key naming."""
-    keys = jax.random.split(key, 20)
+    keys = jax.random.split(key, 25)
     vocab = config.vocab_size
     s_dim = config.surface_dim
     shells = config.num_shells
@@ -132,6 +132,12 @@ def init_v4_params(
         "motor.refractory_strength": jnp.array(1.2, dtype=jnp.float32),
         "motor.refractory_decay": jnp.array(0.75, dtype=jnp.float32),
         "motor.efference_proj.weight": jax.random.normal(keys[19], (s_dim, s_dim * 2)) * 0.01,
+
+        # Agentic Flow & Persona Steering Basis (0=Reasoner, 1=Explorer, 2=Concise, 3=Verifier)
+        "motor.persona_embeddings": jax.random.normal(keys[20], (4, s_dim)) * 0.05,
+        "motor.persona_scale": jnp.array(0.5, dtype=jnp.float32),
+        "motor.plan_init.weight": jax.random.normal(keys[21], (s_dim, s_dim * 2)) * (1.0 / math.sqrt(s_dim * 2)),
+        "motor.plan_init.bias": jnp.zeros((s_dim,), dtype=jnp.float32),
     }
     buffers = (src_idx, dst_idx)
     return p, buffers
@@ -189,10 +195,11 @@ def emit_step(
     sensory_kv: Tuple[jnp.ndarray, jnp.ndarray],
     plan: jnp.ndarray,
     refractory_trace: Optional[jnp.ndarray],
-    step_idx: int,
+    step_idx: Union[int, jnp.ndarray],
     buffers: Tuple[jnp.ndarray, jnp.ndarray],
     config: Optional[ModelConfigV4] = None,
     auditory_feedback: Optional[jnp.ndarray] = None,
+    repetition_penalty: float = 1.25,
 ) -> Tuple[jnp.ndarray, jnp.ndarray, Optional[jnp.ndarray], jnp.ndarray]:
     """Single autoregressive / deliberative motor emission step with auditory feedback support."""
     B, K, D = state.shape
@@ -241,13 +248,24 @@ def emit_step(
     raw_logits = jnp.matmul(h, params["motor.head.weight"].T) / temp
     efference = jnp.matmul(h, params["motor.efference_proj.weight"].T)
 
-    # Biological refractory adaptation (penalizes consecutive repetitive tokens)
+    # Two-Tier Biological Refractory Adaptation & Repetition Penalties
     if refractory_trace is not None:
-        alpha = jnp.clip(params["motor.refractory_strength"], 0.1, 5.0)
-        adapted_logits = raw_logits - alpha * refractory_trace
-        decay = jax.nn.sigmoid(params["motor.refractory_decay"])
+        alpha = jnp.clip(params.get("motor.refractory_strength", 1.2), 0.1, 5.0)
+        # Tier 1: Continuous probability trace subtraction
+        tier1_penalty = 3.0 * alpha * refractory_trace
+
+        # Tier 2: Multiplicative repetition discount for tokens with active recent trace
+        active_mask = (refractory_trace > 0.02).astype(jnp.float32)
+        rep_scale = jnp.where(raw_logits > 0, 1.0 / repetition_penalty, repetition_penalty)
+        scaled_logits = raw_logits * (1.0 - active_mask) + (raw_logits * rep_scale) * active_mask
+        adapted_logits = scaled_logits - tier1_penalty
+
+        # Compute next trace with soft probability EMA + hard top-1 refractory pulse
+        decay = jax.nn.sigmoid(params.get("motor.refractory_decay", 0.75))
         current_prob = lax.stop_gradient(jax.nn.softmax(raw_logits, axis=-1))
-        next_trace = lax.stop_gradient(decay * refractory_trace + (1.0 - decay) * current_prob)
+        top1_idx = jnp.argmax(adapted_logits, axis=-1)
+        top1_pulse = lax.stop_gradient(jax.nn.one_hot(top1_idx, raw_logits.shape[-1]))
+        next_trace = lax.stop_gradient(decay * refractory_trace + (1.0 - decay) * current_prob + 1.0 * top1_pulse)
     else:
         adapted_logits, next_trace = raw_logits, None
 
@@ -268,12 +286,18 @@ def training_rollout(
     sampling_p: float = 1.0,
     thalamic_anchor_weight: float = 0.1,
     pad_id: int = 0,
+    persona_id: Optional[Union[int, jnp.ndarray]] = None,
+    repetition_penalty: float = 1.25,
 ) -> jnp.ndarray:
     """
     Production-grade differentiable rollout engine with:
     1. Masked prompt centroid pooling (zero padding contamination).
-    2. Scheduled sampling bridging teacher-forcing to internal thought re-afference.
-    3. Thalamic memory basin anchoring deep shells (0 .. K//3) to prevent prompt erasure.
+    2. Subconscious deliberation cycles before verbalization.
+    3. Plan-First pre-verbal executive synthesis from subcortical core + prompt flux.
+    4. Agentic persona steering in the latent manifold.
+    5. Scheduled sampling bridging teacher-forcing to internal thought re-afference.
+    6. Thalamic memory basin anchoring deep shells (0 .. K//3) to prevent prompt erasure.
+    7. Two-tier refractory adaptation & repetition suppression.
     """
     B, L = prompts.shape
     sensory_mem, sensory_kv = encode_sensory(params, prompts)
@@ -300,7 +324,25 @@ def training_rollout(
     thalamic_end = max(1, num_shells // 3)
     thalamic_anchor = state[:, :thalamic_end, :]
 
-    init_plan = jnp.zeros((B, surface_dim), dtype=jnp.float32)
+    # Pre-Verbal Executive Plan Synthesis (Shell 0 Core State + Prompt Flux)
+    if "motor.plan_init.weight" in params:
+        delib_summary = jnp.concatenate([state[:, 0, :], prompt_flux], axis=-1)
+        plan_raw = jnp.matmul(delib_summary, params["motor.plan_init.weight"].T)
+        if "motor.plan_init.bias" in params:
+            plan_raw = plan_raw + params["motor.plan_init.bias"]
+        init_plan = jax.nn.tanh(plan_raw)
+    else:
+        init_plan = jnp.zeros((B, surface_dim), dtype=jnp.float32)
+
+    # Built-in Agentic Persona Steering Injection (0=Reasoner, 1=Explorer, 2=Concise, 3=Verifier)
+    if "motor.persona_embeddings" in params and persona_id is not None:
+        p_scale = params.get("motor.persona_scale", 0.5)
+        if isinstance(persona_id, int):
+            persona_vec = params["motor.persona_embeddings"][persona_id][None, :]
+        else:
+            persona_vec = params["motor.persona_embeddings"][persona_id]
+        init_plan = init_plan + p_scale * persona_vec
+
     init_refractory = jnp.zeros((B, vocab_size), dtype=jnp.float32)
     init_thought = jnp.zeros((B, surface_dim), dtype=jnp.float32)
 
@@ -329,7 +371,16 @@ def training_rollout(
             feed = sampling_p * tf_aud + (1.0 - sampling_p) * internal_feed
 
         logits, nxt_s, nxt_t, nxt_p = emit_step_remat(
-            params, cur_state, sensory_kv, cur_plan, cur_trace, step_idx, buffers, config=config, auditory_feedback=feed
+            params,
+            cur_state,
+            sensory_kv,
+            cur_plan,
+            cur_trace,
+            step_idx,
+            buffers,
+            config=config,
+            auditory_feedback=feed,
+            repetition_penalty=repetition_penalty,
         )
 
         # Straight-through thought re-afference for step t+1
@@ -350,3 +401,103 @@ def training_rollout(
 
     _, all_logits = lax.scan(_emit, (state, init_refractory, init_plan, init_thought), jnp.arange(target_len))
     return jnp.swapaxes(all_logits, 0, 1)
+
+
+def generate_v4(
+    params: Dict[str, jnp.ndarray],
+    prompts: jnp.ndarray,
+    max_new_tokens: int,
+    buffers: Tuple[jnp.ndarray, jnp.ndarray],
+    config: Optional[ModelConfigV4] = None,
+    persona_id: Optional[int] = 0,
+    temperature: float = 0.7,
+    repetition_penalty: float = 1.25,
+    thalamic_anchor_weight: float = 0.15,
+    pad_id: int = 0,
+    eos_token_id: Optional[int] = None,
+) -> List[List[int]]:
+    """
+    High-fidelity autoregressive generation engine for CerebroSpheroid V4.
+    """
+    B, L = prompts.shape
+    sensory_mem, sensory_kv = encode_sensory(params, prompts)
+    num_shells = config.num_shells if config is not None else params["core.intra_shell"].shape[0]
+    surface_dim = config.surface_dim if config is not None else params["sensory.fc2.weight"].shape[0]
+    vocab_size = config.vocab_size if config is not None else params["sensory.embedding.weight"].shape[0]
+    thinking_cycles = config.thinking_cycles if config is not None else 3
+
+    # Masked prompt centroid
+    mask = (prompts != pad_id)[:, :, None].astype(jnp.float32)
+    prompt_flux = jnp.sum(sensory_mem * mask, axis=1) / jnp.maximum(jnp.sum(mask, axis=1), 1.0)
+
+    init_state = jnp.zeros((B, num_shells, surface_dim), dtype=jnp.float32)
+    state = init_state.at[:, -1, :].set(prompt_flux)
+
+    # Subconscious deliberation cycles before verbalization
+    for _ in range(thinking_cycles):
+        state = deliberate_step(params, state, buffers)
+
+    # Thalamic memory basin anchoring
+    thalamic_end = max(1, num_shells // 3)
+    thalamic_anchor = state[:, :thalamic_end, :]
+
+    # Pre-verbal plan initialization
+    if "motor.plan_init.weight" in params:
+        delib_summary = jnp.concatenate([state[:, 0, :], prompt_flux], axis=-1)
+        plan_raw = jnp.matmul(delib_summary, params["motor.plan_init.weight"].T)
+        if "motor.plan_init.bias" in params:
+            plan_raw = plan_raw + params["motor.plan_init.bias"]
+        plan = jax.nn.tanh(plan_raw)
+    else:
+        plan = jnp.zeros((B, surface_dim), dtype=jnp.float32)
+
+    # Persona steering vector
+    if "motor.persona_embeddings" in params and persona_id is not None:
+        p_scale = params.get("motor.persona_scale", 0.5)
+        persona_vec = params["motor.persona_embeddings"][persona_id][None, :]
+        plan = plan + p_scale * persona_vec
+
+    refractory = jnp.zeros((B, vocab_size), dtype=jnp.float32)
+    results = [[] for _ in range(B)]
+    completed = [False] * B
+
+    for step_idx in range(max_new_tokens):
+        logits, state, refractory, plan = emit_step(
+            params,
+            state,
+            sensory_kv,
+            plan,
+            refractory,
+            step_idx,
+            buffers,
+            config=config,
+            repetition_penalty=repetition_penalty,
+        )
+
+        # Thalamic retention
+        if thalamic_anchor_weight > 0.0:
+            state = state.at[:, :thalamic_end, :].set(
+                (1.0 - thalamic_anchor_weight) * state[:, :thalamic_end, :] + thalamic_anchor_weight * thalamic_anchor
+            )
+
+        # Greedy / temperature selection
+        if temperature <= 0.01:
+            next_tokens = jnp.argmax(logits, axis=-1)
+        else:
+            scaled_logits = logits / temperature
+            probs = jax.nn.softmax(scaled_logits, axis=-1)
+            # Greedy argmax of tempered/penalized distribution
+            next_tokens = jnp.argmax(probs, axis=-1)
+
+        for b in range(B):
+            if not completed[b]:
+                tok_id = int(next_tokens[b])
+                if eos_token_id is not None and tok_id == eos_token_id:
+                    completed[b] = True
+                else:
+                    results[b].append(tok_id)
+
+        if all(completed):
+            break
+
+    return results

@@ -132,6 +132,7 @@ def build_spheroid_train_engine(
     pad_id: int,
     weight_decay: float = 0.01,
     thalamic_anchor_weight: float = 0.1,
+    repetition_penalty: float = 1.25,
 ) -> Tuple[Callable, Callable]:
     """
     Builds decoupled JIT-compiled gradient computation and optimizer application functions.
@@ -139,7 +140,7 @@ def build_spheroid_train_engine(
     """
 
     @jax.jit
-    def compute_grad_step(p, q_batch, r_batch, feedback_tokens=None, sampling_p=1.0):
+    def compute_grad_step(p, q_batch, r_batch, feedback_tokens=None, sampling_p=1.0, persona_id=0):
         target_len = r_batch.shape[1]
 
         def _loss_fn(param_dict):
@@ -154,6 +155,8 @@ def build_spheroid_train_engine(
                 sampling_p=sampling_p,
                 thalamic_anchor_weight=thalamic_anchor_weight,
                 pad_id=pad_id,
+                persona_id=persona_id,
+                repetition_penalty=repetition_penalty,
             )
             log_probs = jax.nn.log_softmax(logits, axis=-1)
             safe_targets = jnp.maximum(r_batch, 0)

@@ -14,6 +14,7 @@ from .v4_model import (
     deliberate_step,
     emit_step,
     training_rollout as training_rollout_v4,
+    generate_v4,
 )
 
 # SpheroidOptimizer (Newton-Schulz + Spectral Guard)

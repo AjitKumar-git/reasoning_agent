@@ -63,6 +63,8 @@ def parse_args(args_list=None):
     parser.add_argument("--eval_interval", type=int, default=200, help="Steps between held-out validation evaluations")
     parser.add_argument("--thalamic_anchor_weight", type=float, default=0.1, help="Thalamic memory basin retention strength (0.0 to 0.3)")
     parser.add_argument("--deliberation_mode", type=str, default="scheduled", choices=["scheduled", "teacher_forcing", "internal"])
+    parser.add_argument("--repetition_penalty", type=float, default=1.25, help="Two-tier refractory repetition penalty multiplier (default: 1.25)")
+    parser.add_argument("--persona_id", type=int, default=None, help="Agentic persona ID (0=Reasoner, 1=Explorer, 2=Concise, 3=Verifier, or None for round-robin curriculum)")
     parser.add_argument("--cloud_sync", action="store_true", default=False, help="Enable automatic checkpoint syncing with bioflo.in")
     parser.add_argument("--cloud_url", type=str, default="https://bioflo.in/api/cerebro/sync.php", help="bioflo.in sync endpoint")
     parser.add_argument("--cloud_token", type=str, default="CerebroSpheroid_Sync_Secure_2026", help="Secret sync token")
@@ -167,7 +169,12 @@ def main(args=None):
     # 4. Initialize SpheroidOptimizer & Build JIT Train Engine
     opt_state = init_spheroid_opt_state(params)
     compute_grad_step, apply_opt_step = build_spheroid_train_engine(
-        config, buffers, pad_id=pad_id, weight_decay=0.01, thalamic_anchor_weight=args.thalamic_anchor_weight
+        config,
+        buffers,
+        pad_id=pad_id,
+        weight_decay=0.01,
+        thalamic_anchor_weight=args.thalamic_anchor_weight,
+        repetition_penalty=args.repetition_penalty,
     )
     ckpt_mgr = AsyncCheckpointManager(
         target_dir=args.ckpt_dir,
@@ -220,9 +227,18 @@ def main(args=None):
     @jax.jit
     def eval_step_loss(p, q_b, r_b):
         logits = training_rollout_v4(
-            p, q_b, r_b.shape[1], buffers, config=config,
-            feedback_tokens=None, deliberation_mode="internal", sampling_p=0.0,
-            thalamic_anchor_weight=args.thalamic_anchor_weight, pad_id=pad_id,
+            p,
+            q_b,
+            r_b.shape[1],
+            buffers,
+            config=config,
+            feedback_tokens=None,
+            deliberation_mode="internal",
+            sampling_p=0.0,
+            thalamic_anchor_weight=args.thalamic_anchor_weight,
+            pad_id=pad_id,
+            persona_id=0,
+            repetition_penalty=args.repetition_penalty,
         )
         log_probs = jax.nn.log_softmax(logits, axis=-1)
         safe_targets = jnp.maximum(r_b, 0)
@@ -258,7 +274,7 @@ def main(args=None):
                 progress = float(step_offset - 100) / max(1, total_rem - 100)
                 lr = args.min_lr + 0.5 * (args.lr - args.min_lr) * (1.0 + math.cos(math.pi * progress))
 
-            # Scheduled sampling curriculum
+            # Scheduled sampling curriculum (Smooth Cosine Transition)
             if args.deliberation_mode == "teacher_forcing":
                 sampling_p = 1.0
             elif args.deliberation_mode == "internal":
@@ -266,9 +282,15 @@ def main(args=None):
             else:  # "scheduled"
                 if args.schedule_steps > 0:
                     prog = min(1.0, max(0.0, float(step - start_step) / float(args.schedule_steps)))
-                    sampling_p = float(1.0 - prog)
+                    sampling_p = float(0.5 * (1.0 + math.cos(math.pi * prog)))
                 else:
                     sampling_p = 0.0
+
+            # Dynamic Persona Curriculum (0: Reasoner, 1: Explorer, 2: Concise, 3: Verifier)
+            if args.persona_id is not None:
+                step_persona = jnp.int32(args.persona_id)
+            else:
+                step_persona = jnp.int32(step % 4)
 
             t0 = time.time()
             accum_grads = None
@@ -289,7 +311,12 @@ def main(args=None):
                 total_step_tokens += int(q_batch.shape[0] * (q_batch.shape[1] + r_batch.shape[1]))
 
                 micro_loss, micro_grads = compute_grad_step(
-                    params, q_batch, r_batch, feedback_tokens=f_batch, sampling_p=sampling_p
+                    params,
+                    q_batch,
+                    r_batch,
+                    feedback_tokens=f_batch,
+                    sampling_p=sampling_p,
+                    persona_id=step_persona,
                 )
                 m_loss_f = float(micro_loss)
 
