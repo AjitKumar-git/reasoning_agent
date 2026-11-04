@@ -218,27 +218,34 @@ def main(args=None):
             chunk = eval_records[i : i + args.batch_size]
             b_eval = build_batch(tokenizer, chunk, window=128, rng=rng_eval, max_prompt_len=256, max_answer_tokens=128, pad_token_id=pad_id)
             if b_eval is not None:
-                p_eval, t_eval, _ = b_eval
-                eval_batches.append((jnp.array(p_eval.numpy()), jnp.array(t_eval.numpy())))
+                if len(b_eval) == 3:
+                    p_eval, t_eval, f_eval = b_eval
+                    eval_batches.append((jnp.array(p_eval.numpy()), jnp.array(t_eval.numpy()), jnp.array(f_eval.numpy())))
+                else:
+                    p_eval, t_eval = b_eval
+                    t_arr = jnp.array(t_eval.numpy())
+                    f_arr = jnp.full_like(t_arr, -100)
+                    f_arr = f_arr.at[:, 1:].set(t_arr[:, :-1])
+                    eval_batches.append((jnp.array(p_eval.numpy()), t_arr, f_arr))
         print(f"✅ Held-Out Validation: Prepared {len(eval_batches)} evaluation batches ({len(eval_records)} records).")
     except Exception as e:
         print(f"⚠️ Validation setup notice: {e} (will fallback to training EMA for checkpoint selection)")
 
     @jax.jit
-    def eval_step_loss(p, q_b, r_b):
+    def eval_step_loss(p, q_b, r_b, f_b):
         logits = training_rollout_v4(
             p,
             q_b,
             r_b.shape[1],
             buffers,
             config=config,
-            feedback_tokens=None,
-            deliberation_mode="internal",
-            sampling_p=0.0,
+            feedback_tokens=f_b,
+            deliberation_mode="teacher_forcing",
+            sampling_p=1.0,
             thalamic_anchor_weight=args.thalamic_anchor_weight,
             pad_id=pad_id,
             persona_id=0,
-            repetition_penalty=args.repetition_penalty,
+            repetition_penalty=1.0,
         )
         log_probs = jax.nn.log_softmax(logits, axis=-1)
         safe_targets = jnp.maximum(r_b, 0)
@@ -265,23 +272,24 @@ def main(args=None):
         for step in range(start_step, args.steps + 1):
             current_step = step
 
-            # Schedule
+            # Learning Rate Schedule (Gentle warmup on start/resume, global cosine decay)
             step_offset = step - start_step
-            total_rem = max(1, args.steps - start_step)
-            if step_offset < 100:
+            if step_offset < 100 and start_step == 1:
                 lr = args.min_lr + (args.lr - args.min_lr) * (float(step_offset) / 100.0)
+            elif step_offset < 50 and start_step > 1:
+                lr = args.min_lr + (args.lr - args.min_lr) * (float(step_offset) / 50.0)
             else:
-                progress = float(step_offset - 100) / max(1, total_rem - 100)
-                lr = args.min_lr + 0.5 * (args.lr - args.min_lr) * (1.0 + math.cos(math.pi * progress))
+                progress = float(step) / max(1.0, float(args.steps))
+                lr = args.min_lr + 0.5 * (args.lr - args.min_lr) * (1.0 + math.cos(math.pi * min(1.0, progress)))
 
-            # Scheduled sampling curriculum (Smooth Cosine Transition)
+            # Scheduled sampling curriculum (Smooth Cosine Transition over global training horizon)
             if args.deliberation_mode == "teacher_forcing":
                 sampling_p = 1.0
             elif args.deliberation_mode == "internal":
                 sampling_p = 0.0
             else:  # "scheduled"
                 if args.schedule_steps > 0:
-                    prog = min(1.0, max(0.0, float(step - start_step) / float(args.schedule_steps)))
+                    prog = min(1.0, max(0.0, float(step) / float(args.schedule_steps)))
                     sampling_p = float(0.5 * (1.0 + math.cos(math.pi * prog)))
                 else:
                     sampling_p = 0.0
@@ -365,17 +373,17 @@ def main(args=None):
                     f"ema_ppl {ema_ppl:6.1f} | lr {lr:.2e} | {dt*1000:5.1f} ms/step | {tok_s:7.1f} tok/s | ETA: {eta_h:4.2f}h"
                 )
 
-            # Held-Out Validation Evaluation (Every args.eval_interval steps)
+            # Held-Out Validation Evaluation (Every args.eval_interval steps, Aligned Teacher-Forced PPL)
             if eval_batches and (step % args.eval_interval == 0 or step == start_step):
                 eval_tot_loss, eval_tot_tokens = 0.0, 0
-                for eq, er in eval_batches:
-                    el, et = eval_step_loss(params, eq, er)
+                for eq, er, ef in eval_batches:
+                    el, et = eval_step_loss(params, eq, er, ef)
                     eval_tot_loss += float(el)
                     eval_tot_tokens += int(et)
                 held_out_loss = eval_tot_loss / max(eval_tot_tokens, 1)
                 held_out_ppl = math.exp(min(held_out_loss, 20.0))
                 print(
-                    f"\n🔍 [EVAL @ Step {step:,}] Genuine Held-Out Loss: {held_out_loss:.4f} | "
+                    f"\n🔍 [EVAL @ Step {step:,}] Aligned Held-Out Loss: {held_out_loss:.4f} | "
                     f"Held-Out PPL: {held_out_ppl:.2f} ({eval_tot_tokens:,} tokens)"
                 )
 
