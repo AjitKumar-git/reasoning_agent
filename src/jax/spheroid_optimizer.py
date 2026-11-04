@@ -197,7 +197,7 @@ def build_spheroid_train_engine(
                 # -----------------------------------------------------------------
                 if is_manifold_operator(k, param):
                     m_new = 0.95 * m_prev + 0.05 * g
-                    new_m[k] = m_new
+                    new_m[k] = m_new.astype(m_prev.dtype)
 
                     # Decoupled Riemannian Weight Decay
                     p_decayed = param * (1.0 - base_lr * weight_decay)
@@ -218,7 +218,7 @@ def build_spheroid_train_engine(
                         p_updated, v_next = clamp_spectral_norm_jax(p_updated, opt_s["power_v"][k], max_spec_norm=1.0)
                         new_power_v[k] = v_next
 
-                    new_params[k] = p_updated
+                    new_params[k] = p_updated.astype(param.dtype)
 
                 # -----------------------------------------------------------------
                 # 2. Vocabulary & Phase Embeddings / Heads (AdamW)
@@ -227,13 +227,13 @@ def build_spheroid_train_engine(
                     v_prev = opt_s["v"][k]
                     m_new = 0.9 * m_prev + 0.1 * g
                     v_new = 0.95 * v_prev + 0.05 * jnp.square(g)
-                    new_m[k] = m_new
-                    new_v[k] = v_new
+                    new_m[k] = m_new.astype(m_prev.dtype)
+                    new_v[k] = v_new.astype(v_prev.dtype)
 
                     m_hat = m_new / (1.0 - jnp.power(0.9, cur_step))
                     v_hat = v_new / (1.0 - jnp.power(0.95, cur_step))
                     p_decayed = param * (1.0 - lr_vocab * weight_decay)
-                    new_params[k] = p_decayed - lr_vocab * (m_hat / (jnp.sqrt(v_hat) + 1e-8))
+                    new_params[k] = (p_decayed - lr_vocab * (m_hat / (jnp.sqrt(v_hat) + 1e-8))).astype(param.dtype)
 
                 # -----------------------------------------------------------------
                 # 3. 1D Parameters, Scalars, Pacemakers & Norms (AdamW, 0 Decay)
@@ -242,12 +242,12 @@ def build_spheroid_train_engine(
                     v_prev = opt_s["v"][k]
                     m_new = 0.9 * m_prev + 0.1 * g
                     v_new = 0.95 * v_prev + 0.05 * jnp.square(g)
-                    new_m[k] = m_new
-                    new_v[k] = v_new
+                    new_m[k] = m_new.astype(m_prev.dtype)
+                    new_v[k] = v_new.astype(v_prev.dtype)
 
                     m_hat = m_new / (1.0 - jnp.power(0.9, cur_step))
                     v_hat = v_new / (1.0 - jnp.power(0.95, cur_step))
-                    new_params[k] = param - lr_1d * (m_hat / (jnp.sqrt(v_hat) + 1e-8))
+                    new_params[k] = (param - lr_1d * (m_hat / (jnp.sqrt(v_hat) + 1e-8))).astype(param.dtype)
 
             new_opt_state = {
                 "step": cur_step,
