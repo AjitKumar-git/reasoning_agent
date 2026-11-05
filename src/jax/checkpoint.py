@@ -189,17 +189,19 @@ def discover_latest_checkpoint(
             continue
         for fname in ["cerebro_spheroid_v4_jax_latest.pt", "cerebro_spheroid_v4_latest.pt", "latest.pt"]:
             candidate_latest = os.path.join(d, fname)
-            candidate_json = candidate_latest.replace(".pt", ".json")
             if os.path.exists(candidate_latest):
                 step_val = 0
                 meta = {}
-                if os.path.exists(candidate_json):
-                    try:
-                        with open(candidate_json, "r") as f:
-                            meta = json.load(f)
-                            step_val = meta.get("step", 0)
-                    except Exception:
-                        pass
+                for meta_cand in [candidate_latest.replace(".pt", ".meta.json"), candidate_latest.replace(".pt", ".json")]:
+                    if os.path.exists(meta_cand):
+                        try:
+                            with open(meta_cand, "r") as f:
+                                meta = json.load(f)
+                                step_val = meta.get("step", 0)
+                                if step_val > 0:
+                                    break
+                        except Exception:
+                            pass
                 if step_val == 0:
                     try:
                         st = torch.load(candidate_latest, map_location="cpu", weights_only=False)
