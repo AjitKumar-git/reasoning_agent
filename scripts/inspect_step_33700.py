@@ -85,7 +85,7 @@ def main():
     ]
 
     print("\n" + "=" * 75)
-    print(" INFERENCE EVALUATION (1-Token Bio Delimiters: 'stim ' [20436] / 'act ' [1044])")
+    print(" INFERENCE EVALUATION (Enclosed Bio Delimiters: '<stim> ... </stim>' / '<act> ... </act>')")
     print("=" * 75)
 
     for i, user_q in enumerate(test_prompts, 1):

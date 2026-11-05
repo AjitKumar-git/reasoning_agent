@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 import random
+import re
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Set, Tuple
 
 import pyarrow.parquet as pq
@@ -517,42 +518,59 @@ def build_tokenizer(name: str = "llama"):
         return tok
 
 
-# Biology-derived 1-token delimiters (Llama 32,000 vocabulary)
-BIO_STIM_PREFIX = "stim "  # Token ID 20436: Sensory Stimulus Ingestion
-BIO_ACT_PREFIX = "act "    # Token ID 1044: Efferent Motor Articulation
-BIO_STIM_TOKEN_ID = 20436
-BIO_ACT_TOKEN_ID = 1044
+# Biology-derived enclosed delimiters: <stim> ... </stim> and <act> ... </act>
+BIO_STIM_PREFIX = "<stim> "
+BIO_STIM_SUFFIX = " </stim>"
+BIO_ACT_PREFIX = "<act> "
+BIO_ACT_SUFFIX = " </act>"
+BIO_STIM_TOKEN_ID = 20436  # Legacy reference for 'stim '
+BIO_ACT_TOKEN_ID = 1044    # Legacy reference for 'act '
 
 
 def format_stimulus_prompt(prompt: str) -> str:
-    """Prepends the 1-token biological stimulus delimiter 'stim '."""
+    """Encloses prompt in <stim> ... </stim> delimiters."""
     p = prompt.strip()
-    if not p.startswith("stim "):
-        return f"{BIO_STIM_PREFIX}{p}"
+    if p.startswith("stim "):
+        p = p[5:].strip()
+    if not p.startswith("<stim>"):
+        p = f"{BIO_STIM_PREFIX}{p}"
+    if not p.endswith("</stim>"):
+        p = f"{p}{BIO_STIM_SUFFIX}"
     return p
 
 
 def format_motor_response(answer: str) -> str:
-    """Prepends the 1-token biological motor articulation delimiter 'act '."""
+    """Encloses answer in <act> ... </act> delimiters."""
     a = answer.strip()
-    if not a.startswith("act "):
-        return f"{BIO_ACT_PREFIX}{a}"
+    if a.startswith("act "):
+        a = a[4:].strip()
+    if not a.startswith("<act>"):
+        a = f"{BIO_ACT_PREFIX}{a}"
+    if not a.endswith("</act>"):
+        a = f"{a}{BIO_ACT_SUFFIX}"
     return a
 
 
 def clean_motor_response(text: str) -> str:
-    """Strips leading biological motor articulation delimiter if present."""
+    """Strips <act> and </act> delimiters if present, with fallback for legacy prefixes."""
     t = text.strip()
+    m = re.search(r"<act>\s*(.*?)(?:\s*</act>|$)", t, re.DOTALL)
+    if m:
+        return m.group(1).strip()
+    if t.startswith("<act>"):
+        t = t[5:].strip()
+    if t.endswith("</act>"):
+        t = t[:-6].strip()
     if t.startswith("act "):
-        return t[4:].strip()
+        t = t[4:].strip()
     if t.startswith("act:"):
-        return t[4:].strip()
+        t = t[4:].strip()
     return t
 
 
 def tokenize_pair(tokenizer, prompt: str, answer: str, max_prompt_len: int,
                   max_answer_tokens: int) -> Tuple[List[int], List[int]]:
-    """Tokenises one record using 1-token biological delimiters ('stim ' / 'act '), appending EOS."""
+    """Tokenises one record using enclosed biological delimiters ('<stim> ... </stim>' / '<act> ... </act>'), appending EOS."""
     formatted_prompt = format_stimulus_prompt(prompt)
     prompt_ids = tokenizer.encode(formatted_prompt, max_length=max_prompt_len, truncation=True)
     

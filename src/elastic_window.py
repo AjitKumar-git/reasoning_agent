@@ -195,16 +195,16 @@ class ElasticBucketBatcher:
             if not q_txt or not r_txt:
                 continue
 
-            # Format with 1-token biological delimiters: 'stim ' [20436] / 'act ' [1044]
+            # Format with enclosed biological delimiters: <stim> ... </stim> and <act> ... </act>
             try:
                 from src.corpus import format_stimulus_prompt, format_motor_response
                 q_txt = format_stimulus_prompt(q_txt)
                 r_txt = format_motor_response(r_txt)
             except Exception:
-                if not q_txt.startswith("stim "):
-                    q_txt = f"stim {q_txt}"
-                if not r_txt.startswith("act "):
-                    r_txt = f"act {r_txt}"
+                if not q_txt.startswith("<stim>"):
+                    q_txt = f"<stim> {q_txt} </stim>"
+                if not r_txt.startswith("<act>"):
+                    r_txt = f"<act> {r_txt} </act>"
 
             # Tokenize bounded to prevent processing gigantic out-of-distribution text
             max_enc = self.total_window + 256
