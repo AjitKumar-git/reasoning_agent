@@ -753,6 +753,8 @@ class CerebroSpheroidV4(nn.Module):
                 if "motor.phase_embed." in jax_k or "motor.motor_phase_embed." in jax_k:
                     jax_k = jax_k.replace("motor.motor_phase_embed.", "motor.phase_embed.")
                 res[jax_k] = v
+            if "motor_dnn.phase_embed.weight" in sd:
+                res["motor_dnn.motor_phase_embed.weight"] = sd["motor_dnn.phase_embed.weight"]
             if hasattr(self, "volumetric_core"):
                 res["core.src_indices"] = self.volumetric_core.src_indices
                 res["core.dst_indices"] = self.volumetric_core.dst_indices

@@ -1,24 +1,15 @@
 # Agent Work State & Activity Tracker
 
-> **Status**: 🟡 `IN_PROGRESS` | **Last Updated**: `2026-11-05T08:58:32.556068+05:30` | **Session**: `d59f7c6a-8bf9-4b08-8476-c661733241be`
+> **Status**: 🟡 `IN_PROGRESS` | **Last Updated**: `2026-11-05T09:03:10.749077+05:30` | **Session**: `d59f7c6a-8bf9-4b08-8476-c661733241be`
 
 ## Current / Active Objective
-**Goal**: Time
-#
-Log Message
-6.7s	0	0.00s - Debugger warning: It seems that frozen modules are being used, which may
-6.7s	1	0.00s - make the debugger miss breakpoints. Please pass -Xfrozen_modules=off
-6.7s...
+**Goal**: can you check why the model size inflated in gpu version its now over 1 gb
 
 - **Phase**: `executing`
-- **Current Task**: Executed run_command: Check diff on code files
+- **Current Task**: Executed edit_file: edit_file
 
 ## Summary of Completed Work
-1. **The OOM Issue is 100% Solved**:
-   - The training ran smoothly from step 10,901 to 11,000 across Dual Tesla T4s.
-   - VRAM usage held at **5,086 MB** (only ~35% of the 14.56 GB capacity, leaving 9.5 GB of safe headroom).
-   - Speed achieved **3,071 passes/s** (~5.3s per step).
-   - Training loss dropped sharply from **7.1044 down to 4.5331** (PPL 1217.3 $\to$ 93.0) with zero NaN activations!
+Inspecting the remote manifest on `bioflo.in` and the GPU checkpoint serialization pipeline revealed three distinct causes:
 
 ## Modified Files
 - [`.agents/WORK_STATE.md`](.agents/WORK_STATE.md)
@@ -75,16 +66,16 @@ Log Message
 ## Recent Actions (Last 10)
 | Time | Tool | Details |
 | :--- | :--- | :--- |
-| `08:58:32` | `run_command` | Check diff on code files |
-| `08:58:22` | `run_command` | Check git status |
-| `08:58:14` | `manage_task` | manage_task |
-| `08:58:09` | `run_command` | Run test suite |
-| `08:58:03` | `manage_task` | manage_task |
-| `08:57:57` | `manage_task` | manage_task |
-| `08:57:33` | `edit_file` | edit_file |
-| `08:57:20` | `edit_file` | edit_file |
-| `08:57:06` | `read_file` | read_file |
-| `08:56:47` | `edit_file` | edit_file |
+| `09:03:10` | `edit_file` | edit_file |
+| `09:03:00` | `read_file` | read_file |
+| `09:02:50` | `manage_task` | manage_task |
+| `09:02:46` | `run_command` | Verify exact byte match between JAX bf16 and PyTorch bf16 |
+| `09:02:38` | `manage_task` | manage_task |
+| `09:02:28` | `manage_task` | manage_task |
+| `09:02:21` | `manage_task` | manage_task |
+| `09:01:47` | `manage_task` | manage_task |
+| `09:01:39` | `run_command` | Inspect step 4300 checkpoint |
+| `09:01:14` | `run_command` | Compare checkpoint file size and keys between JAX and CUDA |
 
 ---
 *This file is automatically maintained by `auto-work-tracker`. Other agents can parse `.agents/work_state.json` or inspect this file directly to resume or review progress.*
