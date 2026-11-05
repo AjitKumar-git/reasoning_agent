@@ -737,9 +737,11 @@ class CerebroSpheroidV4(nn.Module):
 
         return torch.cat(emitted, dim=-1) if emitted else prompt_tokens.new_zeros((B, 0))
 
-    def state_dict_compatible(self, include_jax_keys: bool = True) -> Dict[str, torch.Tensor]:
-        """Returns dual-keyed state dictionary containing both PyTorch and JAX key conventions."""
+    def state_dict_compatible(self, include_jax_keys: bool = True, dtype: Optional[torch.dtype] = None) -> Dict[str, torch.Tensor]:
+        """Returns dual-keyed state dictionary containing both PyTorch and JAX key conventions with shared storage."""
         sd = self.state_dict()
+        if dtype is not None:
+            sd = {k: v.to(dtype) if (torch.is_tensor(v) and v.is_floating_point()) else v for k, v in sd.items()}
         res = dict(sd)
         if include_jax_keys:
             for k, v in sd.items():
@@ -751,8 +753,9 @@ class CerebroSpheroidV4(nn.Module):
                 if "motor.phase_embed." in jax_k or "motor.motor_phase_embed." in jax_k:
                     jax_k = jax_k.replace("motor.motor_phase_embed.", "motor.phase_embed.")
                 res[jax_k] = v
-            res["core.src_indices"] = self.volumetric_core.src_indices
-            res["core.dst_indices"] = self.volumetric_core.dst_indices
+            if hasattr(self, "volumetric_core"):
+                res["core.src_indices"] = self.volumetric_core.src_indices
+                res["core.dst_indices"] = self.volumetric_core.dst_indices
         return res
 
     def load_compatible_checkpoint(self, checkpoint_path: str, device: torch.device = torch.device("cpu")) -> bool:

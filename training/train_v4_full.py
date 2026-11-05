@@ -327,9 +327,19 @@ def save_state(prefix: str, model, optimizer, scheduler, step: int, best: float,
         cloud_interval = getattr(args, "cloud_save_every", 1000)
         if step % cloud_interval == 0 or step == getattr(args, "steps", 50000):
             try:
+                # Save and push clean model weights in bf16 (226 MB) instead of the 1.2 GB optimizer state
+                latest_weights_path = os.path.join(CKPT_DIR, f"{prefix}_latest.pt")
+                if hasattr(raw_model, "state_dict_compatible"):
+                    latest_state = raw_model.state_dict_compatible(include_jax_keys=True, dtype=torch.bfloat16)
+                else:
+                    latest_state = {
+                        k: v.detach().cpu().to(torch.bfloat16) if (torch.is_tensor(v) and v.is_floating_point()) else v.detach().cpu()
+                        for k, v in raw_model.state_dict().items()
+                    }
+                torch.save(latest_state, latest_weights_path)
                 from src.cloud_sync import push_checkpoint_async
                 push_checkpoint_async(
-                    pt_path,
+                    latest_weights_path,
                     step=step,
                     loss=float(best or 0.0),
                     target_type="latest",
@@ -1283,7 +1293,13 @@ def main():
                 if score < best - args.min_improvement:
                     best, patience = score, 0
                     raw_model = model.module if hasattr(model, "module") else model
-                    m_state = raw_model.state_dict_compatible(include_jax_keys=True) if hasattr(raw_model, "state_dict_compatible") else raw_model.state_dict()
+                    if hasattr(raw_model, "state_dict_compatible"):
+                        m_state = raw_model.state_dict_compatible(include_jax_keys=True, dtype=torch.bfloat16)
+                    else:
+                        m_state = {
+                            k: v.detach().cpu().to(torch.bfloat16) if (torch.is_tensor(v) and v.is_floating_point()) else v.detach().cpu()
+                            for k, v in raw_model.state_dict().items()
+                        }
                     if is_xla:
                         import torch_xla.core.xla_model as xm
                         xm.save(m_state, ckpt_best)
@@ -1379,7 +1395,13 @@ def main():
     elapsed += time.time() - session_start
     raw_model = model.module if hasattr(model, "module") else model
     if rank == 0:
-        m_state = raw_model.state_dict_compatible(include_jax_keys=True) if hasattr(raw_model, "state_dict_compatible") else raw_model.state_dict()
+        if hasattr(raw_model, "state_dict_compatible"):
+            m_state = raw_model.state_dict_compatible(include_jax_keys=True, dtype=torch.bfloat16)
+        else:
+            m_state = {
+                k: v.detach().cpu().to(torch.bfloat16) if (torch.is_tensor(v) and v.is_floating_point()) else v.detach().cpu()
+                for k, v in raw_model.state_dict().items()
+            }
         if is_xla:
             import torch_xla.core.xla_model as xm
             xm.save(m_state, ckpt_latest)
