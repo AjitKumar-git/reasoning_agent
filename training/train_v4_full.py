@@ -561,13 +561,13 @@ def main():
     # curriculum & streaming educational corpora
     parser.add_argument("--curriculum", action="store_true",
                         help="Enable sequential curriculum: Stage 1 trains on OpenHermes+GSM8K, Stage 2 phases in fluff-free streaming educational corpora")
-    parser.add_argument("--curriculum_stage1_steps", type=int, default=10000,
+    parser.add_argument("--curriculum_stage1_steps", type=int, default=15000,
                         help="Step count to complete Stage 1 (instruction foundation) before phasing in educational streams")
-    parser.add_argument("--curriculum_stage1_mix", default="openhermes=0.85,gsm8k=0.15",
-                        help="Source weights during Stage 1 (default: openhermes=0.85,gsm8k=0.15)")
+    parser.add_argument("--curriculum_stage1_mix", default="openhermes=0.75,gsm8k=0.25",
+                        help="Source weights during Stage 1 (default: openhermes=0.75,gsm8k=0.25)")
     parser.add_argument("--curriculum_stage2_mix",
-                        default="openhermes=0.40,gsm8k=0.10,cosmopedia=0.15,fineweb_edu=0.15,finemath=0.10,stack_edu=0.10",
-                        help="Source weights during Stage 2 (blends OpenHermes with fluff-free streaming educational corpora)")
+                        default="cosmopedia=0.25,fineweb_edu=0.25,finemath=0.15,stack_edu=0.15,openhermes=0.15,gsm8k=0.05",
+                        help="Source weights during Stage 2 (blends OpenHermes with fluff-free streaming educational corpora: 80 percent educational, 20 percent conversational)")
     # optimisation
     parser.add_argument("--arch", default="v4", choices=["v4", "v3", "v2"], help="Manifold generation")
     parser.add_argument("--tokenizer", default="llama", choices=["llama", "gpt2"],
@@ -595,7 +595,7 @@ def main():
     parser.add_argument("--clip", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=1337)
     # run control
-    parser.add_argument("--max_steps", type=int, default=50000)
+    parser.add_argument("--max_steps", type=int, default=100000)
     parser.add_argument("--max_minutes", type=float, default=0.0,
                         help="Stop cleanly after this many minutes in this session (0 = no limit)")
     parser.add_argument("--max_hours", type=float, default=0.0,

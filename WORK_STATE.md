@@ -1,15 +1,15 @@
 # Agent Work State & Activity Tracker
 
-> **Status**: 🟡 `IN_PROGRESS` | **Last Updated**: `2026-11-05T12:36:22.951802+05:30` | **Session**: `d59f7c6a-8bf9-4b08-8476-c661733241be`
+> **Status**: 🟡 `IN_PROGRESS` | **Last Updated**: `2026-11-06T01:01:00.232090+05:30` | **Session**: `d59f7c6a-8bf9-4b08-8476-c661733241be`
 
 ## Current / Active Objective
-**Goal**: shorten these to 1 token
+**Goal**: why espec and ME? is it a known issue?
 
 - **Phase**: `executing`
-- **Current Task**: Executed run_command: Inspect git diff
+- **Current Task**: Executed run_command: Check git status
 
 ## Summary of Completed Work
-Phase 1 has been applied and pushed to the repository (`b0d27d3`):
+The appearance of `espec`, `ME`, `Ens`, and `FO` was caused by a **byte-level transfer corruption**:
 
 ## Modified Files
 - [`.agents/WORK_STATE.md`](.agents/WORK_STATE.md)
@@ -65,20 +65,24 @@ Phase 1 has been applied and pushed to the repository (`b0d27d3`):
 - [`colab/train_v4_colab.ipynb`](colab/train_v4_colab.ipynb)
 - [`../../../../.gemini/antigravity/brain/d59f7c6a-8bf9-4b08-8476-c661733241be/cerebro_spheroid_v4_llama3_parity_plan.md`](../../../../.gemini/antigravity/brain/d59f7c6a-8bf9-4b08-8476-c661733241be/cerebro_spheroid_v4_llama3_parity_plan.md)
 - [`../../../../.gemini/antigravity/brain/d59f7c6a-8bf9-4b08-8476-c661733241be/phase1_biological_tags_plan.md`](../../../../.gemini/antigravity/brain/d59f7c6a-8bf9-4b08-8476-c661733241be/phase1_biological_tags_plan.md)
+- [`scripts/inspect_step_33700.py`](scripts/inspect_step_33700.py)
+- [`scripts/sync_download_robust.py`](scripts/sync_download_robust.py)
+- [`scripts/clean_patch_corrupted_chunks.py`](scripts/clean_patch_corrupted_chunks.py)
+- [`colab/cerebro_spheroid_colab.ipynb`](colab/cerebro_spheroid_colab.ipynb)
 
 ## Recent Actions (Last 10)
 | Time | Tool | Details |
 | :--- | :--- | :--- |
-| `12:36:22` | `run_command` | Inspect git diff |
-| `12:36:16` | `run_command` | Check git status |
-| `12:36:11` | `manage_task` | manage_task |
-| `12:36:05` | `manage_task` | manage_task |
-| `12:35:59` | `manage_task` | manage_task |
-| `12:35:50` | `manage_task` | manage_task |
-| `12:35:21` | `edit_file` | edit_file |
-| `12:35:00` | `read_file` | read_file |
-| `12:34:50` | `manage_task` | manage_task |
-| `12:34:50` | `run_command` | Test sequential streaming without buffer shuffle |
+| `01:01:00` | `run_command` | Check git status |
+| `01:00:55` | `run_command` | Check git diff stat |
+| `01:00:51` | `run_command` | Read task-10570 log |
+| `01:00:50` | `run_command` | Verify dry run with curriculum |
+| `01:00:35` | `run_command` | Verify dry run |
+| `01:00:34` | `run_command` | Read task-10566 log |
+| `01:00:17` | `edit_file` | edit_file |
+| `01:00:11` | `run_command` | Dry run train_v4_full.py |
+| `00:59:54` | `run_command` | Check git diff on train_v4_full.py |
+| `00:59:46` | `run_command` | Check git status |
 
 ---
 *This file is automatically maintained by `auto-work-tracker`. Other agents can parse `.agents/work_state.json` or inspect this file directly to resume or review progress.*
