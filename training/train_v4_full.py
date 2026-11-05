@@ -552,10 +552,10 @@ def main():
                         help="Answers longer than this are truncated for storage, not scored in full")
     parser.add_argument("--window", type=int, default=64,
                         help="Scored answer tokens per record. Fixed step cost; raise if VRAM allows")
-    parser.add_argument("--elastic_window", action="store_true",
-                        help="Enable dynamic complementary sliding context window (balances prompt vs response)")
+    parser.add_argument("--elastic-window", "--elastic_window", action=argparse.BooleanOptionalAction, default=True,
+                        help="Enable dynamic complementary sliding context window (balances prompt vs response, default: True)")
     parser.add_argument("--total_window", type=int, default=1024,
-                        help="Total sequence budget (prompt + response) when --elastic_window is active")
+                        help="Total sequence budget (prompt + response) when --elastic_window is active (default: 1024)")
     parser.add_argument("--lm_holdout_every", type=int, default=50,
                         help="Hold out every Nth parquet row group of OpenHermes/LMSYS for eval")
     # curriculum & streaming educational corpora
@@ -850,8 +850,11 @@ def main():
     rank_print(f"device {device} ({world_size} GPU{'s' if world_size > 1 else ''}) | dtype {dtype} | arch {args.arch} | preset {getattr(args, 'preset', 'v4_small')} | seed {args.seed}")
     weight_summary = "  ".join(f"{n}={w:.2f}" for n, w in args.mix)
     rank_print(f"mix    {weight_summary}")
-    rank_print(f"window {args.window} scored tokens/record | prompt cap {args.max_prompt_len} "
-               f"| answer cap {args.max_answer_tokens}")
+    if getattr(args, "elastic_window", False):
+        rank_print(f"window elastic (total_window={args.total_window}) | zero-padding dynamic complementary buckets")
+    else:
+        rank_print(f"window {args.window} scored tokens/record | prompt cap {args.max_prompt_len} "
+                   f"| answer cap {args.max_answer_tokens}")
     rank_print(f"batch  {args.batch_size} x {args.grad_accum} x {world_size} GPUs = {args.batch_size * args.grad_accum * world_size} records/step")
 
     if args.arch == "v4":
@@ -876,7 +879,8 @@ def main():
     param_count = sum(p.numel() for p in model.parameters())
     rank_print(f"model  {type(model).__name__} | {param_count:,} parameters")
     if rank == 0:
-        memory_preflight(device, param_count, args.optimizer, args.window, args.batch_size, dtype)
+        est_window = min(512, args.total_window // 2) if getattr(args, "elastic_window", False) else args.window
+        memory_preflight(device, param_count, args.optimizer, est_window, args.batch_size, dtype)
 
     # Optimizer: decay matrices only. Norms, biases and embeddings take none, which is the
     # usual split and keeps the 380-answer knowledge table from being shrunk toward zero.
@@ -1300,7 +1304,8 @@ def main():
             lr_now = scheduler.get_last_lr()[0]
             vram_str = "tpu v3-8" if is_xla else (f"vram {torch.cuda.max_memory_allocated() / (1024 ** 2):5.0f} MB" if device.type == "cuda" else "cpu")
             sec_per_step = (time.time() - session_base) / max(step - start_step, 1)
-            passes_per_step = args.batch_size * accum_steps * world_size * args.window
+            step_window = targets.shape[1] if (elastic_batcher is not None and 'targets' in locals()) else args.window
+            passes_per_step = args.batch_size * accum_steps * world_size * step_window
             passes_per_sec = passes_per_step / max(sec_per_step, 1e-4)
             total_consumed = sum(mixture.consumed.values()) * world_size
             gpu_str = f" (x{world_size} gpus)" if world_size > 1 else (" (tpu)" if is_xla else "")
