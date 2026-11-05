@@ -558,6 +558,16 @@ def main():
                         help="Total sequence budget (prompt + response) when --elastic_window is active")
     parser.add_argument("--lm_holdout_every", type=int, default=50,
                         help="Hold out every Nth parquet row group of OpenHermes/LMSYS for eval")
+    # curriculum & streaming educational corpora
+    parser.add_argument("--curriculum", action="store_true",
+                        help="Enable sequential curriculum: Stage 1 trains on OpenHermes+GSM8K, Stage 2 phases in fluff-free streaming educational corpora")
+    parser.add_argument("--curriculum_stage1_steps", type=int, default=10000,
+                        help="Step count to complete Stage 1 (instruction foundation) before phasing in educational streams")
+    parser.add_argument("--curriculum_stage1_mix", default="openhermes=0.85,gsm8k=0.15",
+                        help="Source weights during Stage 1 (default: openhermes=0.85,gsm8k=0.15)")
+    parser.add_argument("--curriculum_stage2_mix",
+                        default="openhermes=0.40,gsm8k=0.10,cosmopedia=0.15,fineweb_edu=0.15,finemath=0.10,stack_edu=0.10",
+                        help="Source weights during Stage 2 (blends OpenHermes with fluff-free streaming educational corpora)")
     # optimisation
     parser.add_argument("--arch", default="v4", choices=["v4", "v3", "v2"], help="Manifold generation")
     parser.add_argument("--tokenizer", default="llama", choices=["llama", "gpt2"],
@@ -1112,11 +1122,12 @@ def main():
     rank_print("Freezing the held-out eval set")
     t0 = time.time()
     eval_batches = build_eval_set(args, tokenizer, pad_token_id)
-    eval_tokens = sum(int((t != -100).sum()) for _, _, t in eval_batches)
+    eval_tokens = sum(int((item[2] != -100).sum()) for item in eval_batches)
     rank_print(f"  {len(eval_batches)} batches | {eval_tokens:,} scored tokens | "
                f"{time.time() - t0:.1f}s to build")
     if args.dry_run:
-        for source, prompts, targets in eval_batches:
+        for item in eval_batches:
+            source, prompts, targets = item[0], item[1], item[2]
             rank_print(f"  {source:<10} batch {tuple(prompts.shape)} -> targets {tuple(targets.shape)}")
         rank_print("\n[dry_run] exiting before training")
         return
@@ -1130,7 +1141,16 @@ def main():
     else:
         rank_consumed = consumed
     rank_seed = args.seed + rank * 10007
-    mixture = Mixture(args.mix, args.paths, seed=rank_seed, holdout_every=args.lm_holdout_every,
+    active_mix = args.mix
+    if getattr(args, "curriculum", False):
+        if step < args.curriculum_stage1_steps:
+            active_mix = parse_mix(args.curriculum_stage1_mix)
+            rank_print(f"🎓 [Curriculum Stage 1 Active] Training on {args.curriculum_stage1_mix} until step {args.curriculum_stage1_steps:,}")
+        else:
+            active_mix = parse_mix(args.curriculum_stage2_mix)
+            rank_print(f"🎓 [Curriculum Stage 2 Active] Streaming educational corpora: {args.curriculum_stage2_mix}")
+
+    mixture = Mixture(active_mix, args.paths, seed=rank_seed, holdout_every=args.lm_holdout_every,
                       want_heldout=False, consumed=rank_consumed)
     total_open_consumed = sum(mixture.consumed.values()) * world_size
     rank_print(f"  positioned at {total_open_consumed:,} records "
@@ -1167,6 +1187,13 @@ def main():
     reason = None
     while step < args.max_steps:
         step += 1
+        if getattr(args, "curriculum", False) and step == args.curriculum_stage1_steps + 1:
+            rank_print("-" * 88)
+            rank_print(f"🎓 [Curriculum Transition] Step {step:,}: Completed Stage 1 instruction foundation!")
+            rank_print(f"   Now phasing in fluff-free educational streaming corpora: {args.curriculum_stage2_mix}")
+            rank_print("-" * 88)
+            mixture.update_weights(parse_mix(args.curriculum_stage2_mix), args.paths)
+
         model.train()
         optimizer.zero_grad(set_to_none=True)
         step_loss_tensor = torch.zeros(1, device=device)

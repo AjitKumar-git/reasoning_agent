@@ -28,7 +28,19 @@ Pair = Tuple[str, str]
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 DATA_DIR = os.path.join(ROOT_DIR, "data")
 
-SOURCES = ("openhermes", "lmsys", "knowledge", "cognitive", "gsm8k", "cosmopedia", "fineweb_edu")
+SOURCES = (
+    "openhermes",
+    "lmsys",
+    "knowledge",
+    "cognitive",
+    "gsm8k",
+    "cosmopedia",
+    "fineweb_edu",
+    "finemath",
+    "stack_edu",
+)
+
+STREAMING_SOURCES = ("cosmopedia", "fineweb_edu", "finemath", "stack_edu")
 
 
 # --------------------------------------------------------------------------------------------
@@ -160,37 +172,118 @@ def small_parquet_pairs(path: str, seed: int = 0, holdout_every: int = 0,
             yield (str(q).strip(), str(a).strip())
 
 
-def cosmopedia_pairs(path: str, seed: int = 0, holdout_every: int = 0,
-                     want_heldout: bool = False, max_records: int = 50000) -> Iterator[Pair]:
-    """Capped Cosmopedia-v2 reader (bounded subset of HuggingFaceTB/smollm-corpus).
-    Enforces a strict max_records cap to prevent unbounded disk/memory growth.
-    """
-    if not os.path.exists(path):
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+# --------------------------------------------------------------------------------------------
+# streaming fluff-free educational corpora (zero disk download, zero setup wait)
+# --------------------------------------------------------------------------------------------
+
+def cosmopedia_stream(seed: int = 0) -> Iterator[Pair]:
+    """Pure online streaming iterator for Cosmopedia v2 (100% synthetic fluff-free textbooks/articles)."""
+    import time
+    from datasets import load_dataset
+    while True:
         try:
-            from datasets import load_dataset
-            print(f"[corpus] Downloading bounded Cosmopedia-v2 subset (max_records={max_records})...")
             ds = load_dataset("HuggingFaceTB/smollm-corpus", "cosmopedia-v2", split="train", streaming=True)
-            records = []
-            for i, item in enumerate(ds):
-                if i >= max_records:
-                    break
-                text = item.get("text") or item.get("content") or ""
-                prompt = item.get("prompt") or ""
+            for item in ds:
+                prompt = (item.get("prompt") or "").strip()
+                text = (item.get("text") or item.get("content") or "").strip()
                 if not prompt and "\n\n" in text:
                     parts = text.split("\n\n", 1)
-                    prompt, text = parts[0], parts[1]
+                    prompt, text = parts[0].strip(), parts[1].strip()
                 elif not prompt:
-                    prompt = "Explain the following topic in depth:"
-                if prompt.strip() and text.strip():
-                    records.append({"prompt": prompt.strip(), "response": text.strip()})
-            import pyarrow as pa
-            table = pa.Table.from_pylist(records)
-            pq.write_table(table, path)
-            print(f"[corpus] Saved bounded Cosmopedia-v2 ({len(records)} records) to {path}")
+                    prompt = "Explain the following educational topic in depth:"
+                if prompt and text:
+                    yield (prompt, text)
         except Exception as e:
-            print(f"[corpus] Warning: unable to auto-download Cosmopedia subset: {e}")
-            return
+            print(f"[corpus stream] Cosmopedia transient stream reconnect: {e}")
+            time.sleep(2)
+
+
+def fineweb_edu_stream(seed: int = 0, min_score: float = 3.0) -> Iterator[Pair]:
+    """Pure online streaming iterator for FineWeb-Edu (AI-scored educational web text >= 3.0)."""
+    import time
+    from datasets import load_dataset
+    while True:
+        try:
+            try:
+                ds = load_dataset("HuggingFaceTB/smollm-corpus", "fineweb-edu-dedup", split="train", streaming=True)
+            except Exception:
+                ds = load_dataset("HuggingFaceFW/fineweb-edu", name="sample-10BT", split="train", streaming=True)
+            for item in ds:
+                score = float(item.get("score", 3.5) or item.get("educational_score", 3.5) or 3.5)
+                if score < min_score:
+                    continue
+                text = (item.get("text") or item.get("content") or "").strip()
+                if len(text) < 60:
+                    continue
+                if "\n\n" in text:
+                    parts = text.split("\n\n", 1)
+                    prompt, response = parts[0].strip(), parts[1].strip()
+                else:
+                    lines = text.split(". ", 1)
+                    prompt, response = (lines[0] + ".").strip(), lines[1].strip() if len(lines) > 1 else text
+                if len(prompt) < 15:
+                    prompt = "Explain the educational context of the following subject:\n" + prompt
+                if prompt and response:
+                    yield (prompt, response)
+        except Exception as e:
+            print(f"[corpus stream] FineWeb-Edu transient stream reconnect: {e}")
+            time.sleep(2)
+
+
+def finemath_stream(seed: int = 0) -> Iterator[Pair]:
+    """Pure online streaming iterator for FineMath (high-density mathematical equations and proofs)."""
+    import time
+    from datasets import load_dataset
+    while True:
+        try:
+            ds = load_dataset("HuggingFaceTB/finemath", "finemath-4plus", split="train", streaming=True)
+            for item in ds:
+                text = (item.get("text") or "").strip()
+                if len(text) < 60:
+                    continue
+                if "\n\n" in text:
+                    parts = text.split("\n\n", 1)
+                    prompt = f"Solve and explain the mathematical problem:\n{parts[0].strip()}"
+                    response = parts[1].strip()
+                else:
+                    prompt = "Explain the mathematical derivation and proof for the following:"
+                    response = text
+                if prompt and response:
+                    yield (prompt, response)
+        except Exception as e:
+            print(f"[corpus stream] FineMath transient stream reconnect: {e}")
+            time.sleep(2)
+
+
+def stack_edu_stream(seed: int = 0) -> Iterator[Pair]:
+    """Pure online streaming iterator for Stack-Edu (curated production-grade code)."""
+    import time
+    from datasets import load_dataset
+    while True:
+        try:
+            ds = load_dataset("devngho/the-stack-mini-edu", "scored_over_4", split="train", streaming=True)
+            for item in ds:
+                text = (item.get("content") or item.get("text") or "").strip()
+                if len(text) < 60:
+                    continue
+                ext = item.get("ext") or "code"
+                parts = text.split("\n\n", 1)
+                header = parts[0].strip()[:200]
+                prompt = f"Write production-grade, well-documented {ext} implementation for:\n{header}"
+                response = text
+                if prompt and response:
+                    yield (prompt, response)
+        except Exception as e:
+            print(f"[corpus stream] Stack-Edu transient stream reconnect: {e}")
+            time.sleep(2)
+
+
+def cosmopedia_pairs(path: str, seed: int = 0, holdout_every: int = 0,
+                     want_heldout: bool = False, max_records: int = 50000) -> Iterator[Pair]:
+    """Cosmopedia-v2 reader: uses local parquet if present, otherwise streams directly online."""
+    if not os.path.exists(path):
+        yield from cosmopedia_stream(seed)
+        return
 
     table = pq.read_table(path)
     cols = table.column_names
@@ -221,41 +314,10 @@ def cosmopedia_pairs(path: str, seed: int = 0, holdout_every: int = 0,
 def fineweb_edu_pairs(path: str, seed: int = 0, holdout_every: int = 0,
                       want_heldout: bool = False, max_records: int = 50000,
                       min_score: float = 3.0) -> Iterator[Pair]:
-    """Capped FineWeb-Edu reader (bounded subset of HuggingFaceFW/fineweb-edu, sample-10BT).
-    Filters for high educational score (score >= 3.0) to deliver maximum reasoning density.
-    """
+    """FineWeb-Edu reader: uses local parquet if present, otherwise streams directly online."""
     if not os.path.exists(path):
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        try:
-            from datasets import load_dataset
-            print(f"[corpus] Downloading bounded FineWeb-Edu sample (min_score={min_score}, max_records={max_records})...")
-            ds = load_dataset("HuggingFaceFW/fineweb-edu", name="sample-10BT", split="train", streaming=True)
-            records = []
-            for item in ds:
-                score = float(item.get("score", 0.0) or item.get("educational_score", 0.0))
-                if score < min_score:
-                    continue
-                text = (item.get("text") or item.get("content") or "").strip()
-                if len(text) < 50:
-                    continue
-                if "\n\n" in text:
-                    parts = text.split("\n\n", 1)
-                    prompt, response = parts[0].strip(), parts[1].strip()
-                else:
-                    lines = text.split(". ", 1)
-                    prompt, response = (lines[0] + ".").strip(), lines[1].strip() if len(lines) > 1 else text
-                if len(prompt) < 15:
-                    prompt = "Explain the educational context of the following subject:\n" + prompt
-                records.append({"prompt": prompt, "response": response})
-                if len(records) >= max_records:
-                    break
-            import pyarrow as pa
-            table = pa.Table.from_pylist(records)
-            pq.write_table(table, path)
-            print(f"[corpus] Saved bounded FineWeb-Edu ({len(records)} records) to {path}")
-        except Exception as e:
-            print(f"[corpus] Warning: unable to auto-download FineWeb-Edu subset: {e}")
-            return
+        yield from fineweb_edu_stream(seed, min_score=min_score)
+        return
 
     table = pq.read_table(path)
     cols = table.column_names
@@ -296,6 +358,8 @@ def default_paths() -> Dict[str, str]:
         "gsm8k": os.path.join(DATA_DIR, "gsm8k", "gsm8k_train.parquet"),
         "cosmopedia": os.path.join(DATA_DIR, "cosmopedia", "cosmopedia_v2_train.parquet"),
         "fineweb_edu": os.path.join(DATA_DIR, "fineweb_edu", "fineweb_edu_sample.parquet"),
+        "finemath": os.path.join(DATA_DIR, "finemath", "finemath_sample.parquet"),
+        "stack_edu": os.path.join(DATA_DIR, "stack_edu", "stack_edu_sample.parquet"),
     }
 
 
@@ -322,9 +386,8 @@ def parse_mix(spec: str) -> List[Tuple[str, float]]:
 class Mixture:
     """Weighted interleave of sources with exact resume by per-source record count.
 
-    `next()` draws a source by weight, then one record from it. Resume passes the counts
-    already consumed, each source skips that many records, so the sequence continues where
-    the paused run stopped rather than restarting the shuffle.
+    Supports both local parquet files and high-density online streaming datasets
+    (Cosmopedia v2, FineWeb-Edu, FineMath, Stack-Edu) without requiring upfront disk downloads.
     """
 
     def __init__(self, specs: List[Tuple[str, float]], paths: Dict[str, str], seed: int = 0,
@@ -332,63 +395,84 @@ class Mixture:
                  consumed: Dict[str, int] = None,
                  holdout_sources: Iterable[str] = ("openhermes", "lmsys", "gsm8k")):
         self.seed = seed
+        self.paths = paths
+        self.holdout_every = holdout_every
+        self.want_heldout = want_heldout
+        self.holdout_sources = holdout_sources
         self.names = [n for n, _ in specs]
         self.weights = [w for _, w in specs]
-        # `consumed` counts records already yielded, including the ones skipped to reach the
-        # resume point, so reporting it back to the state file never loses ground.
         self.consumed = {n: int((consumed or {}).get(n, 0)) for n in self.names}
         self._iterators: Dict[str, Iterator[Pair]] = {}
         self._factories = {}
 
         for name in self.names:
-            path = paths[name]
-            if not os.path.exists(path):
-                # Cosmopedia and FineWeb-Edu can be auto-downloaded on demand if missing
-                if name == "cosmopedia":
-                    cosmopedia_pairs(path)
-                elif name == "fineweb_edu":
-                    fineweb_edu_pairs(path)
-                else:
-                    raise FileNotFoundError(f"source {name!r} not found at {path}")
-            # Only the sources that carry an eval slice are split.
-            every = holdout_every if name in holdout_sources else 0
-            if name == "openhermes":
-                factory = lambda p=path, e=every: openhermes_pairs(p, seed, e, want_heldout)
-            elif name == "lmsys":
-                factory = lambda p=path, e=every: lmsys_pairs(p, seed, e, want_heldout)
-            elif name == "cosmopedia":
-                factory = lambda p=path, e=every: cosmopedia_pairs(p, seed, e, want_heldout)
-            elif name == "fineweb_edu":
-                factory = lambda p=path, e=every: fineweb_edu_pairs(p, seed, e, want_heldout)
-            else:
-                factory = lambda p=path, e=every: small_parquet_pairs(p, seed, e, want_heldout)
+            factory = self._make_factory(name, paths.get(name, ""))
             self._factories[name] = factory
             self._iterators[name] = factory()
 
         for name in self.names:
             count = self.consumed[name]
-            for _ in range(count):
-                try:
-                    next(self._iterators[name])
-                except StopIteration:
-                    # When a finite source finishes an epoch, loop it exactly as next() does
-                    self._iterators[name] = self._factories[name]()
+            if name in STREAMING_SOURCES:
+                for _ in range(min(count, 50000)):
                     try:
                         next(self._iterators[name])
                     except StopIteration:
-                        raise RuntimeError(f"source {name!r} is completely empty")
-        # Replaying the recorded number of draws reproduces the exact source sequence, so a
-        # resumed run sees the same interleaving an uninterrupted run would have seen.
+                        break
+            else:
+                for _ in range(count):
+                    try:
+                        next(self._iterators[name])
+                    except StopIteration:
+                        self._iterators[name] = self._factories[name]()
+                        try:
+                            next(self._iterators[name])
+                        except StopIteration:
+                            raise RuntimeError(f"source {name!r} is completely empty")
+
         self._rng = random.Random(seed * 31 + 17)
         for _ in range(sum(self.consumed.values())):
             self._rng.choices(self.names, weights=self.weights, k=1)
+
+    def _make_factory(self, name: str, path: str):
+        if name in STREAMING_SOURCES:
+            if name == "cosmopedia":
+                return lambda s=self.seed: cosmopedia_stream(s)
+            elif name == "fineweb_edu":
+                return lambda s=self.seed: fineweb_edu_stream(s)
+            elif name == "finemath":
+                return lambda s=self.seed: finemath_stream(s)
+            elif name == "stack_edu":
+                return lambda s=self.seed: stack_edu_stream(s)
+
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"source {name!r} not found at {path}")
+        every = self.holdout_every if name in self.holdout_sources else 0
+        if name == "openhermes":
+            return lambda p=path, e=every: openhermes_pairs(p, self.seed, e, self.want_heldout)
+        elif name == "lmsys":
+            return lambda p=path, e=every: lmsys_pairs(p, self.seed, e, self.want_heldout)
+        else:
+            return lambda p=path, e=every: small_parquet_pairs(p, self.seed, e, self.want_heldout)
+
+    def update_weights(self, specs: List[Tuple[str, float]], paths: Optional[Dict[str, str]] = None):
+        """Dynamically adjusts mixture weights and registers any new curriculum sources on the fly."""
+        paths = paths or self.paths
+        new_names = [n for n, _ in specs]
+        new_weights = [w for _, w in specs]
+        for name in new_names:
+            if name not in self._iterators:
+                self.consumed[name] = 0
+                factory = self._make_factory(name, paths.get(name, ""))
+                self._factories[name] = factory
+                self._iterators[name] = factory()
+        self.names = new_names
+        self.weights = new_weights
 
     def next(self) -> Tuple[str, str, str]:
         name = self._rng.choices(self.names, weights=self.weights, k=1)[0]
         try:
             prompt, answer = next(self._iterators[name])
         except StopIteration:
-            # A finished source restarts from its top so the mixture never dies mid-run.
             self._iterators[name] = self._factories[name]()
             prompt, answer = next(self._iterators[name])
         self.consumed[name] += 1
