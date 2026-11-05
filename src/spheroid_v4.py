@@ -737,6 +737,39 @@ class CerebroSpheroidV4(nn.Module):
 
         return torch.cat(emitted, dim=-1) if emitted else prompt_tokens.new_zeros((B, 0))
 
+    @torch.no_grad()
+    def generate_text(
+        self,
+        prompt: str,
+        tokenizer,
+        thinking_cycles: int = 3,
+        max_new_tokens: int = 128,
+        temperature: float = 0.7,
+        repetition_penalty: float = 1.25,
+        device: Optional[torch.device] = None,
+        strip_bio_prefix: bool = True,
+        **kwargs,
+    ) -> str:
+        """Helper to generate text from a prompt string with 1-token biological framing."""
+        from src.corpus import format_stimulus_prompt, clean_motor_response
+        dev = device if device is not None else next(self.parameters()).device
+        formatted = format_stimulus_prompt(prompt)
+        input_ids = tokenizer.encode(formatted, add_special_tokens=False)
+        tok_tensor = torch.tensor([input_ids], dtype=torch.long, device=dev)
+        out_ids = self.generate(
+            tok_tensor,
+            thinking_cycles=thinking_cycles,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            repetition_penalty=repetition_penalty,
+            eos_token_id=tokenizer.eos_token_id,
+            pad_token_id=tokenizer.pad_token_id,
+            **kwargs,
+        )
+        out_list = out_ids[0].tolist()
+        raw_text = tokenizer.decode(out_list, skip_special_tokens=True)
+        return clean_motor_response(raw_text) if strip_bio_prefix else raw_text
+
     def state_dict_compatible(self, include_jax_keys: bool = True, dtype: Optional[torch.dtype] = None) -> Dict[str, torch.Tensor]:
         """Returns dual-keyed state dictionary containing both PyTorch and JAX key conventions with shared storage."""
         sd = self.state_dict()

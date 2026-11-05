@@ -433,12 +433,47 @@ def build_tokenizer(name: str = "llama"):
         return tok
 
 
+# Biology-derived 1-token delimiters (Llama 32,000 vocabulary)
+BIO_STIM_PREFIX = "stim "  # Token ID 20436: Sensory Stimulus Ingestion
+BIO_ACT_PREFIX = "act "    # Token ID 1044: Efferent Motor Articulation
+BIO_STIM_TOKEN_ID = 20436
+BIO_ACT_TOKEN_ID = 1044
+
+
+def format_stimulus_prompt(prompt: str) -> str:
+    """Prepends the 1-token biological stimulus delimiter 'stim '."""
+    p = prompt.strip()
+    if not p.startswith("stim "):
+        return f"{BIO_STIM_PREFIX}{p}"
+    return p
+
+
+def format_motor_response(answer: str) -> str:
+    """Prepends the 1-token biological motor articulation delimiter 'act '."""
+    a = answer.strip()
+    if not a.startswith("act "):
+        return f"{BIO_ACT_PREFIX}{a}"
+    return a
+
+
+def clean_motor_response(text: str) -> str:
+    """Strips leading biological motor articulation delimiter if present."""
+    t = text.strip()
+    if t.startswith("act "):
+        return t[4:].strip()
+    if t.startswith("act:"):
+        return t[4:].strip()
+    return t
+
+
 def tokenize_pair(tokenizer, prompt: str, answer: str, max_prompt_len: int,
                   max_answer_tokens: int) -> Tuple[List[int], List[int]]:
-    """Tokenises one record, appending EOS only when the answer is seen to its end."""
-    prompt_ids = tokenizer.encode(prompt, max_length=max_prompt_len, truncation=True)
-    answer_text = f" {answer.strip()}"
-    answer_ids = tokenizer.encode(answer_text, max_length=max_answer_tokens, truncation=True)
+    """Tokenises one record using 1-token biological delimiters ('stim ' / 'act '), appending EOS."""
+    formatted_prompt = format_stimulus_prompt(prompt)
+    prompt_ids = tokenizer.encode(formatted_prompt, max_length=max_prompt_len, truncation=True)
+    
+    formatted_answer = format_motor_response(answer)
+    answer_ids = tokenizer.encode(formatted_answer, max_length=max_answer_tokens, truncation=True)
     if len(answer_ids) < max_answer_tokens:
         answer_ids = answer_ids + [tokenizer.eos_token_id]
     return prompt_ids, answer_ids

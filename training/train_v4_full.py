@@ -1504,7 +1504,10 @@ def probe(model, tokenizer, eval_batches, device, args) -> None:
     raw_model = model.module if hasattr(model, "module") else model
     raw_model.eval()
     shown = 0
-    for source, prompts, _ in eval_batches:
+    from src.corpus import clean_motor_response
+    for batch_item in eval_batches:
+        source = batch_item[0]
+        prompts = batch_item[1]
         for row in range(min(2, prompts.shape[0])):
             if shown >= 3:
                 return
@@ -1515,8 +1518,9 @@ def probe(model, tokenizer, eval_batches, device, args) -> None:
                 max_answer_tokens=args.probe_tokens, temperature=0.0,
                 eos_token_id=tokenizer.eos_token_id, pad_token_id=tokenizer.pad_token_id,
             )
-            answer = tokenizer.decode(out[0].tolist(), skip_special_tokens=True)
-            print(f"    [{source}] {text!r}\n             -> {answer[:110]!r}")
+            raw_answer = tokenizer.decode(out[0].tolist(), skip_special_tokens=True)
+            answer = clean_motor_response(raw_answer)
+            print(f"    [{source}] {text!r}\n             -> {raw_answer[:110]!r}")
             shown += 1
 
 
