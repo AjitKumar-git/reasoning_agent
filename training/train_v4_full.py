@@ -204,7 +204,7 @@ def build_eval_set(args, tokenizer, pad_token_id: int) -> List[Tuple[str, torch.
                                 random.Random(args.seed), args.max_prompt_len,
                                 args.eval_window, pad_token_id)
             if built:
-                batches.append(("knowledge", built[0], built[1]))
+                batches.append(("knowledge", built[0], built[1], built[2]))
         print(f"  eval knowledge   {len(records):,} records from the held-out entity split")
 
     paths = args.paths
@@ -226,7 +226,7 @@ def build_eval_set(args, tokenizer, pad_token_id: int) -> List[Tuple[str, torch.
                                 random.Random(args.seed), args.max_prompt_len,
                                 args.eval_window, pad_token_id)
             if built:
-                batches.append((name, built[0], built[1]))
+                batches.append((name, built[0], built[1], built[2]))
         print(f"  eval {name:<9} {len(records):,} records from held-out row groups "
               f"(every {args.lm_holdout_every}th)")
 
@@ -247,16 +247,42 @@ def autocast_ctx(device, dtype):
 
 
 @torch.no_grad()
-def evaluate(model, batches, device, dtype, thinking_cycles: int) -> Tuple[float, Dict[str, float]]:
-    """Token-weighted held-out CE overall and per source, under the trained objective."""
+def evaluate(
+    model,
+    batches,
+    device,
+    dtype,
+    thinking_cycles: int,
+    pad_token_id: Optional[int] = 0,
+    deliberation_mode: str = "teacher_forcing",
+    thalamic_anchor_weight: float = 0.1,
+    repetition_penalty: float = 1.0,
+) -> Tuple[float, Dict[str, float]]:
+    """Token-weighted held-out CE overall and per source, under aligned teacher-forced evaluation."""
     model.eval()
     totals: Dict[str, List[float]] = {}
-    for source, prompts, targets in batches:
+    for batch_item in batches:
+        if len(batch_item) == 4:
+            source, prompts, targets, feedback = batch_item
+        else:
+            source, prompts, targets = batch_item
+            feedback = None
         prompts = prompts.to(device)
         targets = targets.to(device)
+        feedback = feedback.to(device) if feedback is not None else None
         with autocast_ctx(device, dtype):
-            logits = training_rollout(model, prompts, targets.shape[1],
-                                      thinking_cycles=thinking_cycles, targets=targets)
+            logits = training_rollout(
+                model,
+                prompts,
+                targets.shape[1],
+                thinking_cycles=thinking_cycles,
+                pad_token_id=pad_token_id,
+                targets=targets,
+                feedback_tokens=feedback,
+                deliberation_mode=deliberation_mode,
+                thalamic_anchor_weight=thalamic_anchor_weight,
+                repetition_penalty=repetition_penalty,
+            )
             per_batch = nn.functional.cross_entropy(
                 logits.reshape(-1, logits.shape[-1]), targets.reshape(-1), ignore_index=-100
             )
@@ -1259,7 +1285,17 @@ def main():
         # --- evaluation -------------------------------------------------------------------
         if step % args.eval_interval == 0:
             t_eval = time.time()
-            total_ce, per_source = evaluate(model, eval_batches, device, dtype, args.thinking_cycles)
+            total_ce, per_source = evaluate(
+                model,
+                eval_batches,
+                device,
+                dtype,
+                args.thinking_cycles,
+                pad_token_id=pad_token_id,
+                deliberation_mode="teacher_forcing",
+                thalamic_anchor_weight=getattr(args, "thalamic_anchor_weight", 0.1),
+                repetition_penalty=1.0,
+            )
             eval_seconds = time.time() - t_eval
             breakdown = "  ".join(f"{k} {v:.4f}" for k, v in sorted(per_source.items()))
 
@@ -1268,7 +1304,10 @@ def main():
             if args.arch == "v4":
                 from src.spheroid_v4 import compute_manifold_diagnostics
                 raw_m = model.module if hasattr(model, "module") else model
-                diag_state = raw_m.init_living_state(min(4, args.eval_batch_size), device)
+                sample_p = eval_batches[0][1][:min(4, args.eval_batch_size)].to(device)
+                with torch.no_grad():
+                    diag_state = raw_m.ingest_stimulus(sample_p, pad_token_id=pad_token_id)
+                    diag_state = raw_m.deliberate(diag_state, thinking_cycles=args.thinking_cycles)
                 diagnostics = compute_manifold_diagnostics(raw_m, diag_state)
                 diag_str = f" | eff_rank {diagnostics['mean_effective_rank']:.2f} | rms {diagnostics['mean_shell_rms']:.2f} | write_sat {diagnostics['write_saturation']:.1%}"
 
