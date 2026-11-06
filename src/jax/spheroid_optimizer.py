@@ -150,7 +150,7 @@ def build_spheroid_train_engine(
         target_len = r_batch.shape[1]
 
         def _loss_fn(param_dict):
-            logits = training_rollout(
+            return training_rollout(
                 param_dict,
                 q_batch,
                 target_len,
@@ -163,14 +163,8 @@ def build_spheroid_train_engine(
                 pad_id=pad_id,
                 persona_id=persona_id,
                 repetition_penalty=repetition_penalty,
+                targets=r_batch,
             )
-            log_probs = jax.nn.log_softmax(logits, axis=-1)
-            safe_targets = jnp.maximum(r_batch, 0)
-            target_log_probs = jnp.take_along_axis(log_probs, safe_targets[..., None], axis=-1).squeeze(-1)
-            token_loss = -target_log_probs
-            # Valid tokens: any token >= 0 (target_pad_id is -100). Do not mask out EOS.
-            mask = (r_batch >= 0).astype(jnp.float32)
-            return jnp.sum(token_loss * mask) / jnp.maximum(jnp.sum(mask), 1.0)
 
         loss_val, grads = jax.value_and_grad(_loss_fn, allow_int=True)(p)
         return loss_val, grads

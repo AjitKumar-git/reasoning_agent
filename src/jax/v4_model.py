@@ -288,6 +288,7 @@ def training_rollout(
     pad_id: int = 0,
     persona_id: Optional[Union[int, jnp.ndarray]] = None,
     repetition_penalty: float = 1.25,
+    targets: Optional[jnp.ndarray] = None,
 ) -> jnp.ndarray:
     """
     Production-grade differentiable rollout engine with:
@@ -397,7 +398,20 @@ def training_rollout(
                 (1.0 - thalamic_anchor_weight) * nxt_s[:, :thalamic_end, :] + thalamic_anchor_weight * thalamic_anchor
             )
 
+        if targets is not None:
+            cur_target = targets[:, step_idx]
+            log_probs = jax.nn.log_softmax(logits, axis=-1)
+            safe_targets = jnp.maximum(cur_target, 0)
+            target_log_probs = jnp.take_along_axis(log_probs, safe_targets[:, None], axis=-1).squeeze(-1)
+            mask_t = (cur_target >= 0).astype(jnp.float32)
+            step_loss = -target_log_probs * mask_t
+            return (nxt_s, nxt_t, nxt_p, nxt_thought), (step_loss, mask_t)
+
         return (nxt_s, nxt_t, nxt_p, nxt_thought), logits
+
+    if targets is not None:
+        _, (all_loss, all_mask) = lax.scan(_emit, (state, init_refractory, init_plan, init_thought), jnp.arange(target_len))
+        return jnp.sum(all_loss) / jnp.maximum(jnp.sum(all_mask), 1.0)
 
     _, all_logits = lax.scan(_emit, (state, init_refractory, init_plan, init_thought), jnp.arange(target_len))
     return jnp.swapaxes(all_logits, 0, 1)

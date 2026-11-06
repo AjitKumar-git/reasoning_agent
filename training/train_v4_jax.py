@@ -275,12 +275,17 @@ def main(args=None):
     # 4b. Multi-Device SPMD Mesh Sharding (8 TPU Cores or Multi-GPU)
     num_devices = len(devices)
     batch_sharding = None
+    replicate_sharding = None
     if num_devices > 1:
         try:
             from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
             mesh = Mesh(np.array(devices), axis_names=('data',))
             batch_sharding = NamedSharding(mesh, P('data', None))
+            replicate_sharding = NamedSharding(mesh, P())
             print(f"⚡ JAX SPMD Multi-Device Mesh Active: Sharding batch across {num_devices} devices in parallel!")
+            params = jax.device_put(params, replicate_sharding)
+            buffers = jax.device_put(buffers, replicate_sharding)
+            opt_state = jax.device_put(opt_state, replicate_sharding)
         except Exception as mesh_err:
             print(f"⚠️ Multi-device mesh initialization notice: {mesh_err}")
 
@@ -296,21 +301,28 @@ def main(args=None):
         oh_raw = iter(load_dataset("teknium/OpenHermes-2.5", split="train", streaming=True))
 
         def _dense_edu_stream():
+            nonlocal cosmo_raw, fw_raw, oh_raw
             turn = 0
             while True:
                 mod5 = turn % 5
-                if mod5 == 0 or mod5 == 2:
-                    try:
-                        row = next(cosmo_raw)
+                try:
+                    if mod5 == 0 or mod5 == 2:
+                        try:
+                            row = next(cosmo_raw)
+                        except StopIteration:
+                            cosmo_raw = iter(load_dataset("HuggingFaceTB/cosmopedia-v2", "cosmopedia-v2", split="train", streaming=True))
+                            row = next(cosmo_raw)
                         p = (row.get("prompt") or "").strip()
                         r = (row.get("text") or "").strip()
                         if len(p) >= 10 and len(r) >= 50:
                             yield {"conversations": [{"from": "human", "value": p}, {"from": "gpt", "value": r}]}
-                    except StopIteration:
-                        break
-                elif mod5 == 1 or mod5 == 4:
-                    try:
-                        for row in fw_raw:
+                    elif mod5 == 1 or mod5 == 4:
+                        for _ in range(50):
+                            try:
+                                row = next(fw_raw)
+                            except StopIteration:
+                                fw_raw = iter(load_dataset("HuggingFaceFW/fineweb-edu", name="sample-10BT", split="train", streaming=True))
+                                row = next(fw_raw)
                             score = float(row.get("score", 0.0) or row.get("educational_score", 0.0))
                             if score >= 4.0:
                                 text = (row.get("text") or "").strip()
@@ -325,13 +337,14 @@ def main(args=None):
                                         p = "Explain the scientific/educational concept behind this:\n" + p
                                     yield {"conversations": [{"from": "human", "value": p.strip()}, {"from": "gpt", "value": r.strip()}]}
                                     break
-                    except StopIteration:
-                        break
-                else:  # mod5 == 3: OpenHermes reasoning
-                    try:
-                        yield next(oh_raw)
-                    except StopIteration:
-                        break
+                    else:  # mod5 == 3: OpenHermes reasoning
+                        try:
+                            yield next(oh_raw)
+                        except StopIteration:
+                            oh_raw = iter(load_dataset("teknium/OpenHermes-2.5", split="train", streaming=True))
+                            yield next(oh_raw)
+                except Exception as stream_err:
+                    time.sleep(1.0)
                 turn += 1
 
         data_iter = _dense_edu_stream()
@@ -441,7 +454,9 @@ def main(args=None):
 
     @jax.jit
     def eval_step_loss(p, q_b, r_b, f_b):
-        logits = training_rollout_v4(
+        mask = (r_b >= 0).astype(jnp.float32)
+        total_tokens = jnp.sum(mask)
+        mean_loss = training_rollout_v4(
             p,
             q_b,
             r_b.shape[1],
@@ -454,12 +469,9 @@ def main(args=None):
             pad_id=pad_id,
             persona_id=0,
             repetition_penalty=1.0,
+            targets=r_b,
         )
-        log_probs = jax.nn.log_softmax(logits, axis=-1)
-        safe_targets = jnp.maximum(r_b, 0)
-        target_log_probs = jnp.take_along_axis(log_probs, safe_targets[..., None], axis=-1).squeeze(-1)
-        mask = (r_b >= 0).astype(jnp.float32)
-        return jnp.sum(-target_log_probs * mask), jnp.sum(mask)
+        return mean_loss * total_tokens, total_tokens
 
     # 7. Training Loop with Scheduled Sampling and SpheroidOptimizer Updates
     init_loss = float(meta.get("eval_loss", meta.get("loss", meta.get("best", float("inf"))))) if meta else float("inf")
