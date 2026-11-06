@@ -79,6 +79,62 @@ if ($action === 'status') {
 }
 
 // --------------------------------------------------------------------------------------------
+// Action: NOTIFY / TRAINING_START
+// --------------------------------------------------------------------------------------------
+if ($action === 'notify' || $action === 'start' || $action === 'training_start') {
+    header('Content-Type: application/json');
+    $source = isset($_REQUEST['source']) ? preg_replace('/[^a-zA-Z0-9_\-]/', '', $_REQUEST['source']) : 'kaggle_tpu';
+    $message = isset($_REQUEST['message']) ? trim($_REQUEST['message']) : "🚀 CerebroSpheroid training active on {$source}";
+    $step = isset($_REQUEST['step']) ? intval($_REQUEST['step']) : 0;
+    $hours = isset($_REQUEST['hours']) ? floatval($_REQUEST['hours']) : 8.5;
+
+    $manifest_file = $storage_dir . '/manifest.json';
+    $manifest = file_exists($manifest_file) ? json_decode(file_get_contents($manifest_file), true) : [];
+    if (!is_array($manifest)) {
+        $manifest = [];
+    }
+
+    $manifest['active_session'] = [
+        'source' => $source,
+        'status' => 'training',
+        'message' => $message,
+        'step' => $step,
+        'max_hours' => $hours,
+        'started_at' => date('c'),
+        'last_ping' => date('c'),
+    ];
+    file_put_contents($manifest_file, json_encode($manifest, JSON_PRETTY_PRINT));
+
+    // Send email alert to user so they know training has started
+    $to = 'meajitsheoran@gmail.com';
+    $subject = "🚀 [BioFlo AI] CerebroSpheroid Training Started on {$source}";
+    $body = "Hi Ajit,\n\n"
+          . "CerebroSpheroid V4 training has just started on {$source}.\n\n"
+          . "Details:\n"
+          . "• Node: {$source}\n"
+          . "• Starting Step: " . number_format($step) . "\n"
+          . "• Planned Window: {$hours} hours\n"
+          . "• Time: " . date('Y-m-d H:i:s T') . "\n"
+          . "• Message: {$message}\n\n"
+          . "Please avoid starting concurrent training runs in Colab until this session finishes.\n\n"
+          . "BioFlo AI Training Cluster";
+
+    $headers = "From: BioFlo AI <notifications@bioflo.in>\r\n"
+             . "Reply-To: notifications@bioflo.in\r\n"
+             . "X-Mailer: PHP/" . phpversion();
+
+    @mail($to, $subject, $body, $headers);
+
+    echo json_encode([
+        'success' => true,
+        'notified' => true,
+        'source' => $source,
+        'active_session' => $manifest['active_session']
+    ]);
+    exit;
+}
+
+// --------------------------------------------------------------------------------------------
 // Action: DOWNLOAD (Supports HTTP Range Requests & Streaming Proxy Bypass)
 // --------------------------------------------------------------------------------------------
 if ($action === 'download') {

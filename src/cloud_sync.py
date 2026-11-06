@@ -370,6 +370,48 @@ def push_checkpoint_async(
     return thread
 
 
+def notify_training_start(
+    source: str = "kaggle_tpu",
+    step: int = 0,
+    hours: float = 8.5,
+    message: str = "",
+    url: Optional[str] = None,
+    token: Optional[str] = None,
+) -> bool:
+    """
+    Sends an HTTP notification to bioflo.in indicating that a training session
+    has commenced, which in turn records active_session and sends an alert.
+    """
+    sync_url = url or DEFAULT_URL
+    sync_token = token or DEFAULT_TOKEN
+    import urllib.parse
+    payload = urllib.parse.urlencode({
+        "action": "notify",
+        "source": source,
+        "step": str(step),
+        "hours": str(hours),
+        "message": message or f"CerebroSpheroid V4 training session started on {source} ({hours}h window).",
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        sync_url,
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {sync_token}",
+            "User-Agent": "CerebroCloudSync/1.0",
+        }
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            if data.get("success"):
+                print(f"📢 [cloud_sync] Active training notice registered on bioflo.in ({source}, {hours}h).")
+                return True
+    except Exception as e:
+        print(f"⚠️ [cloud_sync] Notice: Could not send start notification: {e}")
+    return False
+
+
 def auto_sync_checkpoints(
     local_dir: str = "checkpoints",
     url: Optional[str] = None,

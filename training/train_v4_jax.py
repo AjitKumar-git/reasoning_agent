@@ -54,6 +54,8 @@ def parse_args(args_list=None):
     parser.add_argument("--min_lr", type=float, default=1.0e-4, help="Final annealed learning rate")
     parser.add_argument("--preset", type=str, default="small", choices=["small", "wide"])
     parser.add_argument("--max_hours", type=float, default=None, help="Maximum training wall-clock time in hours before graceful shutdown")
+    parser.add_argument("--cloud_save_hours", type=float, default=None, help="Hours between asynchronous cloud checkpoint uploads (e.g. 1.0 for hourly uploads; overrides --save_every for cloud sync)")
+    parser.add_argument("--source_node", type=str, default=None, help="Identifier for training environment (e.g. kaggle_tpu, colab_tpu, workstation)")
     parser.add_argument("--ckpt_dir", "--drive_dir", dest="ckpt_dir", type=str, default=os.path.join(ROOT_DIR, "checkpoints"), help="Destination checkpoint directory")
     parser.add_argument("--scratch_dir", type=str, default="/tmp/cerebro_ckpts", help="Fast local disk for staging")
     parser.add_argument("--save_every", type=int, default=1000, help="Steps between latest.pt async saves (default: 1000)")
@@ -94,13 +96,21 @@ def run_training(**kwargs):
 def main(args=None):
     if args is None:
         args = parse_args()
+
+    # If max_hours is set and steps wasn't customized from default 100k, run continuously for the full time window
+    if args.max_hours is not None and args.steps == 100000:
+        args.steps = 50_000_000
+
     devices = jax.devices()
     print("=" * 80)
     print("🧠 CEREBRO-SPHEROID V4: JAX HIGH-THROUGHPUT ENGINE")
     print(f"Devices        : {devices} ({len(devices)} active core(s))")
     print(f"Backend Kind   : {devices[0].device_kind}")
     print(f"Batch Size     : {args.batch_size} | Window: {args.prompt_len + args.target_len} tokens")
-    print(f"Target Horizon : {args.steps:,} steps")
+    if args.max_hours is not None:
+        print(f"Target Horizon : Continuous Ingestion ({args.max_hours:.1f} hours max budget)")
+    else:
+        print(f"Target Horizon : {args.steps:,} steps")
     print(f"Checkpoint Dir : {args.ckpt_dir}")
     print("=" * 80)
 
@@ -198,6 +208,23 @@ def main(args=None):
 
     param_count = sum(p.size for p in params.values() if jnp.issubdtype(p.dtype, jnp.inexact))
     print(f"Model Scale    : {param_count:,} parameters ({param_count * 2 / (1024**2):.1f} MB in bf16)")
+
+    # Notify website / user that training has officially commenced
+    if args.cloud_sync:
+        try:
+            from src.cloud_sync import notify_training_start, detect_source_environment
+            src_env = args.source_node or detect_source_environment()
+            hours_budget = args.max_hours or 8.5
+            notify_training_start(
+                source=src_env,
+                step=start_step,
+                hours=hours_budget,
+                message=f"CerebroSpheroid V4 training session active on {src_env}. Resuming from Step {start_step:,} ({hours_budget}h budget).",
+                url=args.cloud_url,
+                token=args.cloud_token,
+            )
+        except Exception as notify_err:
+            print(f"⚠️ [cloud_sync] Startup notification notice: {notify_err}")
 
     # 4. Initialize SpheroidOptimizer & Build JIT Train Engine
     opt_state = init_spheroid_opt_state(params)
@@ -348,14 +375,22 @@ def main(args=None):
     best_ema_loss = best_eval_loss
     ema_loss = None
     t_start = time.time()
+    last_cloud_save_time = time.time()
+    total_tokens_ingested = 0
     current_step = start_step
 
     print("\n" + "=" * 80)
-    print(f"🚀 Training Commenced: Steps {start_step:,} -> {args.steps:,}")
+    if args.max_hours is not None:
+        print(f"🚀 Training Commenced: Resuming Step {start_step:,} -> Continuous Ingestion ({args.max_hours:.1f}h Budget)")
+    else:
+        print(f"🚀 Training Commenced: Steps {start_step:,} -> {args.steps:,}")
     print(f"💎 Matrix Operators: Quintic Newton-Schulz Polar (Single-Moment Memory)")
     print(f"🛡️ Recurrent Deliberation: Contractive Spectral Guard (rho <= 1.0)")
     print(f"🧭 Scheduled Sampling Curriculum: {args.deliberation_mode} over {args.schedule_steps:,} steps")
-    print(f"⚡ Asynchronous Cloud Sync: 0ms TPU Pause")
+    if args.cloud_save_hours is not None:
+        print(f"⚡ Hourly Cloud Sync: Uploading every {args.cloud_save_hours:.1f} hour(s) to bioflo.in (0ms TPU Pause)")
+    else:
+        print(f"⚡ Asynchronous Cloud Sync: 0ms TPU Pause")
     print("=" * 80 + "\n")
 
     try:
@@ -445,6 +480,7 @@ def main(args=None):
                 loss_val = float("nan")
 
             dt = time.time() - t0
+            total_tokens_ingested += total_step_tokens
 
             if not math.isnan(loss_val):
                 if ema_loss is None:
@@ -458,11 +494,35 @@ def main(args=None):
                 ppl = math.exp(min(loss_disp, 15.0)) if not math.isnan(loss_disp) else float("nan")
                 ema_ppl = math.exp(min(ema_disp, 15.0)) if not math.isnan(ema_disp) else float("nan")
                 tok_s = total_step_tokens / max(dt, 1e-4)
-                eta_h = ((args.steps - step) * dt) / 3600.0
-                print(
-                    f"step {step:5d}/{args.steps:,} | {last_bucket_name:<14} | p={sampling_p:.2f} | loss {loss_disp:6.4f} (ema {ema_disp:6.4f}) | "
-                    f"ema_ppl {ema_ppl:6.1f} | lr {lr:.2e} | {dt*1000:5.1f} ms/step | {tok_s:7.1f} tok/s | ETA: {eta_h:4.2f}h"
-                )
+
+                if args.max_hours is not None:
+                    elapsed_sec = time.time() - t_start
+                    budget_sec = args.max_hours * 3600.0
+                    el_h = int(elapsed_sec // 3600)
+                    el_m = int((elapsed_sec % 3600) // 60)
+                    tot_h = int(budget_sec // 3600)
+                    tot_m = int((budget_sec % 3600) // 60)
+                    time_pct = min(100.0, (elapsed_sec / budget_sec) * 100.0)
+
+                    if total_tokens_ingested >= 1e6:
+                        tok_str = f"{total_tokens_ingested / 1e6:.1f}M"
+                    elif total_tokens_ingested >= 1e3:
+                        tok_str = f"{total_tokens_ingested / 1e3:.1f}k"
+                    else:
+                        tok_str = f"{total_tokens_ingested}"
+
+                    print(
+                        f"[T+{el_h:02d}h {el_m:02d}m / {tot_h:02d}h {tot_m:02d}m] ({time_pct:4.1f}%) | "
+                        f"Ingested: {tok_str:>6s} tok ({tok_s:5.0f} tok/s) | "
+                        f"Step {step:,} | {last_bucket_name:<14} | p={sampling_p:.2f} | "
+                        f"loss {loss_disp:6.4f} (ema {ema_disp:6.4f}) | ema_ppl {ema_ppl:6.1f} | lr {lr:.2e}"
+                    )
+                else:
+                    eta_h = ((args.steps - step) * dt) / 3600.0
+                    print(
+                        f"step {step:5d}/{args.steps:,} | {last_bucket_name:<14} | p={sampling_p:.2f} | loss {loss_disp:6.4f} (ema {ema_disp:6.4f}) | "
+                        f"ema_ppl {ema_ppl:6.1f} | lr {lr:.2e} | {dt*1000:5.1f} ms/step | {tok_s:7.1f} tok/s | ETA: {eta_h:4.2f}h"
+                    )
 
             # Held-Out Validation Evaluation (Every args.eval_interval steps, Aligned Teacher-Forced PPL)
             if eval_batches and (step % args.eval_interval == 0):
@@ -491,17 +551,39 @@ def main(args=None):
                             "loss": float(best_eval_loss),
                             "eval_loss": float(best_eval_loss),
                             "eval_ppl": float(held_out_ppl),
+                            "tokens_ingested": total_tokens_ingested,
+                            "elapsed_hours": (time.time() - t_start) / 3600.0,
                         },
                     )
 
             # Async checkpointing (strictly guarded against NaN / Inf corruption)
             if not math.isnan(loss_val) and not math.isinf(loss_val):
-                if step % args.save_every == 0:
+                save_latest = False
+                if args.cloud_save_hours is not None:
+                    # Hourly cloud upload schedule
+                    if (time.time() - last_cloud_save_time) >= (args.cloud_save_hours * 3600.0):
+                        save_latest = True
+                        last_cloud_save_time = time.time()
+                else:
+                    if step % args.save_every == 0:
+                        save_latest = True
+
+                if save_latest:
+                    elapsed_hours = (time.time() - t_start) / 3600.0
+                    if args.cloud_save_hours is not None:
+                        print(f"\n💾 [Hourly Cloud Sync @ Step {step:,}] Archiving and uploading checkpoint ({elapsed_hours:.2f}h elapsed, {total_tokens_ingested/1e6:.1f}M tokens ingested)...")
                     ckpt_mgr.dispatch(
                         params,
                         buffers,
                         "cerebro_spheroid_v4_jax_latest.pt",
-                        meta_dict={"step": step, "loss": loss_val, "ema_loss": ema_loss, "best_eval_loss": best_eval_loss},
+                        meta_dict={
+                            "step": step,
+                            "loss": loss_val,
+                            "ema_loss": ema_loss,
+                            "best_eval_loss": best_eval_loss,
+                            "tokens_ingested": total_tokens_ingested,
+                            "elapsed_hours": elapsed_hours,
+                        },
                     )
 
                 if step % args.periodic_every == 0:
@@ -517,12 +599,19 @@ def main(args=None):
                 elapsed_hours = (time.time() - t_start) / 3600.0
                 if elapsed_hours >= args.max_hours:
                     print(f"\n⏰ Reached session time limit of {args.max_hours:.2f}h (elapsed: {elapsed_hours:.2f}h).")
-                    print(f"💾 Gracefully flushing final state for Step {step:,}...")
+                    print(f"💾 Gracefully flushing final state for Step {step:,} ({total_tokens_ingested/1e6:.1f}M tokens ingested)...")
                     ckpt_mgr.flush(
                         params,
                         buffers,
                         "cerebro_spheroid_v4_jax_latest.pt",
-                        meta_dict={"step": step, "loss": loss_val, "ema_loss": ema_loss, "best_ema_loss": best_ema_loss},
+                        meta_dict={
+                            "step": step,
+                            "loss": loss_val,
+                            "ema_loss": ema_loss,
+                            "best_ema_loss": best_ema_loss,
+                            "tokens_ingested": total_tokens_ingested,
+                            "elapsed_hours": elapsed_hours,
+                        },
                     )
                     break
 
