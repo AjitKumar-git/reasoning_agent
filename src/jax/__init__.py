@@ -42,25 +42,29 @@ from ..elastic_window import (
     ElasticBucketBatcher,
 )
 
-# V3 Legacy Architecture
-from .model import (
-    ModelConfig,
-    CerebroSpheroidJAX,
-    rms_norm,
-    init_params,
-    init_brain_state,
-    training_rollout,
-    compute_loss,
-    generate_zero_feedback,
-)
-from .convert import (
-    torch_to_jax_params,
-    load_torch_checkpoint_to_jax,
-    save_jax_checkpoint,
-    load_jax_checkpoint,
-    detect_checkpoint_architecture,
-)
-from .inference import ReasoningAgentJAX
+# V3 Legacy Architecture (Optional / guarded)
+try:
+    from .model import (
+        ModelConfig,
+        CerebroSpheroidJAX,
+        rms_norm,
+        init_params,
+        init_brain_state,
+        training_rollout,
+        compute_loss,
+        generate_zero_feedback,
+    )
+    from .convert import (
+        torch_to_jax_params,
+        load_torch_checkpoint_to_jax,
+        save_jax_checkpoint,
+        load_jax_checkpoint,
+        detect_checkpoint_architecture,
+    )
+    from .inference import ReasoningAgentJAX
+    HAS_V3_LEGACY = True
+except (ImportError, SystemError, Exception):
+    HAS_V3_LEGACY = False
 
 __all__ = [
     # V4

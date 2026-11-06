@@ -21,15 +21,28 @@ from typing import Dict, Tuple, Optional, Any, List
 import concurrent.futures
 
 import numpy as np
-import torch
+try:
+    import torch
+    HAS_TORCH = True
+    _TORCH_ERR = None
+except (ImportError, SystemError, Exception) as e:
+    torch = None
+    HAS_TORCH = False
+    _TORCH_ERR = str(e)
+
 import jax
 import jax.numpy as jnp
 
 from .v4_model import ModelConfigV4, precompute_axonal_indices
 
 
-def _safe_torch_tensor(arr) -> torch.Tensor:
+def _safe_torch_tensor(arr):
     """Safely converts an array (including ml_dtypes.bfloat16 from TPU/JAX) into a torch.Tensor."""
+    if not HAS_TORCH:
+        raise RuntimeError(
+            f"PyTorch is required for .pt checkpoint conversion: {_TORCH_ERR}.\n"
+            "If on Google Colab, please do 'Runtime -> Restart session' after pip install."
+        )
     if isinstance(arr, torch.Tensor):
         return arr
     if hasattr(arr, "dtype") and str(arr.dtype) == "bfloat16":
@@ -60,6 +73,11 @@ def save_jax_to_torch_pt(
     meta: Optional[dict] = None,
 ) -> None:
     """Converts JAX PyTree into dual-key PyTorch state_dict and saves to .pt format."""
+    if not HAS_TORCH:
+        raise RuntimeError(
+            f"PyTorch is required to save .pt checkpoints: {_TORCH_ERR}.\n"
+            "If on Google Colab, please do 'Runtime -> Restart session' after pip install."
+        )
     os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
     torch_state: Dict[str, torch.Tensor] = {}
     for k, v in params.items():
@@ -94,6 +112,11 @@ def load_torch_pt_to_jax(
     ckpt_path: str, config: Optional[ModelConfigV4] = None
 ) -> Tuple[Dict[str, jnp.ndarray], Tuple[jnp.ndarray, jnp.ndarray]]:
     """Loads a PyTorch .pt checkpoint directly into JAX parameter dictionary."""
+    if not HAS_TORCH:
+        raise RuntimeError(
+            f"PyTorch is required to load .pt checkpoint '{ckpt_path}': {_TORCH_ERR}.\n"
+            "If on Google Colab, please do 'Runtime -> Restart session' after pip install."
+        )
     if not os.path.exists(ckpt_path):
         raise FileNotFoundError(f"Checkpoint not found at: {ckpt_path}")
 
@@ -117,7 +140,7 @@ def load_torch_pt_to_jax(
             continue
 
         nk = normalize_torch_key_to_jax(k)
-        if v.dtype == torch.bfloat16:
+        if hasattr(v, "dtype") and str(v.dtype).endswith("bfloat16"):
             arr = jnp.array(v.detach().cpu().float().numpy(), dtype=jnp.bfloat16)
         else:
             arr = jnp.array(v.detach().cpu().numpy())
@@ -202,7 +225,7 @@ def discover_latest_checkpoint(
                                     break
                         except Exception:
                             pass
-                if step_val == 0:
+                if step_val == 0 and HAS_TORCH:
                     try:
                         st = torch.load(candidate_latest, map_location="cpu", weights_only=False)
                         if isinstance(st, dict) and "step" in st:
