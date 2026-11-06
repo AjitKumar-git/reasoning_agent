@@ -185,7 +185,7 @@ def load_torch_pt_to_jax(
 def discover_latest_checkpoint(
     search_dirs: List[str],
     preferred_pattern: str = r"step_(\d+)\.pt",
-    target_preference: str = "best",
+    target_preference: str = "latest",
 ) -> Tuple[Optional[str], int, Optional[dict]]:
     """
     Autonomously scans directories to locate the most advanced checkpoint.

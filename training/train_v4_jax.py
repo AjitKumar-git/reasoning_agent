@@ -72,7 +72,7 @@ def parse_args(args_list=None):
                              "'fineweb_edu' (HuggingFaceFW/fineweb-edu sample-10BT educational text), "
                              "or 'balanced_mix' (50%% OpenHermes, 50%% FineWeb-Edu)")
     parser.add_argument("--cloud_sync", action="store_true", default=False, help="Enable automatic checkpoint syncing with bioflo.in")
-    parser.add_argument("--resume_target", type=str, default="best", choices=["best", "latest"], help="Target checkpoint to pull from bioflo.in ('best' or 'latest')")
+    parser.add_argument("--resume_target", type=str, default="latest", choices=["latest", "best"], help="Target checkpoint to pull from bioflo.in ('latest' or 'best')")
     parser.add_argument("--cloud_url", type=str, default="https://bioflo.in/api/cerebro/sync.php", help="bioflo.in sync endpoint")
     parser.add_argument("--cloud_token", type=str, default="CerebroSpheroid_Sync_Secure_2026", help="Secret sync token")
     return parser.parse_args(args_list)
