@@ -74,12 +74,42 @@ from src.corpus import (
     small_parquet_pairs,
     tokenize_pair,
 )
-from src.spheroid_v3 import build_spheroid_v3, training_rollout
+from src.spheroid_v4 import build_v4_model, compute_manifold_diagnostics
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 CKPT_DIR = os.path.join(ROOT_DIR, "checkpoints")
 
 STOP_REASON: Optional[str] = None
+
+
+def training_rollout(
+    model: nn.Module,
+    prompts: torch.Tensor,
+    response_steps: int,
+    thinking_cycles: int = 3,
+    pad_token_id: Optional[int] = 0,
+    targets: Optional[torch.Tensor] = None,
+    feedback_tokens: Optional[torch.Tensor] = None,
+    deliberation_mode: str = "scheduled",
+    thalamic_anchor_weight: float = 0.1,
+    sampling_p: float = 1.0,
+    repetition_penalty: float = 1.25,
+    **kwargs,
+) -> torch.Tensor:
+    """Native V4 systolic rollout engine with subconscious deliberation and Arcuate Fasciculus cross-resonance."""
+    return model(
+        prompts,
+        response_steps=response_steps,
+        thinking_cycles=thinking_cycles,
+        pad_token_id=pad_token_id,
+        targets=targets,
+        feedback_tokens=feedback_tokens,
+        deliberation_mode=deliberation_mode,
+        thalamic_anchor_weight=thalamic_anchor_weight,
+        sampling_p=sampling_p,
+        repetition_penalty=repetition_penalty,
+        **kwargs,
+    )
 
 
 # --------------------------------------------------------------------------------------------
@@ -857,23 +887,9 @@ def main():
                    f"| answer cap {args.max_answer_tokens}")
     rank_print(f"batch  {args.batch_size} x {args.grad_accum} x {world_size} GPUs = {args.batch_size * args.grad_accum * world_size} records/step")
 
-    if args.arch == "v4":
-        from src.spheroid_v4 import build_v4_model, compute_manifold_diagnostics
-        model = build_v4_model(args, vocab_size=tokenizer.vocab_size)
-        if getattr(args, "compile", False):
-            model.compile_deliberate()
-    elif args.arch == "v3":
-        from src.spheroid_v3 import build_spheroid_v3
-        model = build_spheroid_v3("laptop")
-    elif args.arch == "v2":
-        from src.model import CerebroSpheroid
-        model = CerebroSpheroid(
-            vocab_size=tokenizer.vocab_size,
-            surface_dim=args.surface_dim or 640,
-            num_shells=args.num_shells or 16,
-            radial_dim=args.radial_dim or 256,
-            num_shortcut_tracts=args.num_shortcut_tracts or 40,
-        )
+    model = build_v4_model(args, vocab_size=tokenizer.vocab_size)
+    if getattr(args, "compile", False):
+        model.compile_deliberate()
     model_param_dtype = torch.float32 if dtype == torch.float16 else dtype
     model.to(device=device, dtype=model_param_dtype)
     param_count = sum(p.numel() for p in model.parameters())
