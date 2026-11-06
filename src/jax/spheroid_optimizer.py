@@ -37,12 +37,15 @@ def is_manifold_operator(k: str, p: jnp.ndarray) -> bool:
 
 
 def zeropower_via_newtonschulz5_jax(G: jnp.ndarray, steps: int = 3, eps: float = 1e-7) -> jnp.ndarray:
-    """Vectorized Quintic Newton-Schulz iteration mapping update matrices to the orthogonal manifold."""
-    orig_shape = G.shape
-    if G.ndim > 2:
-        G_mat = G.reshape(-1, orig_shape[-2], orig_shape[-1])
+    """Vectorized Quintic Newton-Schulz iteration mapping update matrices to the orthogonal manifold.
+    Runs strictly in float32 to prevent half-precision exponent overflow."""
+    orig_dtype = G.dtype
+    G_f32 = G.astype(jnp.float32)
+    orig_shape = G_f32.shape
+    if G_f32.ndim > 2:
+        G_mat = G_f32.reshape(-1, orig_shape[-2], orig_shape[-1])
     else:
-        G_mat = G[None, ...]
+        G_mat = G_f32[None, ...]
 
     rows, cols = G_mat.shape[-2], G_mat.shape[-1]
     transposed = rows > cols
@@ -63,20 +66,23 @@ def zeropower_via_newtonschulz5_jax(G: jnp.ndarray, steps: int = 3, eps: float =
 
     if transposed:
         X = jnp.swapaxes(X, -2, -1)
-    return X.reshape(orig_shape)
+    return X.reshape(orig_shape).astype(orig_dtype)
 
 
 def clamp_spectral_norm_jax(
     W: jnp.ndarray, v: jnp.ndarray, max_spec_norm: float = 1.0, power_steps: int = 2, eps: float = 1e-6
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """Contractive spectral guard via persistent power iteration. Enforces sigma_max <= 1.0."""
-    orig_shape = W.shape
-    if W.ndim > 3:
-        W_mat = W.reshape(-1, orig_shape[-2], orig_shape[-1])
-    elif W.ndim == 2:
-        W_mat = W[None, ...]
+    orig_dtype = W.dtype
+    W_f32 = W.astype(jnp.float32)
+    v_f32 = v.astype(jnp.float32)
+    orig_shape = W_f32.shape
+    if W_f32.ndim > 3:
+        W_mat = W_f32.reshape(-1, orig_shape[-2], orig_shape[-1])
+    elif W_f32.ndim == 2:
+        W_mat = W_f32[None, ...]
     else:
-        W_mat = W
+        W_mat = W_f32
 
     def _power_body(i, cur_v):
         u = jnp.matmul(W_mat, cur_v)
@@ -86,12 +92,12 @@ def clamp_spectral_norm_jax(
         v_norm = jnp.sqrt(jnp.sum(jnp.square(v_next), axis=1, keepdims=True) + eps)
         return v_next / v_norm
 
-    v_final = lax.fori_loop(0, power_steps, _power_body, v)
+    v_final = lax.fori_loop(0, power_steps, _power_body, v_f32)
     u_final = jnp.matmul(W_mat, v_final)
     sigma = jnp.sqrt(jnp.sum(jnp.square(u_final), axis=1, keepdims=True) + eps)
     scale = jnp.minimum(1.0, max_spec_norm / (sigma * 1.08 + eps))
-    W_clamped = (W_mat * scale).reshape(orig_shape)
-    return W_clamped, v_final
+    W_clamped = (W_mat * scale).reshape(orig_shape).astype(orig_dtype)
+    return W_clamped, v_final.astype(v.dtype)
 
 
 def init_spheroid_opt_state(params: Dict[str, jnp.ndarray], key: Optional[jax.Array] = None) -> Dict[str, Any]:
@@ -171,8 +177,8 @@ def build_spheroid_train_engine(
 
     @jax.jit
     def apply_opt_step(p, opt_s, grads, base_lr):
-        # Gradient clipping & finite validation
-        grad_norm = jnp.sqrt(sum(jnp.sum(jnp.square(g)) for g in grads.values() if jnp.issubdtype(g.dtype, jnp.inexact)))
+        # Gradient clipping & finite validation in float32 to prevent half-precision overflow
+        grad_norm = jnp.sqrt(sum(jnp.sum(jnp.square(g.astype(jnp.float32))) for g in grads.values() if jnp.issubdtype(g.dtype, jnp.inexact)))
         is_finite = jnp.isfinite(grad_norm)
         clip_scale = jnp.where(is_finite, jnp.minimum(1.0, 1.0 / (grad_norm + 1e-6)), 0.0)
         clipped_grads = jax.tree_util.tree_map(lambda g: g * clip_scale if jnp.issubdtype(g.dtype, jnp.inexact) else g, grads)
@@ -202,11 +208,11 @@ def build_spheroid_train_engine(
                     m_new = 0.95 * m_prev + 0.05 * g
                     new_m[k] = m_new.astype(m_prev.dtype)
 
-                    # Decoupled Riemannian Weight Decay
-                    p_decayed = param * (1.0 - base_lr * weight_decay)
+                    # Decoupled Riemannian Weight Decay in float32
+                    p_decayed = param.astype(jnp.float32) * (1.0 - base_lr * weight_decay)
 
-                    # Polar orthogonalization
-                    O = zeropower_via_newtonschulz5_jax(m_new, steps=3)
+                    # Polar orthogonalization (runs in float32 internally)
+                    O = zeropower_via_newtonschulz5_jax(m_new, steps=3).astype(jnp.float32)
 
                     # Natural aspect-ratio scaling
                     rows = param.shape[-2]
@@ -224,19 +230,23 @@ def build_spheroid_train_engine(
                     new_params[k] = p_updated.astype(param.dtype)
 
                 # -----------------------------------------------------------------
-                # 2. Vocabulary & Phase Embeddings / Heads (AdamW)
+                # 2. Vocabulary & Phase Embeddings / Heads (AdamW in float32)
                 # -----------------------------------------------------------------
                 elif k in VOCAB_KEYS:
                     v_prev = opt_s["v"][k]
                     m_new = 0.9 * m_prev + 0.1 * g
-                    v_new = 0.95 * v_prev + 0.05 * jnp.square(g)
+                    v_new = 0.95 * v_prev + 0.05 * jnp.square(g.astype(jnp.float32)).astype(v_prev.dtype)
                     new_m[k] = m_new.astype(m_prev.dtype)
                     new_v[k] = v_new.astype(v_prev.dtype)
 
-                    m_hat = m_new / (1.0 - jnp.power(0.9, cur_step))
-                    v_hat = v_new / (1.0 - jnp.power(0.95, cur_step))
-                    p_decayed = param * (1.0 - lr_vocab * weight_decay)
-                    new_params[k] = (p_decayed - lr_vocab * (m_hat / (jnp.sqrt(v_hat) + 1e-8))).astype(param.dtype)
+                    m_f32 = m_new.astype(jnp.float32)
+                    v_f32 = v_new.astype(jnp.float32)
+                    m_hat = m_f32 / (1.0 - jnp.power(0.9, cur_step))
+                    v_hat = v_f32 / (1.0 - jnp.power(0.95, cur_step))
+                    step_dir = m_hat / (jnp.sqrt(v_hat) + 1e-6)
+                    p_decayed = param.astype(jnp.float32) * (1.0 - lr_vocab * weight_decay)
+                    p_updated = p_decayed - lr_vocab * step_dir
+                    new_params[k] = p_updated.astype(param.dtype)
 
                 # -----------------------------------------------------------------
                 # 3. 1D Parameters, Scalars, Pacemakers & Norms (AdamW, 0 Decay)
@@ -244,20 +254,32 @@ def build_spheroid_train_engine(
                 else:
                     v_prev = opt_s["v"][k]
                     m_new = 0.9 * m_prev + 0.1 * g
-                    v_new = 0.95 * v_prev + 0.05 * jnp.square(g)
+                    v_new = 0.95 * v_prev + 0.05 * jnp.square(g.astype(jnp.float32)).astype(v_prev.dtype)
                     new_m[k] = m_new.astype(m_prev.dtype)
                     new_v[k] = v_new.astype(v_prev.dtype)
 
-                    m_hat = m_new / (1.0 - jnp.power(0.9, cur_step))
-                    v_hat = v_new / (1.0 - jnp.power(0.95, cur_step))
-                    new_params[k] = (param - lr_1d * (m_hat / (jnp.sqrt(v_hat) + 1e-8))).astype(param.dtype)
+                    m_f32 = m_new.astype(jnp.float32)
+                    v_f32 = v_new.astype(jnp.float32)
+                    m_hat = m_f32 / (1.0 - jnp.power(0.9, cur_step))
+                    v_hat = v_f32 / (1.0 - jnp.power(0.95, cur_step))
+                    step_dir = m_hat / (jnp.sqrt(v_hat) + 1e-6)
+                    p_updated = param.astype(jnp.float32) - lr_1d * step_dir
+                    new_params[k] = p_updated.astype(param.dtype)
+
+            # Robust NaN / Inf Guard: Discard update and keep old weights if any non-finite value appears
+            params_finite = jnp.all(jnp.array([jnp.all(jnp.isfinite(np_)) for np_ in new_params.values()]))
+            safe_params = jax.tree_util.tree_map(lambda np_, op: jnp.where(params_finite, np_, op), new_params, p)
+            safe_m = jax.tree_util.tree_map(lambda nm, om: jnp.where(params_finite, nm, om), new_m, opt_s["m"])
+            safe_v = jax.tree_util.tree_map(lambda nv, ov: jnp.where(params_finite, nv, ov), new_v, opt_s["v"])
+            safe_step = jnp.where(params_finite, cur_step, opt_s["step"])
 
             new_opt_state = {
-                "step": cur_step,
-                "m": new_m,
-                "v": new_v,
+                "step": safe_step,
+                "m": safe_m,
+                "v": safe_v,
                 "power_v": new_power_v,
             }
+            return safe_params, new_opt_state
             return new_params, new_opt_state
 
         def _skip_step():

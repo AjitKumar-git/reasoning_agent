@@ -116,7 +116,7 @@ class BitwiseJAXEngine:
         intra = torch.einsum('bkd,kdo->bko', state, self.p['core.intra_shell'])
         state_src = state[:, self.src_idx, :]
         tracts_out = torch.einsum('bti,tij->btj', state_src, self.p['core.shortcut_tracts'])
-        tract_acc = torch.zeros_like(state)
+        tract_acc = torch.zeros(B, K, D, device=state.device, dtype=tracts_out.dtype)
         tract_acc.index_add_(1, self.dst_idx, tracts_out)
 
         rad_in = F.linear(state, self.p['core.radial_proj_in.weight'])

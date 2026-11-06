@@ -2,23 +2,16 @@
 """
 Manifold-Accelerated Weight Grafting for CerebroSpheroid V4.
 
+Supports:
+- JackFram/llama-160m (160M params)
+- TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T (1.1B params, 3T tokens)
+- openlm-research/open_llama_3b_v2 (3B params)
+
 Mathematical Principle:
-Pretrained LLaMA models (such as JackFram/llama-160m or TinyLlama-1.1B) share the
-exact 100% bit-for-bit 32,000-token BPE vocabulary with CerebroSpheroid V4.
-Their learned weight matrices lie on a compact, highly structured Riemannian manifold.
-
-Rather than spending millions of gradient steps slowly learning basic English syntax,
-word semantics, and parts of speech from random noise, this engine performs:
-1. Orthogonal Procrustes / SVD Subspace Projection from source embedding manifold (D_src)
-   onto CerebroSpheroid's boundary manifold (surface_dim = 640).
-2. Isometric projection of SwiGLU afferent feature extractors (gate_proj, up_proj, down_proj).
-3. Arcuate Fasciculus cross-resonance projection (q_proj, k_proj, v_proj).
-4. Efferent motor decoder head manifold projection (lm_head -> motor.head).
-5. Preservation of CerebroSpheroid's unique Recurrent Volumetric Core (B^3) and
-   deliberation attractor dynamics.
-
-Output:
-A warm-started CerebroSpheroid checkpoint ready for high-velocity core reasoning training.
+Pretrained LLaMA models share the exact 100% bit-for-bit 32,000-token BPE vocabulary
+with CerebroSpheroid V4. Their learned weight matrices lie on a compact Riemannian manifold.
+This engine performs GPU-accelerated Orthogonal Procrustes / SVD Subspace Projections
+to transfer converged lexical, syntactic, and attention representations into CerebroSpheroid.
 """
 
 import argparse
@@ -36,47 +29,36 @@ import torch.nn.functional as F
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT_DIR)
 
-# Set HF cache to avoid permission issues
 if "HF_HOME" not in os.environ:
     os.environ["HF_HOME"] = "/tmp/hf_cache"
 
 
-def compute_orthogonal_projection(src_matrix: np.ndarray, target_dim: int) -> Tuple[np.ndarray, np.ndarray, float]:
+def compute_orthogonal_projection_gpu(
+    src_matrix: torch.Tensor, target_dim: int, device: str = "cuda"
+) -> Tuple[torch.Tensor, torch.Tensor, float]:
     """
-    Computes the optimal rank-k orthogonal projection matrix using SVD / Eigendecomposition.
-    
-    Given W_src in R^{N x D_src}:
-    Gram matrix C = W_src^T W_src in R^{D_src x D_src}.
-    Eigendecomposition: C = V Lambda V^T.
-    Projection basis P = V[:, :target_dim] in R^{D_src x target_dim}.
-    
-    Returns:
-        P: Column-orthogonal projection matrix (P^T P = I)
-        projected: W_src @ P in R^{N x target_dim}
-        energy_ratio: Fraction of spectral variance captured
+    Computes the optimal rank-k orthogonal projection matrix using SVD / Eigendecomposition on GPU.
     """
     d_src = src_matrix.shape[1]
     if target_dim > d_src:
         raise ValueError(f"Target dim ({target_dim}) cannot exceed source dim ({d_src})")
     
-    # Gram matrix is d_src x d_src (e.g. 768 x 768) -> instantaneous eigendecomposition
-    gram = src_matrix.T @ src_matrix
-    eigvals, eigvecs = np.linalg.eigh(gram)
+    mat = src_matrix.to(device=device, dtype=torch.float32)
+    gram = mat.T @ mat  # (D_src, D_src)
+    eigvals, eigvecs = torch.linalg.eigh(gram)
     
     # Sort descending
-    idx = np.argsort(eigvals)[::-1]
+    idx = torch.argsort(eigvals, descending=True)
     eigvals = eigvals[idx]
     eigvecs = eigvecs[:, idx]
     
-    # Select top target_dim components
     P = eigvecs[:, :target_dim]  # (D_src, target_dim)
     
-    # Calculate energy captured
-    total_energy = np.sum(np.maximum(eigvals, 0.0))
-    captured_energy = np.sum(np.maximum(eigvals[:target_dim], 0.0))
+    total_energy = torch.sum(torch.clamp(eigvals, min=0.0)).item()
+    captured_energy = torch.sum(torch.clamp(eigvals[:target_dim], min=0.0)).item()
     energy_ratio = float(captured_energy / max(total_energy, 1e-12))
     
-    projected = src_matrix @ P
+    projected = mat @ P
     return P, projected, energy_ratio
 
 
@@ -141,16 +123,17 @@ def graft_manifold_weights(
     cerebro_params: Dict[str, torch.Tensor],
     source_model_name: str = "JackFram/llama-160m",
     target_dim: int = 640,
-    device: str = "cpu"
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
 ) -> Tuple[Dict[str, torch.Tensor], Dict[str, Any]]:
     """
     Downloads source LLaMA model and grafts its converged manifold representations
-    into CerebroSpheroid V4 parameters via SVD / Orthogonal Procrustes projection.
+    into CerebroSpheroid V4 parameters via GPU SVD / Orthogonal Procrustes projection.
     """
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformers import AutoModelForCausalLM
     
     print(f"\n=================================================================")
     print(f"  Manifold Grafting Engine: {source_model_name} -> CerebroSpheroid V4")
+    print(f"  Compute Device: {device.upper()}")
     print(f"=================================================================")
     print(f"[*] Downloading / Loading source model: {source_model_name}...")
     
@@ -169,14 +152,13 @@ def graft_manifold_weights(
     # 1. Lexical Semantic Manifold (Embedding Projection)
     # -------------------------------------------------------------
     print(f"\n[1/5] Projecting Lexical Semantic Manifold (Embedding)...")
-    src_embed = src_dict["model.embed_tokens.weight"].detach().cpu().numpy()
-    P_embed, embed_projected, energy_embed = compute_orthogonal_projection(src_embed, target_dim)
-    print(f"  -> SVD Orthogonal Projection ({d_src} -> {target_dim})")
+    src_embed = src_dict["model.embed_tokens.weight"].to(device=device, dtype=torch.float32)
+    P_embed, embed_projected, energy_embed = compute_orthogonal_projection_gpu(src_embed, target_dim, device=device)
+    print(f"  -> GPU SVD Orthogonal Projection ({d_src} -> {target_dim})")
     print(f"  -> Semantic Energy Retained: {energy_embed * 100:.2f}%")
     
-    # Normalize embedding scale to match CerebroSpheroid standard deviation (~0.035)
-    scale_factor = 0.035 / (np.std(embed_projected) + 1e-8)
-    aligned_embed = torch.from_numpy(embed_projected * scale_factor).float()
+    scale_factor = 0.035 / (torch.std(embed_projected).item() + 1e-8)
+    aligned_embed = (embed_projected * scale_factor).cpu()
     cerebro_params["sensory.embedding.weight"] = aligned_embed
     stats["embed_energy_retained"] = energy_embed
     
@@ -184,37 +166,35 @@ def graft_manifold_weights(
     # 2. Afferent Sensory SwiGLU Front-End
     # -------------------------------------------------------------
     print(f"\n[2/5] Projecting Afferent Sensory SwiGLU Front-End...")
-    # Extract layer 0 MLP weights
-    gate_w = src_dict["model.layers.0.mlp.gate_proj.weight"].detach().cpu().numpy()  # (d_inter, d_src)
-    up_w = src_dict["model.layers.0.mlp.up_proj.weight"].detach().cpu().numpy()      # (d_inter, d_src)
-    down_w = src_dict["model.layers.0.mlp.down_proj.weight"].detach().cpu().numpy()  # (d_src, d_inter)
+    gate_w = src_dict["model.layers.0.mlp.gate_proj.weight"].to(device=device, dtype=torch.float32)  # (d_inter, d_src)
+    up_w = src_dict["model.layers.0.mlp.up_proj.weight"].to(device=device, dtype=torch.float32)      # (d_inter, d_src)
+    down_w = src_dict["model.layers.0.mlp.down_proj.weight"].to(device=device, dtype=torch.float32)  # (d_src, d_inter)
     
-    # Project intermediate dimension (d_inter -> target_dim * 2 = 1280)
     target_inter = target_dim * 2
     if d_inter >= target_inter:
-        P_inter, _, energy_inter = compute_orthogonal_projection(gate_w.T, target_inter)
+        # SVD on gate_w on GPU to get top target_inter left singular vectors
+        u_inter, s_inter, _ = torch.linalg.svd(gate_w, full_matrices=False)
+        P_inter = u_inter[:, :target_inter]  # (d_inter, target_inter)
+        energy_inter = float(torch.sum(s_inter[:target_inter]**2) / max(torch.sum(s_inter**2), 1e-12))
     else:
-        # Pad with orthogonal complement if source intermediate is smaller
-        P_inter = np.eye(d_inter, target_inter)
+        P_inter = torch.eye(d_inter, target_inter, device=device)
         energy_inter = 1.0
         
     print(f"  -> Intermediate MLP Subspace Projection ({d_inter} -> {target_inter})")
     print(f"  -> Intermediate Energy Retained: {energy_inter * 100:.2f}%")
     
-    # Sensory Gate: (1280, 640) = P_inter^T @ gate_w @ P_embed
     fc1_gate = P_inter.T @ gate_w @ P_embed
     fc1_val = P_inter.T @ up_w @ P_embed
     fc2 = P_embed.T @ down_w @ P_inter
     
-    cerebro_params["sensory.fc1_gate.weight"] = torch.from_numpy(fc1_gate).float()
-    cerebro_params["sensory.fc1_val.weight"] = torch.from_numpy(fc1_val).float()
-    cerebro_params["sensory.fc2.weight"] = torch.from_numpy(fc2).float()
+    cerebro_params["sensory.fc1_gate.weight"] = fc1_gate.cpu()
+    cerebro_params["sensory.fc1_val.weight"] = fc1_val.cpu()
+    cerebro_params["sensory.fc2.weight"] = fc2.cpu()
     
-    # Copy LayerNorm weights
     if "model.layers.0.input_layernorm.weight" in src_dict:
-        norm_w = src_dict["model.layers.0.input_layernorm.weight"].detach().cpu().numpy()
-        P_norm = np.abs(P_embed).T @ norm_w
-        cerebro_params["sensory.norm_out.weight"] = torch.from_numpy(P_norm).float()
+        norm_w = src_dict["model.layers.0.input_layernorm.weight"].to(device=device, dtype=torch.float32)
+        P_norm = torch.abs(P_embed).T @ norm_w
+        cerebro_params["sensory.norm_out.weight"] = P_norm.cpu()
         
     stats["mlp_energy_retained"] = energy_inter
     
@@ -222,42 +202,38 @@ def graft_manifold_weights(
     # 3. Arcuate Fasciculus Attention Projections
     # -------------------------------------------------------------
     print(f"\n[3/5] Projecting Arcuate Fasciculus Attention KV Projections...")
-    q_w = src_dict["model.layers.0.self_attn.q_proj.weight"].detach().cpu().numpy()  # (d_src, d_src)
-    k_w = src_dict["model.layers.0.self_attn.k_proj.weight"].detach().cpu().numpy()  # (d_src, d_src)
-    v_w = src_dict["model.layers.0.self_attn.v_proj.weight"].detach().cpu().numpy()  # (d_src, d_src)
+    q_w = src_dict["model.layers.0.self_attn.q_proj.weight"].to(device=device, dtype=torch.float32)
+    k_w = src_dict["model.layers.0.self_attn.k_proj.weight"].to(device=device, dtype=torch.float32)
+    v_w = src_dict["model.layers.0.self_attn.v_proj.weight"].to(device=device, dtype=torch.float32)
     
-    cerebro_params["motor.q_proj.weight"] = torch.from_numpy(P_embed.T @ q_w @ P_embed).float()
-    cerebro_params["motor.k_proj.weight"] = torch.from_numpy(P_embed.T @ k_w @ P_embed).float()
-    cerebro_params["motor.v_proj.weight"] = torch.from_numpy(P_embed.T @ v_w @ P_embed).float()
+    cerebro_params["motor.q_proj.weight"] = (P_embed.T @ q_w @ P_embed).cpu()
+    cerebro_params["motor.k_proj.weight"] = (P_embed.T @ k_w @ P_embed).cpu()
+    cerebro_params["motor.v_proj.weight"] = (P_embed.T @ v_w @ P_embed).cpu()
     print(f"  -> Projected Q, K, V matrices onto ({target_dim} x {target_dim}) manifold")
     
     # -------------------------------------------------------------
     # 4. Efferent Motor Decoder (Broca's Area Head)
     # -------------------------------------------------------------
     print(f"\n[4/5] Projecting Efferent Motor Softmax Decoder Head...")
-    # LLaMA lm_head: (32000, d_src)
-    lm_head = src_dict["lm_head.weight"].detach().cpu().numpy()
+    lm_head = src_dict["lm_head.weight"].to(device=device, dtype=torch.float32)
     head_proj_base = lm_head @ P_embed  # (32000, 640)
     
-    # CerebroSpheroid head takes (fused_dim = 1280) -> split across motor and thought representations
-    # [head_base * 0.7, head_base * 0.7]
-    head_1280 = np.concatenate([head_proj_base * 0.707, head_proj_base * 0.707], axis=-1)
-    scale_head = (1.0 / math.sqrt(target_dim * 2)) / (np.std(head_1280) + 1e-8)
-    cerebro_params["motor.head.weight"] = torch.from_numpy(head_1280 * scale_head * 0.8).float()
+    head_1280 = torch.cat([head_proj_base * 0.707, head_proj_base * 0.707], dim=-1)
+    scale_head = (1.0 / math.sqrt(target_dim * 2)) / (torch.std(head_1280).item() + 1e-8)
+    cerebro_params["motor.head.weight"] = (head_1280 * scale_head * 0.8).cpu()
     print(f"  -> Synthesized dual-channel efferent head (32000 x {target_inter})")
     
     # -------------------------------------------------------------
     # 5. Volumetric Core Stability Check
     # -------------------------------------------------------------
     print(f"\n[5/5] Enforcing Contractive Spectral Bounds on Volumetric Core...")
-    # Ensure intra_shell spectral radius is strictly <= 0.98 to prevent explosive runaway
     intra = cerebro_params["core.intra_shell"]
     for k in range(intra.shape[0]):
-        mat = intra[k].numpy()
-        u, s, vt = np.linalg.svd(mat)
-        max_s = s[0]
+        mat = intra[k].to(device=device, dtype=torch.float32)
+        s = torch.linalg.svdvals(mat)
+        max_s = s[0].item()
         if max_s > 0.98:
-            intra[k] = torch.from_numpy(mat * (0.95 / max_s)).float()
+            intra[k] = (mat * (0.95 / max_s)).cpu()
     print(f"  -> Volumetric Core contractive bounds verified (rho <= 0.98)")
     
     print(f"\n[+] Manifold Grafting Complete! All sensory, lexical, and projection manifolds aligned.")
@@ -284,7 +260,6 @@ def evaluate_cerebro_loss(params: Dict[str, torch.Tensor], tokenizer, device: st
         if tokens.shape[1] < 4:
             continue
         
-        # Teacher forcing evaluation
         inputs = tokens[:, :-1]
         targets = tokens[:, 1:]
         
@@ -297,15 +272,13 @@ def evaluate_cerebro_loss(params: Dict[str, torch.Tensor], tokenizer, device: st
         
         logits_list = []
         for t in range(S):
-            # Deliberate
             state = engine.deliberate_step(state + sens[:, t:t+1, :].expand(-1, K, -1) * 0.2)
-            # Emit
             logits, state, refractory, plan = engine.emit_step(
                 state, (keys[:, :t+1], vals[:, :t+1]), plan, refractory, step_idx=t
             )
             logits_list.append(logits.unsqueeze(1))
             
-        all_logits = torch.cat(logits_list, dim=1)  # (B, S, V)
+        all_logits = torch.cat(logits_list, dim=1)
         loss = F.cross_entropy(all_logits.view(-1, tokenizer.vocab_size), targets.view(-1), reduction="sum")
         total_loss += loss.item()
         total_tokens += targets.numel()
@@ -315,15 +288,16 @@ def evaluate_cerebro_loss(params: Dict[str, torch.Tensor], tokenizer, device: st
 
 def main():
     parser = argparse.ArgumentParser(description="Manifold-Accelerated Weight Grafting Engine")
-    parser.add_argument("--source_model", type=str, default="JackFram/llama-160m",
-                        help="Pretrained LLaMA model sharing the 32k vocabulary (e.g. JackFram/llama-160m)")
+    parser.add_argument("--source_model", type=str, default="TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T",
+                        help="Pretrained LLaMA model sharing 32k vocab (e.g. TinyLlama-1.1B or JackFram/llama-160m)")
     parser.add_argument("--checkpoint_in", type=str, default="",
-                        help="Optional existing Cerebro checkpoint to graft into (leaves core intact)")
-    parser.add_argument("--output_pt", type=str, default="checkpoints/cerebro_v4_manifold_aligned.pt",
+                        help="Optional existing Cerebro checkpoint to graft into")
+    parser.add_argument("--output_pt", type=str, default="checkpoints/cerebro_v4_tinyllama_aligned.pt",
                         help="Output path for PyTorch checkpoint")
-    parser.add_argument("--output_jax", type=str, default="checkpoints/cerebro_v4_manifold_aligned_jax.pkl",
+    parser.add_argument("--output_jax", type=str, default="checkpoints/cerebro_v4_tinyllama_aligned_jax.pkl",
                         help="Output path for JAX pickle checkpoint")
-    parser.add_argument("--device", type=str, default="cpu", help="Compute device (cpu or cuda)")
+    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu",
+                        help="Compute device (cuda or cpu)")
     args = parser.parse_args()
     
     os.makedirs(os.path.dirname(os.path.abspath(args.output_pt)), exist_ok=True)
@@ -332,7 +306,6 @@ def main():
     from src.corpus import build_tokenizer
     tokenizer = build_tokenizer("llama")
     
-    # 1. Base Parameters
     if args.checkpoint_in and os.path.exists(args.checkpoint_in):
         print(f"[*] Loading base checkpoint: {args.checkpoint_in}")
         with open(args.checkpoint_in, "rb") as f:
@@ -344,18 +317,15 @@ def main():
         print("[*] Initializing fresh CerebroSpheroid V4 base architecture...")
         base_params = init_default_cerebro_params()
         
-    # Measure baseline loss
     print("[*] Evaluating baseline loss before manifold grafting...")
     base_loss = evaluate_cerebro_loss(base_params, tokenizer, device=args.device)
     base_ppl = math.exp(min(base_loss, 20.0))
     print(f"  -> Baseline Random Initialization Loss: {base_loss:.4f} (Perplexity: {base_ppl:.1f})")
     
-    # 2. Perform Manifold Grafting
     t0 = time.time()
-    grafted_params, stats = graft_manifold_weights(base_params, source_model_name=args.source_model)
+    grafted_params, stats = graft_manifold_weights(base_params, source_model_name=args.source_model, device=args.device)
     elapsed = time.time() - t0
     
-    # 3. Evaluate Grafted Loss
     print(f"\n[*] Evaluating loss after manifold grafting...")
     grafted_loss = evaluate_cerebro_loss(grafted_params, tokenizer, device=args.device)
     grafted_ppl = math.exp(min(grafted_loss, 20.0))
@@ -363,7 +333,7 @@ def main():
     
     loss_reduction = base_loss - grafted_loss
     print(f"\n=================================================================")
-    print(f"  RESULTS SUMMARY")
+    print(f"  RESULTS SUMMARY: 1.1B / 2B MANIFOLD TRANSFER")
     print(f"=================================================================")
     print(f"  Initial Loss:       {base_loss:.4f}  (PPL: {base_ppl:.1f})")
     print(f"  Grafted Loss:       {grafted_loss:.4f}  (PPL: {grafted_ppl:.1f})")
@@ -371,7 +341,6 @@ def main():
     print(f"  Elapsed Time:       {elapsed:.2f} seconds")
     print(f"=================================================================")
     
-    # 4. Save PyTorch and JAX Checkpoints
     print(f"\n[*] Saving PyTorch checkpoint to: {args.output_pt}")
     torch.save(grafted_params, args.output_pt)
     

@@ -112,9 +112,9 @@ def main(args=None):
             target_dtype = jnp.bfloat16
             dtype_desc = "bfloat16 (Native TPU MXU)"
         elif "gpu" in backend or "cuda" in backend or "nvidia" in dev_kind:
-            # Turing Tesla T4 has 65 TFLOPS FP16 Tensor Cores (0 hardware BF16 units)
-            target_dtype = jnp.float16
-            dtype_desc = "float16 (Native Turing 65 TFLOPS Tensor Cores)"
+            # On Tesla T4 GPUs, float32 master parameters guarantee zero exponent overflow (takes only 472 MB out of 32 GB VRAM)
+            target_dtype = jnp.float32
+            dtype_desc = "float32 (Stable GPU Master Weights)"
         else:
             target_dtype = jnp.float32
             dtype_desc = "float32 (CPU)"
