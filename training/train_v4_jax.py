@@ -44,7 +44,7 @@ def parse_args(args_list=None):
         args_list = [a for a in sys.argv[1:] if a != "n"]
     parser = argparse.ArgumentParser(description="CerebroSpheroid V4 JAX High-Throughput Trainer")
     parser.add_argument("--steps", "--max_steps", dest="steps", type=int, default=100000, help="Total target steps (default: 100000)")
-    parser.add_argument("--batch_size", type=int, default=8, help="Batch size per TPU device (default: 8)")
+    parser.add_argument("--batch_size", type=int, default=64, help="Batch size per TPU device (default: 64)")
     parser.add_argument("--grad_accum", type=int, default=2, help="Gradient accumulation micro-steps per optimizer update (default: 2)")
     parser.add_argument("--total_window", type=int, default=1024, help="Total sequence budget for elastic sliding window (default: 1024)")
     parser.add_argument("--prompt_len", type=int, default=256, help="Prompt context length (used when --elastic_window is disabled)")
