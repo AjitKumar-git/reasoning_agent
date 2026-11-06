@@ -458,6 +458,7 @@ def generate_v4(
         plan = plan + p_scale * persona_vec
 
     refractory = jnp.zeros((B, vocab_size), dtype=jnp.float32)
+    prev_thought = jnp.zeros((B, surface_dim), dtype=jnp.float32)
     results = [[] for _ in range(B)]
     completed = [False] * B
 
@@ -471,8 +472,17 @@ def generate_v4(
             step_idx,
             buffers,
             config=config,
+            auditory_feedback=prev_thought,
             repetition_penalty=repetition_penalty,
         )
+
+        # Thought re-afference for step t+1
+        soft_p = lax.stop_gradient(jax.nn.softmax(logits, axis=-1))
+        soft_emb = jnp.matmul(soft_p, params["sensory.embedding.weight"])
+        g = jax.nn.silu(jnp.matmul(soft_emb, params["sensory.fc1_gate.weight"].T))
+        v = jnp.matmul(soft_emb, params["sensory.fc1_val.weight"].T)
+        h_norm = rms_norm(g * v, params["sensory.norm1.weight"])
+        prev_thought = lax.stop_gradient(rms_norm(jnp.matmul(h_norm, params["sensory.fc2.weight"].T) + soft_emb, params["sensory.norm_out.weight"]))
 
         # Thalamic retention
         if thalamic_anchor_weight > 0.0:
