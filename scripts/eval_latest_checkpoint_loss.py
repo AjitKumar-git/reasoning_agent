@@ -90,7 +90,7 @@ class BitwiseJAXEngine:
     """Exact bitwise PyTorch implementation of the JAX V4 CerebroSpheroid architecture."""
     def __init__(self, ckpt_dict, device):
         self.device = device
-        self.p = {k: v.to(device) for k, v in ckpt_dict.items()}
+        self.p = {k: v.to(device=device, dtype=torch.float32) for k, v in ckpt_dict.items()}
         self.num_shells = 16
         self.num_shortcut_tracts = 40
         self.src_idx = (torch.arange(self.num_shortcut_tracts) % self.num_shells).to(device)
@@ -358,10 +358,6 @@ def main():
     for r in results:
         print(f"{r['mode']:<48} | {r['loss_total']:<9.4f} | {r['ppl_total']:<10.2f} | {r['loss_oh']:<10.4f} | {r['loss_gsm']:.4f}")
     print("=" * 80)
-
-
-if __name__ == "__main__":
-    main()
 
 
 if __name__ == "__main__":

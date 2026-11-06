@@ -66,16 +66,42 @@ def check_remote_manifest(url: Optional[str] = None, token: Optional[str] = None
         return {"status": "offline", "has_latest": False, "has_best": False, "manifest": {}}
 
 
+def _download_range_chunk(url: str, token: str, start: int, end: int, filepath: str, chunk_idx: int) -> int:
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Range": f"bytes={start}-{end}",
+        "User-Agent": "CerebroCloudSync/1.0",
+    }
+    req = urllib.request.Request(url, headers=headers)
+    for attempt in range(5):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = resp.read()
+                expected = end - start + 1
+                if len(data) != expected:
+                    raise ValueError(f"Chunk {chunk_idx}: expected {expected} bytes, got {len(data)}")
+                with open(filepath, "r+b") as f:
+                    f.seek(start)
+                    f.write(data)
+                return len(data)
+        except Exception as e:
+            if attempt == 4:
+                raise e
+            time.sleep(1.0 + attempt)
+    return 0
+
+
 def pull_checkpoint(
     local_dest: str,
     target_type: str = "latest",
     url: Optional[str] = None,
     token: Optional[str] = None,
-    show_progress: bool = True
+    show_progress: bool = True,
+    num_workers: int = 8,
 ) -> bool:
     """
-    Downloads latest.pt or best.pt from bioflo.in with real-time streaming progress
-    and automatic HTTP Range resumption across network drops or server timeouts.
+    Downloads latest.pt or best.pt from bioflo.in with high-speed multi-threaded
+    HTTP Range streaming and automatic chunk integrity checks.
     Returns True if successfully downloaded and verified.
     """
     sync_url = url or DEFAULT_URL
@@ -103,53 +129,52 @@ def pull_checkpoint(
         except Exception:
             pass
 
-        downloaded = 0
-        if os.path.exists(tmp_dest):
-            downloaded = os.path.getsize(tmp_dest)
-            if total_bytes > 0 and downloaded >= total_bytes:
-                downloaded = total_bytes
+        # Fast parallel download if server supports Range probing
+        if total_bytes > 10 * 1024 * 1024:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            chunk_size = 8 * 1024 * 1024  # 8 MB chunks
+            ranges = []
+            start = 0
+            while start < total_bytes:
+                end = min(start + chunk_size - 1, total_bytes - 1)
+                ranges.append((start, end))
+                start = end + 1
 
-        max_retries = 8
-        retry = 0
-        while retry < max_retries:
-            headers = {"Authorization": f"Bearer {sync_token}", "User-Agent": "CerebroCloudSync/1.0"}
-            if downloaded > 0 and total_bytes > 0:
-                headers["Range"] = f"bytes={downloaded}-{total_bytes - 1}"
-                mode = "ab"
-            else:
-                mode = "wb"
-                downloaded = 0
+            with open(tmp_dest, "wb") as f:
+                f.truncate(total_bytes)
 
-            req = urllib.request.Request(download_url, headers=headers)
-            try:
-                with urllib.request.urlopen(req, timeout=120) as resp, open(tmp_dest, mode) as f:
-                    if total_bytes == 0:
-                        total_bytes = int(resp.headers.get("Content-Length", 0))
+            completed_bytes = 0
+            with ThreadPoolExecutor(max_workers=num_workers) as executor:
+                futures = [
+                    executor.submit(_download_range_chunk, download_url, sync_token, r[0], r[1], tmp_dest, idx)
+                    for idx, r in enumerate(ranges)
+                ]
+                for fut in as_completed(futures):
+                    completed_bytes += fut.result()
+                    if show_progress:
+                        pct = (completed_bytes / total_bytes) * 100
+                        speed = (completed_bytes / 1e6) / max(time.time() - t0, 0.1)
+                        print(f"\r  Downloading ({num_workers} threads): {completed_bytes / 1e6:.1f} / {total_bytes / 1e6:.1f} MB "
+                              f"({pct:.1f}%) | {speed:.1f} MB/s", end="", flush=True)
 
-                    while True:
-                        chunk = resp.read(2 * 1024 * 1024)  # 2 MB chunks
-                        if not chunk:
-                            break
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        if show_progress and total_bytes > 0:
-                            pct = (downloaded / total_bytes) * 100
-                            speed = (downloaded / (1024 * 1024)) / max(time.time() - t0, 0.1)
-                            print(f"\r  Downloading: {downloaded / 1e6:.1f} / {total_bytes / 1e6:.1f} MB "
-                                  f"({pct:.1f}%) | {speed:.1f} MB/s", end="", flush=True)
-
-                if total_bytes > 0 and downloaded >= total_bytes:
-                    break
-                elif total_bytes > 0 and downloaded < total_bytes:
-                    print(f"\n⚠️ [cloud_sync] Transfer paused at {downloaded / 1e6:.1f} / {total_bytes / 1e6:.1f} MB. Resuming via HTTP Range...")
-                    retry += 1
-                    time.sleep(1.0)
-                else:
-                    break
-            except Exception as conn_err:
-                retry += 1
-                print(f"\n⚠️ [cloud_sync] Stream interrupted ({conn_err}). Resuming in {retry}s...")
-                time.sleep(retry)
+        else:
+            # Fallback sequential streaming for small files or non-range endpoints
+            downloaded = 0
+            req = urllib.request.Request(download_url, headers={"Authorization": f"Bearer {sync_token}", "User-Agent": "CerebroCloudSync/1.0"})
+            with urllib.request.urlopen(req, timeout=120) as resp, open(tmp_dest, "wb") as f:
+                if total_bytes == 0:
+                    total_bytes = int(resp.headers.get("Content-Length", 0))
+                while True:
+                    chunk = resp.read(2 * 1024 * 1024)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if show_progress and total_bytes > 0:
+                        pct = (downloaded / total_bytes) * 100
+                        speed = (downloaded / 1e6) / max(time.time() - t0, 0.1)
+                        print(f"\r  Downloading: {downloaded / 1e6:.1f} / {total_bytes / 1e6:.1f} MB "
+                              f"({pct:.1f}%) | {speed:.1f} MB/s", end="", flush=True)
 
         if os.path.exists(tmp_dest):
             actual_sz = os.path.getsize(tmp_dest)
@@ -348,11 +373,13 @@ def push_checkpoint_async(
 def auto_sync_checkpoints(
     local_dir: str = "checkpoints",
     url: Optional[str] = None,
-    token: Optional[str] = None
+    token: Optional[str] = None,
+    resume_target: str = "latest"
 ) -> Optional[str]:
     """
     Checks remote status against local files.
-    If remote latest has higher step than local, automatically downloads it.
+    If remote checkpoint is newer, automatically downloads it.
+    Can target either 'latest' (highest step) or 'best' (minimum validation loss).
     Returns path to the best available checkpoint file for resuming.
     """
     os.makedirs(local_dir, exist_ok=True)
@@ -360,8 +387,10 @@ def auto_sync_checkpoints(
     remote_manifest = manifest_info.get("manifest", {})
     if not isinstance(remote_manifest, dict):
         remote_manifest = {}
-    remote_latest = remote_manifest.get("latest", {}) if isinstance(remote_manifest, dict) else {}
-    remote_step = remote_latest.get("step", 0) if isinstance(remote_latest, dict) else 0
+    
+    target_key = "best" if resume_target == "best" else "latest"
+    remote_target = remote_manifest.get(target_key, {}) if isinstance(remote_manifest, dict) else {}
+    remote_step = remote_target.get("step", 0) if isinstance(remote_target, dict) else 0
 
     # Inspect local checkpoint directory
     local_latest_step = -1
@@ -391,20 +420,21 @@ def auto_sync_checkpoints(
             local_latest_step = s
             local_latest_path = cand
 
-    print(f"🔍 [cloud_sync] Checkpoint Assessment: Local Step = {local_latest_step:,} | Remote Step = {remote_step:,}")
+    print(f"🔍 [cloud_sync] Checkpoint Assessment ({target_key}): Local Step = {local_latest_step:,} | Remote Step = {remote_step:,}")
 
-    target_local_file = os.path.join(local_dir, "cerebro_spheroid_v4_latest.pt")
-    if remote_step > local_latest_step and manifest_info.get("has_latest"):
-        print(f"📥 [cloud_sync] Remote checkpoint is newer ({remote_step:,} > {local_latest_step:,}). Pulling from bioflo.in...")
-        success = pull_checkpoint(target_local_file, target_type="latest", url=url, token=token)
+    target_local_file = os.path.join(local_dir, f"cerebro_spheroid_v4_{target_key}.pt")
+    has_target = manifest_info.get(f"has_{target_key}", False)
+    if (remote_step > local_latest_step or not os.path.exists(target_local_file)) and has_target:
+        print(f"📥 [cloud_sync] Pulling {target_key} checkpoint from bioflo.in (Step {remote_step:,})...")
+        success = pull_checkpoint(target_local_file, target_type=target_key, url=url, token=token)
         if success:
-            loss_val = float(remote_latest.get("loss", 7.34)) if isinstance(remote_latest, dict) else 7.34
+            loss_val = float(remote_target.get("loss", 7.34)) if isinstance(remote_target, dict) else 7.34
             meta_payload = {
                 "step": remote_step,
                 "loss": loss_val,
                 "best": loss_val,
                 "selected": loss_val,
-                "source": remote_latest.get("source", "bioflo"),
+                "source": remote_target.get("source", "bioflo"),
                 "resumed_from_cloud": True,
             }
             for meta_ext in [".json", ".meta.json"]:
@@ -414,5 +444,8 @@ def auto_sync_checkpoints(
                 except Exception:
                     pass
             return target_local_file
+
+    if target_key == "best" and os.path.exists(target_local_file):
+        return target_local_file
 
     return local_latest_path or (target_local_file if os.path.exists(target_local_file) else None)
