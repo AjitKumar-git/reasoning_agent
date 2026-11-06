@@ -155,7 +155,8 @@ def run_elastic_context_probe():
         if step % 3 == 0 or step == 1:
             print(f"  Step {step:2d}/15 | Bucket: {name:<22} (P={p_len:3d}, T={t_len:4d}) | Loss: {loss_val:6.4f}")
 
-    diagnostics = compute_manifold_diagnostics(model)
+    state = model.init_brain_state(1, device=device)
+    diagnostics = compute_manifold_diagnostics(model, state)
     print("\n" + "=" * 80)
     print("PROBE RESULTS SUMMARY:")
     print(f"  • Initial Loss              : {initial_loss:.4f} -> Final Loss: {final_loss:.4f}")
