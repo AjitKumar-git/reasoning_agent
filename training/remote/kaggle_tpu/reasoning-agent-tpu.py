@@ -36,7 +36,7 @@ cmd = [
     "training/train_v4_jax.py",
     "--ckpt_dir", "/kaggle/working/checkpoints",
     "--resume_target", "latest",
-    "--dataset_source", "balanced_mix",
+    "--dataset_source", "dense_edu",
     "--elastic_window",
     "--total_window", "1024",
     "--batch_size", "16",

@@ -68,11 +68,10 @@ def parse_args(args_list=None):
     parser.add_argument("--deliberation_mode", type=str, default="scheduled", choices=["scheduled", "teacher_forcing", "internal"])
     parser.add_argument("--repetition_penalty", type=float, default=1.25, help="Two-tier refractory repetition penalty multiplier (default: 1.25)")
     parser.add_argument("--persona_id", type=int, default=None, help="Agentic persona ID (0=Reasoner, 1=Explorer, 2=Concise, 3=Verifier, or None for round-robin curriculum)")
-    parser.add_argument("--dataset_source", type=str, default="openhermes",
-                        choices=["openhermes", "fineweb_edu", "balanced_mix"],
-                        help="Streaming training dataset: 'openhermes' (default stable reasoning corpus), "
-                             "'fineweb_edu' (HuggingFaceFW/fineweb-edu sample-10BT educational text), "
-                             "or 'balanced_mix' (50%% OpenHermes, 50%% FineWeb-Edu)")
+    parser.add_argument("--dataset_source", type=str, default="dense_edu",
+                        choices=["openhermes", "fineweb_edu", "balanced_mix", "dense_edu"],
+                        help="Streaming training dataset: 'dense_edu' (40%% Cosmopedia-v2 + 40%% FineWeb-Edu [score>=4.0] + 20%% OpenHermes-2.5), "
+                             "'balanced_mix' (50%% OpenHermes, 50%% FineWeb-Edu), 'fineweb_edu', or 'openhermes'")
     parser.add_argument("--cloud_sync", action="store_true", default=False, help="Enable automatic checkpoint syncing with bioflo.in")
     parser.add_argument("--resume_target", type=str, default="latest", choices=["latest", "best"], help="Target checkpoint to pull from bioflo.in ('latest' or 'best')")
     parser.add_argument("--cloud_url", type=str, default="https://bioflo.in/api/cerebro/sync.php", help="bioflo.in sync endpoint")
@@ -244,12 +243,70 @@ def main(args=None):
         cloud_token=args.cloud_token,
     )
 
+    # 4b. Multi-Device SPMD Mesh Sharding (8 TPU Cores or Multi-GPU)
+    num_devices = len(devices)
+    batch_sharding = None
+    if num_devices > 1:
+        try:
+            from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
+            mesh = Mesh(np.array(devices), axis_names=('data',))
+            batch_sharding = NamedSharding(mesh, P('data', None))
+            print(f"⚡ JAX SPMD Multi-Device Mesh Active: Sharding batch across {num_devices} devices in parallel!")
+        except Exception as mesh_err:
+            print(f"⚠️ Multi-device mesh initialization notice: {mesh_err}")
+
     # 5. Data Stream Generator with Elastic Sliding Buckets & Feedback
     from datasets import load_dataset
     from src.elastic_window import ElasticBucketBatcher, get_default_elastic_buckets
 
-    ds_choice = getattr(args, "dataset_source", "openhermes")
-    if ds_choice == "fineweb_edu":
+    ds_choice = getattr(args, "dataset_source", "dense_edu")
+    if ds_choice == "dense_edu":
+        print("\n📦 Initializing 3B Dense Knowledge Stream (40% Cosmopedia-v2 + 40% FineWeb-Edu [score>=4.0] + 20% OpenHermes)...")
+        cosmo_raw = iter(load_dataset("HuggingFaceTB/cosmopedia-v2", "cosmopedia-v2", split="train", streaming=True))
+        fw_raw = iter(load_dataset("HuggingFaceFW/fineweb-edu", name="sample-10BT", split="train", streaming=True))
+        oh_raw = iter(load_dataset("teknium/OpenHermes-2.5", split="train", streaming=True))
+
+        def _dense_edu_stream():
+            turn = 0
+            while True:
+                mod5 = turn % 5
+                if mod5 == 0 or mod5 == 2:
+                    try:
+                        row = next(cosmo_raw)
+                        p = (row.get("prompt") or "").strip()
+                        r = (row.get("text") or "").strip()
+                        if len(p) >= 10 and len(r) >= 50:
+                            yield {"conversations": [{"from": "human", "value": p}, {"from": "gpt", "value": r}]}
+                    except StopIteration:
+                        break
+                elif mod5 == 1 or mod5 == 4:
+                    try:
+                        for row in fw_raw:
+                            score = float(row.get("score", 0.0) or row.get("educational_score", 0.0))
+                            if score >= 4.0:
+                                text = (row.get("text") or "").strip()
+                                if len(text) >= 50:
+                                    if "\n\n" in text:
+                                        p, r = text.split("\n\n", 1)
+                                    else:
+                                        lines = text.split(". ", 1)
+                                        p = lines[0] + "."
+                                        r = lines[1] if len(lines) > 1 else text
+                                    if len(p) < 15:
+                                        p = "Explain the scientific/educational concept behind this:\n" + p
+                                    yield {"conversations": [{"from": "human", "value": p.strip()}, {"from": "gpt", "value": r.strip()}]}
+                                    break
+                    except StopIteration:
+                        break
+                else:  # mod5 == 3: OpenHermes reasoning
+                    try:
+                        yield next(oh_raw)
+                    except StopIteration:
+                        break
+                turn += 1
+
+        data_iter = _dense_edu_stream()
+    elif ds_choice == "fineweb_edu":
         print("\n📦 Initializing streaming educational data (HuggingFaceFW/fineweb-edu: sample-10BT)...")
         raw_ds = load_dataset("HuggingFaceFW/fineweb-edu", name="sample-10BT", split="train", streaming=True)
         def _fineweb_stream():
@@ -308,18 +365,19 @@ def main(args=None):
         dataset = load_dataset("teknium/OpenHermes-2.5", split="train", streaming=True)
         data_iter = iter(dataset)
 
+    global_batch_size = args.batch_size * num_devices if num_devices > 1 else args.batch_size
     if args.elastic_window:
         buckets = get_default_elastic_buckets(args.total_window)
-        print(f"🌊 Elastic Sliding Context Window Active (Budget: {args.total_window} tokens):")
+        print(f"🌊 Elastic Sliding Context Window Active (Budget: {args.total_window} tokens | Global Batch: {global_batch_size}):")
         for idx, (b_name, bp, bt) in enumerate(buckets):
             print(f"   Bucket {idx}: {b_name:<18} (Prompt: {bp:4d} tok -> Target: {bt:4d} tok)")
         batcher = ElasticBucketBatcher(
-            tokenizer, data_iter, batch_size=args.batch_size, total_window=args.total_window, buckets=buckets, framework="jax", return_feedback=True
+            tokenizer, data_iter, batch_size=global_batch_size, total_window=args.total_window, buckets=buckets, framework="jax", return_feedback=True
         )
     else:
         buckets = [("static", args.prompt_len, args.target_len)]
         batcher = ElasticBucketBatcher(
-            tokenizer, data_iter, batch_size=args.batch_size, total_window=args.prompt_len + args.target_len, buckets=buckets, framework="jax", return_feedback=True
+            tokenizer, data_iter, batch_size=global_batch_size, total_window=args.prompt_len + args.target_len, buckets=buckets, framework="jax", return_feedback=True
         )
 
     # 6. Fixed Held-Out Validation Split (Guards against fake low training loss)
@@ -443,6 +501,12 @@ def main(args=None):
                     f_batch = None
                 last_bucket_name = b_name
                 total_step_tokens += int(q_batch.shape[0] * (q_batch.shape[1] + r_batch.shape[1]))
+
+                if batch_sharding is not None and (q_batch.shape[0] % num_devices == 0):
+                    q_batch = jax.device_put(q_batch, batch_sharding)
+                    r_batch = jax.device_put(r_batch, batch_sharding)
+                    if f_batch is not None:
+                        f_batch = jax.device_put(f_batch, batch_sharding)
 
                 micro_loss, micro_grads = compute_grad_step(
                     params,
