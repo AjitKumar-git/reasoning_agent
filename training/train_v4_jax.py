@@ -53,6 +53,8 @@ def parse_args(args_list=None):
     parser.add_argument("--lr", type=float, default=2.0e-3, help="Peak SpheroidOptimizer learning rate")
     parser.add_argument("--min_lr", type=float, default=1.0e-4, help="Final annealed learning rate")
     parser.add_argument("--preset", type=str, default="small", choices=["small", "wide"])
+    parser.add_argument("--dtype", type=str, default="auto", choices=["auto", "fp16", "bf16", "fp32"],
+                        help="Matrix execution precision ('auto' selects fp16 on Turing GPUs to enable 65 TFLOPS Tensor Cores, and bf16 on TPU)")
     parser.add_argument("--max_hours", type=float, default=None, help="Maximum training wall-clock time in hours before graceful shutdown")
     parser.add_argument("--cloud_save_hours", type=float, default=None, help="Hours between asynchronous cloud checkpoint uploads (e.g. 1.0 for hourly uploads; overrides --save_every for cloud sync)")
     parser.add_argument("--source_node", type=str, default=None, help="Identifier for training environment (e.g. kaggle_tpu, colab_tpu, workstation)")
@@ -101,10 +103,36 @@ def main(args=None):
         args.steps = 50_000_000
 
     devices = jax.devices()
+    num_devices = len(devices)
+    dev_kind = devices[0].device_kind.lower() if devices else ""
+    backend = jax.default_backend().lower()
+
+    if args.dtype == "auto":
+        if "tpu" in dev_kind or "tpu" in backend:
+            target_dtype = jnp.bfloat16
+            dtype_desc = "bfloat16 (Native TPU MXU)"
+        elif "gpu" in backend or "cuda" in backend or "nvidia" in dev_kind:
+            # Turing Tesla T4 has 65 TFLOPS FP16 Tensor Cores (0 hardware BF16 units)
+            target_dtype = jnp.float16
+            dtype_desc = "float16 (Native Turing 65 TFLOPS Tensor Cores)"
+        else:
+            target_dtype = jnp.float32
+            dtype_desc = "float32 (CPU)"
+    elif args.dtype == "fp16":
+        target_dtype = jnp.float16
+        dtype_desc = "float16"
+    elif args.dtype == "bf16":
+        target_dtype = jnp.bfloat16
+        dtype_desc = "bfloat16"
+    else:
+        target_dtype = jnp.float32
+        dtype_desc = "float32"
+
     print("=" * 80)
     print("🧠 CEREBRO-SPHEROID V4: JAX HIGH-THROUGHPUT ENGINE")
-    print(f"Devices        : {devices} ({len(devices)} active core(s))")
+    print(f"Devices        : {devices} ({num_devices} active core(s))")
     print(f"Backend Kind   : {devices[0].device_kind}")
+    print(f"Precision      : {dtype_desc}")
     print(f"Batch Size     : {args.batch_size} | Window: {args.prompt_len + args.target_len} tokens")
     if args.max_hours is not None:
         print(f"Target Horizon : Continuous Ingestion ({args.max_hours:.1f} hours max budget)")
@@ -205,8 +233,9 @@ def main(args=None):
         params, buffers = init_v4_params(config, key)
         start_step = 1
 
+    params = {k: v.astype(target_dtype) if jnp.issubdtype(v.dtype, jnp.floating) else v for k, v in params.items()}
     param_count = sum(p.size for p in params.values() if jnp.issubdtype(p.dtype, jnp.inexact))
-    print(f"Model Scale    : {param_count:,} parameters ({param_count * 2 / (1024**2):.1f} MB in bf16)")
+    print(f"Model Scale    : {param_count:,} parameters ({param_count * 2 / (1024**2):.1f} MB in {target_dtype})")
 
     # Notify website / user that training has officially commenced
     if args.cloud_sync:
@@ -379,6 +408,11 @@ def main(args=None):
         batcher = ElasticBucketBatcher(
             tokenizer, data_iter, batch_size=global_batch_size, total_window=args.prompt_len + args.target_len, buckets=buckets, framework="jax", return_feedback=True
         )
+
+    # Asynchronous batch prefetching (prevents GPU/TPU starvation during I/O)
+    from src.elastic_window import PrefetchedBatcher
+    batcher = PrefetchedBatcher(batcher, queue_size=12)
+    print("⚡ Background Asynchronous Batch Prefetcher Active (Queue Depth: 12 batches)")
 
     # 6. Fixed Held-Out Validation Split (Guards against fake low training loss)
     eval_batches = []
@@ -711,6 +745,11 @@ def main(args=None):
         print("✅ Emergency backup completed!")
 
     finally:
+        if "batcher" in locals() and hasattr(batcher, "shutdown"):
+            try:
+                batcher.shutdown()
+            except Exception:
+                pass
         ckpt_mgr.shutdown(wait=True)
 
     print("=" * 80)

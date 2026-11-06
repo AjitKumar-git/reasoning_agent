@@ -17,6 +17,8 @@ Core Principles:
 
 from typing import Dict, List, Tuple, Optional, Any, Iterator
 import collections
+import queue
+import threading
 import numpy as np
 
 
@@ -242,3 +244,33 @@ class ElasticBucketBatcher:
                 r_padded = r_ids + [self.target_pad_id] * (bt - len(r_ids))
 
             self.queues[b_idx].append((q_padded, r_padded))
+
+
+class PrefetchedBatcher:
+    """
+    Wraps an ElasticBucketBatcher with a background worker thread.
+    Pre-tokenizes and buffers batches into a queue so the GPU / TPU
+    never waits for Python CPU tokenization or network download latency.
+    """
+
+    def __init__(self, batcher: ElasticBucketBatcher, queue_size: int = 8):
+        self.batcher = batcher
+        self.queue = queue.Queue(maxsize=queue_size)
+        self.stop_event = threading.Event()
+        self.worker_thread = threading.Thread(target=self._producer_loop, daemon=True)
+        self.worker_thread.start()
+
+    def _producer_loop(self):
+        while not self.stop_event.is_set():
+            try:
+                batch = self.batcher.next_batch()
+                self.queue.put(batch)
+            except Exception:
+                break
+
+    def next_batch(self):
+        return self.queue.get()
+
+    def shutdown(self):
+        self.stop_event.set()
+
