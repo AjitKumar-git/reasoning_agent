@@ -185,9 +185,11 @@ def load_torch_pt_to_jax(
 def discover_latest_checkpoint(
     search_dirs: List[str],
     preferred_pattern: str = r"step_(\d+)\.pt",
+    target_preference: str = "best",
 ) -> Tuple[Optional[str], int, Optional[dict]]:
     """
     Autonomously scans directories to locate the most advanced checkpoint.
+    Supports both step-numbered checkpoints and named milestones ('best', 'latest').
     Returns: (checkpoint_path, latest_step, metadata_dict)
     """
     latest_path: Optional[str] = None
@@ -206,28 +208,40 @@ def discover_latest_checkpoint(
                     max_step = step_num
                     latest_path = pt_file
 
-    # Check latest.pt variants
+    # Check named milestone variants (best.pt, latest.pt)
+    candidate_names = [
+        f"cerebro_spheroid_v4_{target_preference}.pt",
+        f"cerebro_spheroid_v4_jax_{target_preference}.pt",
+        f"{target_preference}.pt",
+        "cerebro_spheroid_v4_best.pt",
+        "cerebro_spheroid_v4_jax_best.pt",
+        "best.pt",
+        "cerebro_spheroid_v4_latest.pt",
+        "cerebro_spheroid_v4_jax_latest.pt",
+        "latest.pt",
+    ]
+
     for d in search_dirs:
         if not os.path.exists(d):
             continue
-        for fname in ["cerebro_spheroid_v4_jax_latest.pt", "cerebro_spheroid_v4_latest.pt", "latest.pt"]:
-            candidate_latest = os.path.join(d, fname)
-            if os.path.exists(candidate_latest):
+        for fname in candidate_names:
+            candidate_file = os.path.join(d, fname)
+            if os.path.exists(candidate_file):
                 step_val = 0
                 meta = {}
-                for meta_cand in [candidate_latest.replace(".pt", ".meta.json"), candidate_latest.replace(".pt", ".json")]:
+                for meta_cand in [candidate_file.replace(".pt", ".meta.json"), candidate_file.replace(".pt", ".json")]:
                     if os.path.exists(meta_cand):
                         try:
                             with open(meta_cand, "r") as f:
                                 meta = json.load(f)
-                                step_val = meta.get("step", 0)
+                                step_val = int(meta.get("step", 0))
                                 if step_val > 0:
                                     break
                         except Exception:
                             pass
                 if step_val == 0 and HAS_TORCH:
                     try:
-                        st = torch.load(candidate_latest, map_location="cpu", weights_only=False)
+                        st = torch.load(candidate_file, map_location="cpu", weights_only=False)
                         if isinstance(st, dict) and "step" in st:
                             step_val = int(st["step"])
                         elif isinstance(st, dict) and "meta" in st and "step" in st["meta"]:
@@ -236,7 +250,7 @@ def discover_latest_checkpoint(
                         pass
                 if step_val >= max_step and step_val > 0:
                     max_step = step_val
-                    latest_path = candidate_latest
+                    latest_path = candidate_file
                     latest_meta = meta
 
     if latest_path and latest_meta is None:

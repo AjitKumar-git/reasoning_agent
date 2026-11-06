@@ -44,8 +44,8 @@ def parse_args(args_list=None):
         args_list = [a for a in sys.argv[1:] if a != "n"]
     parser = argparse.ArgumentParser(description="CerebroSpheroid V4 JAX High-Throughput Trainer")
     parser.add_argument("--steps", "--max_steps", dest="steps", type=int, default=100000, help="Total target steps (default: 100000)")
-    parser.add_argument("--batch_size", type=int, default=64, help="Batch size per TPU device (default: 64)")
-    parser.add_argument("--grad_accum", type=int, default=2, help="Gradient accumulation micro-steps per optimizer update (default: 2)")
+    parser.add_argument("--batch_size", type=int, default=16, help="Batch size per TPU device (default: 16)")
+    parser.add_argument("--grad_accum", type=int, default=4, help="Gradient accumulation micro-steps per optimizer update (default: 4)")
     parser.add_argument("--total_window", type=int, default=1024, help="Total sequence budget for elastic sliding window (default: 1024)")
     parser.add_argument("--prompt_len", type=int, default=256, help="Prompt context length (used when --elastic_window is disabled)")
     parser.add_argument("--target_len", type=int, default=768, help="Deliberated target rollout length (used when --elastic_window is disabled)")
@@ -116,10 +116,16 @@ def main(args=None):
     pad_id = tokenizer.pad_token_id
 
     # 3. Autonomous Checkpoint Discovery & Cloud Synchronization
+    synced_ckpt = None
     if args.cloud_sync:
         try:
             from src.cloud_sync import auto_sync_checkpoints
-            auto_sync_checkpoints(local_dir=args.ckpt_dir, url=args.cloud_url, token=args.cloud_token, resume_target=args.resume_target)
+            synced_ckpt = auto_sync_checkpoints(
+                local_dir=args.ckpt_dir,
+                url=args.cloud_url,
+                token=args.cloud_token,
+                resume_target=args.resume_target
+            )
         except Exception as sync_err:
             print(f"⚠️ [cloud_sync] Check failed: {sync_err}")
 
@@ -134,7 +140,27 @@ def main(args=None):
         "checkpoints",
         "/content",
     ]
-    latest_ckpt, max_step, meta = discover_latest_checkpoint(search_dirs)
+    latest_ckpt, max_step, meta = discover_latest_checkpoint(search_dirs, target_preference=args.resume_target)
+
+    # Prioritize cloud-synced checkpoint if present
+    if synced_ckpt and os.path.exists(synced_ckpt):
+        s_step = 0
+        s_meta = {}
+        for m_ext in [".meta.json", ".json"]:
+            cand = synced_ckpt.replace(".pt", m_ext)
+            if os.path.exists(cand):
+                try:
+                    with open(cand, "r") as mf:
+                        s_meta = json.load(mf)
+                        s_step = int(s_meta.get("step", 0))
+                        if s_step > 0:
+                            break
+                except Exception:
+                    pass
+        if s_step >= max_step or latest_ckpt is None:
+            latest_ckpt = synced_ckpt
+            max_step = s_step
+            meta = s_meta
 
     if latest_ckpt and max_step > 0:
         print(f"\n🔍 Auto-Resume: Discovered existing checkpoint: {latest_ckpt}")
@@ -317,8 +343,9 @@ def main(args=None):
         return jnp.sum(-target_log_probs * mask), jnp.sum(mask)
 
     # 7. Training Loop with Scheduled Sampling and SpheroidOptimizer Updates
-    best_eval_loss = float("inf")
-    best_ema_loss = float("inf")
+    init_loss = float(meta.get("eval_loss", meta.get("loss", meta.get("best", float("inf"))))) if meta else float("inf")
+    best_eval_loss = init_loss if (not math.isnan(init_loss) and init_loss > 0.0) else float("inf")
+    best_ema_loss = best_eval_loss
     ema_loss = None
     t_start = time.time()
     current_step = start_step
@@ -438,7 +465,7 @@ def main(args=None):
                 )
 
             # Held-Out Validation Evaluation (Every args.eval_interval steps, Aligned Teacher-Forced PPL)
-            if eval_batches and (step % args.eval_interval == 0 or step == start_step):
+            if eval_batches and (step % args.eval_interval == 0):
                 eval_tot_loss, eval_tot_tokens = 0.0, 0
                 for eq, er, ef in eval_batches:
                     el, et = eval_step_loss(params, eq, er, ef)
