@@ -2,6 +2,15 @@
 CerebroSpheroid Reasoning Agent Package (V4 Architecture)
 """
 
+# Kaggle / Python 3.12 compatibility shim: Newer pyarrow (>=19) removed pa.PyExtensionType,
+# which causes older HuggingFace datasets (<3.0.0) to raise AttributeError
+try:
+    import pyarrow as pa
+    if not hasattr(pa, "PyExtensionType") and hasattr(pa, "ExtensionType"):
+        pa.PyExtensionType = pa.ExtensionType
+except Exception:
+    pass
+
 # Framework-agnostic utilities
 from .corpus import (
     build_tokenizer,

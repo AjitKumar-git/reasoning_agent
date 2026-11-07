@@ -7,6 +7,14 @@ import os
 import sys
 import subprocess
 
+# PyArrow compatibility monkey-patch for Kaggle Python 3.12 / pyarrow 19+
+try:
+    import pyarrow as pa
+    if not hasattr(pa, "PyExtensionType") and hasattr(pa, "ExtensionType"):
+        pa.PyExtensionType = pa.ExtensionType
+except Exception:
+    pass
+
 print("=" * 80)
 print("🚀 CEREBRO-SPHEROID V4: KAGGLE TPU JAX ENGINE LAUNCH")
 print("================================================================================")
@@ -25,7 +33,7 @@ subprocess.run(["git", "reset", "--hard", "origin/main"], check=True)
 
 # 2. Verify dependencies
 print("\n📦 Checking / installing Python dependencies...")
-subprocess.run([sys.executable, "-m", "pip", "install", "-q", "transformers", "datasets", "sentencepiece", "optax", "torch"], check=True)
+subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-U", "datasets>=3.0.0", "pyarrow", "transformers", "sentencepiece", "optax", "torch"], check=True)
 
 # 3. Create checkpoints directory
 os.makedirs("/kaggle/working/checkpoints", exist_ok=True)

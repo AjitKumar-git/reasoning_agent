@@ -20,6 +20,15 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+# Kaggle / Python 3.12 compatibility shim: Newer pyarrow (>=19) deprecated and removed pa.PyExtensionType,
+# which causes older HuggingFace datasets (<3.0.0) to raise AttributeError
+try:
+    import pyarrow as pa
+    if not hasattr(pa, "PyExtensionType") and hasattr(pa, "ExtensionType"):
+        pa.PyExtensionType = pa.ExtensionType
+except Exception:
+    pass
+
 # Add project root to sys.path
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT_DIR not in sys.path:
@@ -290,6 +299,12 @@ def main(args=None):
             print(f"⚠️ Multi-device mesh initialization notice: {mesh_err}")
 
     # 5. Data Stream Generator with Elastic Sliding Buckets & Feedback
+    try:
+        import pyarrow as pa
+        if not hasattr(pa, "PyExtensionType") and hasattr(pa, "ExtensionType"):
+            pa.PyExtensionType = pa.ExtensionType
+    except Exception:
+        pass
     from datasets import load_dataset
     from src.elastic_window import ElasticBucketBatcher, get_default_elastic_buckets
 

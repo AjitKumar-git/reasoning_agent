@@ -22,6 +22,9 @@ import random
 import re
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Set, Tuple
 
+import pyarrow as pa
+if not hasattr(pa, "PyExtensionType") and hasattr(pa, "ExtensionType"):
+    pa.PyExtensionType = pa.ExtensionType
 import pyarrow.parquet as pq
 
 Pair = Tuple[str, str]
