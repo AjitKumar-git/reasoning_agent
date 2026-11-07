@@ -75,7 +75,7 @@ def _download_range_chunk(url: str, token: str, start: int, end: int, filepath: 
     req = urllib.request.Request(url, headers=headers)
     for attempt in range(5):
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=120) as resp:
                 data = resp.read()
                 expected = end - start + 1
                 if len(data) != expected:
@@ -132,7 +132,7 @@ def pull_checkpoint(
         # Fast parallel download if server supports Range probing
         if total_bytes > 10 * 1024 * 1024:
             from concurrent.futures import ThreadPoolExecutor, as_completed
-            chunk_size = 8 * 1024 * 1024  # 8 MB chunks
+            chunk_size = 2 * 1024 * 1024  # 2 MB chunks (reliable over varying network latencies)
             ranges = []
             start = 0
             while start < total_bytes:
