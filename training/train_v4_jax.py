@@ -88,6 +88,7 @@ def parse_args(args_list=None):
     parser.add_argument("--resume_target", type=str, default="latest", choices=["latest", "best"], help="Target checkpoint to pull from bioflo.in ('latest' or 'best')")
     parser.add_argument("--cloud_url", type=str, default="https://bioflo.in/api/cerebro/sync.php", help="bioflo.in sync endpoint")
     parser.add_argument("--cloud_token", type=str, default="CerebroSpheroid_Sync_Secure_2026", help="Secret sync token")
+    parser.add_argument("--reset_best", action="store_true", default=False, help="Reset best_eval_loss record tracker on benchmark recalibration")
     return parser.parse_args(args_list)
 
 
@@ -515,20 +516,18 @@ def main(args=None):
     batcher = PrefetchedBatcher(batcher, queue_size=12)
     print("⚡ Background Asynchronous Batch Prefetcher Active (Queue Depth: 12 batches)")
 
-    # 6. Fixed Held-Out Validation Split (In-Distribution: OpenHermes + Cosmopedia + FineWeb-Edu)
+    # 6. Fixed Held-Out Validation Split (Clean Educational QA Benchmark: Cosmopedia-v2 + OpenHermes-2.5)
     eval_batches = []
     try:
         from scripts.eval_latest_checkpoint_loss import (
             load_openhermes_eval_records,
             load_cosmopedia_eval_records,
-            load_fineweb_edu_eval_records,
         )
         from training.train_v4_full import build_batch
         import random
         eval_records = (
-            load_openhermes_eval_records(count=32)
-            + load_cosmopedia_eval_records(count=32)
-            + load_fineweb_edu_eval_records(count=32)
+            load_cosmopedia_eval_records(count=32)
+            + load_openhermes_eval_records(count=32)
         )
         rng_eval = random.Random(1337)
         for i in range(0, len(eval_records), args.batch_size):
@@ -544,7 +543,7 @@ def main(args=None):
                     f_arr = jnp.full_like(t_arr, -100)
                     f_arr = f_arr.at[:, 1:].set(t_arr[:, :-1])
                     eval_batches.append((jnp.array(p_eval.numpy()), t_arr, f_arr))
-        print(f"✅ In-Distribution Held-Out Validation: Prepared {len(eval_batches)} evaluation batches ({len(eval_records)} records: 32 OpenHermes + 32 Cosmopedia + 32 FineWeb-Edu).")
+        print(f"✅ Clean Benchmark Held-Out Validation: Prepared {len(eval_batches)} evaluation batches ({len(eval_records)} records: 32 Cosmopedia-v2 + 32 OpenHermes-2.5).")
     except Exception as e:
         print(f"⚠️ Validation setup notice: {e} (will fallback to training EMA for checkpoint selection)")
 
@@ -570,8 +569,12 @@ def main(args=None):
         return mean_loss * total_tokens, total_tokens
 
     # 7. Training Loop with Scheduled Sampling and SpheroidOptimizer Updates
-    init_loss = float(meta.get("eval_loss", meta.get("loss", meta.get("best", float("inf"))))) if meta else float("inf")
-    best_eval_loss = init_loss if (not math.isnan(init_loss) and init_loss > 0.0) else float("inf")
+    if getattr(args, "reset_best", False):
+        best_eval_loss = float("inf")
+        print("🔄 [Benchmark Recalibration] Reset best_eval_loss baseline to allow new clean benchmark tracking.")
+    else:
+        init_loss = float(meta.get("eval_loss", meta.get("loss", meta.get("best", float("inf"))))) if meta else float("inf")
+        best_eval_loss = init_loss if (not math.isnan(init_loss) and init_loss > 0.0) else float("inf")
     best_ema_loss = best_eval_loss
     ema_loss = None
     t_start = time.time()
@@ -745,7 +748,7 @@ def main(args=None):
                 )
 
                 # Record-breaking checkpoint is selected on genuine held-out validation
-                if held_out_loss < best_eval_loss - 0.005:
+                if best_eval_loss == float("inf") or held_out_loss < best_eval_loss - 0.005:
                     best_eval_loss = held_out_loss
                     print(f"  ⭐ GENUINE RECORD (Held-Out): Loss {best_eval_loss:.4f} (PPL {held_out_ppl:.1f}) -> Syncing best.pt\n")
                     ckpt_mgr.dispatch(

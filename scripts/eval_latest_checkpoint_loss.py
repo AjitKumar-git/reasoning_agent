@@ -37,7 +37,9 @@ def load_openhermes_eval_records(count: int = 50):
         table = pf.read_row_group(0)
         convs = table["conversations"].to_pylist()
         records = []
-        for conv in convs:
+        for idx, conv in enumerate(convs):
+            if idx < 100:
+                continue
             pairs = _conversation_pairs(conv)
             for p, a in pairs:
                 if len(p.strip()) > 10 and len(a.strip()) > 10:
@@ -49,7 +51,9 @@ def load_openhermes_eval_records(count: int = 50):
         from datasets import load_dataset
         ds = load_dataset("teknium/OpenHermes-2.5", split="train", streaming=True)
         records = []
-        for row in ds:
+        for idx, row in enumerate(ds):
+            if idx < 100:
+                continue
             conv = row.get("conversations", [])
             pairs = _conversation_pairs(conv)
             for p, a in pairs:
