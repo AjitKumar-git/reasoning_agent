@@ -47,22 +47,23 @@ def get_default_elastic_buckets(total_window: int = 1024) -> List[Tuple[str, int
 
 def select_best_bucket(p_len: int, t_len: int, buckets: List[Tuple[str, int, int]]) -> int:
     """Selects the bucket that minimizes wasted padding while preserving target reasoning tokens."""
-    best_idx = 2  # default balanced
+    best_idx = min(2, len(buckets) - 1)
     min_penalty = float("inf")
 
     for idx, (_, bp, bt) in enumerate(buckets):
         if p_len <= bp and t_len <= bt:
             # Fits completely: penalty is wasted padding
             penalty = (bp - p_len) + (bt - t_len)
-            if penalty < min_penalty:
-                min_penalty = penalty
-                best_idx = idx
         elif p_len <= bp:
             # Fits prompt, mild target truncation
             penalty = (bp - p_len) + (t_len - bt) * 3
-            if penalty < min_penalty:
-                min_penalty = penalty
-                best_idx = idx
+        else:
+            # Prompt exceeds bucket: penalize both prompt and target truncation
+            penalty = (p_len - bp) * 5 + max(0, t_len - bt) * 3
+
+        if penalty < min_penalty:
+            min_penalty = penalty
+            best_idx = idx
 
     return best_idx
 
@@ -137,9 +138,18 @@ class ElasticBucketBatcher:
                 if q_txt and r_txt:
                     return str(q_txt), str(r_txt)
 
-            # 3. GSM8K / Q&A format
+            # 3. GSM8K / Q&A / Cosmopedia format
             q_txt = row.get("question", row.get("prompt", row.get("input", "")))
-            r_txt = row.get("answer", row.get("response", row.get("output", "")))
+            r_txt = row.get("answer", row.get("response", row.get("output", row.get("text", ""))))
+            if q_txt and r_txt:
+                return str(q_txt), str(r_txt)
+            if not q_txt and "text" in row:
+                raw_t = str(row["text"]).strip()
+                if "\n\n" in raw_t:
+                    p, r = raw_t.split("\n\n", 1)
+                else:
+                    p, r = "", raw_t
+                return p.strip(), r.strip()
             return str(q_txt), str(r_txt)
         return "", ""
 

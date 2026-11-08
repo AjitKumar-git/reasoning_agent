@@ -81,9 +81,9 @@ def parse_args(args_list=None):
     parser.add_argument("--persona_id", type=int, default=None, help="Agentic persona ID (0=Reasoner, 1=Explorer, 2=Concise, 3=Verifier, or None for round-robin curriculum)")
     parser.add_argument("--dataset_source", type=str, default="dense_edu",
                         choices=["openhermes", "fineweb_edu", "balanced_mix", "dense_edu", "conversation_sft", "chat_sft"],
-                        help="Streaming training dataset: 'conversation_sft' (50% SmolTalk + 30% OpenHermes + 20% UltraChat), "
+                        help="Streaming training dataset: 'conversation_sft' (40% SmolTalk + 25% Cosmopedia-v2 + 20% OpenHermes-2.5 + 15% UltraChat-200k), "
                              "'dense_edu' (40% Cosmopedia-v2 + 40% FineWeb-Edu [score>=4.0] + 20% OpenHermes-2.5), "
-                             "'balanced_mix' (50% OpenHermes, 50% FineWeb-Edu), 'fineweb_edu', or 'openhermes'")
+                             "'balanced_mix' (35% Cosmopedia-v2 + 35% FineWeb-Edu + 30% OpenHermes-2.5), 'fineweb_edu', or 'openhermes'")
     parser.add_argument("--cloud_sync", action="store_true", default=False, help="Enable automatic checkpoint syncing with bioflo.in")
     parser.add_argument("--resume_target", type=str, default="latest", choices=["latest", "best"], help="Target checkpoint to pull from bioflo.in ('latest' or 'best')")
     parser.add_argument("--cloud_url", type=str, default="https://bioflo.in/api/cerebro/sync.php", help="bioflo.in sync endpoint")
@@ -330,7 +330,9 @@ def main(args=None):
                             row = next(cosmo_raw)
                         p = (row.get("prompt") or "").strip()
                         r = (row.get("text") or "").strip()
-                        if len(p) >= 10 and len(r) >= 50:
+                        if len(p) < 10:
+                            p = "Explain the educational context of the following topic:"
+                        if len(r) >= 30:
                             yield {"conversations": [{"from": "human", "value": p}, {"from": "gpt", "value": r}]}
                     elif mod5 == 1 or mod5 == 4:
                         for _ in range(50):
@@ -386,30 +388,42 @@ def main(args=None):
                 yield {"conversations": [{"from": "human", "value": p.strip()}, {"from": "gpt", "value": r.strip()}]}
         data_iter = _fineweb_stream()
     elif ds_choice in ("conversation_sft", "chat_sft"):
-        print("\n💬 Initializing Super Fine-Tuning Conversational Stream (50% SmolTalk + 30% OpenHermes-2.5 + 20% UltraChat-200k)...")
+        print("\n💬 Initializing Super Fine-Tuning Conversational Stream (40% SmolTalk + 25% Cosmopedia-v2 + 20% OpenHermes-2.5 + 15% UltraChat-200k)...")
         smol_raw = iter(load_dataset("HuggingFaceTB/smoltalk", "all", split="train", streaming=True))
+        cosmo_raw = iter(load_dataset("HuggingFaceTB/cosmopedia-v2", "cosmopedia-v2", split="train", streaming=True))
         oh_raw = iter(load_dataset("teknium/OpenHermes-2.5", split="train", streaming=True))
         ultra_raw = iter(load_dataset("HuggingFaceH4/ultrachat_200k", split="train_sft", streaming=True))
 
         def _conversation_sft_stream():
-            nonlocal smol_raw, oh_raw, ultra_raw
+            nonlocal smol_raw, cosmo_raw, oh_raw, ultra_raw
             turn = 0
             while True:
-                mod10 = turn % 10
+                mod20 = turn % 20
                 try:
-                    if mod10 < 5:  # 50% SmolTalk (everyday dialogue, natural chat, roleplay)
+                    if mod20 < 8:  # 40% SmolTalk (everyday dialogue, natural chat, roleplay)
                         try:
                             yield next(smol_raw)
                         except StopIteration:
                             smol_raw = iter(load_dataset("HuggingFaceTB/smoltalk", "all", split="train", streaming=True))
                             yield next(smol_raw)
-                    elif mod10 < 8:  # 30% OpenHermes-2.5 (complex instructions, reasoning QA)
+                    elif mod20 < 13:  # 25% Cosmopedia-v2 (textbook facts, dense educational knowledge)
+                        try:
+                            row = next(cosmo_raw)
+                        except StopIteration:
+                            cosmo_raw = iter(load_dataset("HuggingFaceTB/cosmopedia-v2", "cosmopedia-v2", split="train", streaming=True))
+                            row = next(cosmo_raw)
+                        p = (row.get("prompt") or "").strip()
+                        r = (row.get("text") or "").strip()
+                        if not p:
+                            p = "Explain the educational context of the following topic:"
+                        yield {"conversations": [{"from": "human", "value": p}, {"from": "gpt", "value": r}]}
+                    elif mod20 < 17:  # 20% OpenHermes-2.5 (complex instructions, reasoning QA)
                         try:
                             yield next(oh_raw)
                         except StopIteration:
                             oh_raw = iter(load_dataset("teknium/OpenHermes-2.5", split="train", streaming=True))
                             yield next(oh_raw)
-                    else:  # 20% UltraChat-200k (multi-turn conversational banter and persona)
+                    else:  # 15% UltraChat-200k (multi-turn conversational banter and persona)
                         try:
                             yield next(ultra_raw)
                         except StopIteration:
@@ -421,20 +435,36 @@ def main(args=None):
 
         data_iter = _conversation_sft_stream()
     elif ds_choice == "balanced_mix":
-        print("\n📦 Initializing balanced streaming mix (50% OpenHermes-2.5 + 50% FineWeb-Edu)...")
-        oh_ds = iter(load_dataset("teknium/OpenHermes-2.5", split="train", streaming=True))
+        print("\n📦 Initializing balanced pre-training mix (35% Cosmopedia-v2 + 35% FineWeb-Edu + 30% OpenHermes-2.5)...")
+        cosmo_raw = iter(load_dataset("HuggingFaceTB/cosmopedia-v2", "cosmopedia-v2", split="train", streaming=True))
         fw_raw = iter(load_dataset("HuggingFaceFW/fineweb-edu", name="sample-10BT", split="train", streaming=True))
+        oh_raw = iter(load_dataset("teknium/OpenHermes-2.5", split="train", streaming=True))
+
         def _balanced_stream():
+            nonlocal cosmo_raw, fw_raw, oh_raw
             turn = 0
             while True:
-                if turn % 2 == 0:
-                    try:
-                        yield next(oh_ds)
-                    except StopIteration:
-                        break
-                else:
-                    try:
-                        for row in fw_raw:
+                mod20 = turn % 20
+                try:
+                    if mod20 < 7:  # 35% Cosmopedia-v2 (textbook facts, dense synthetic educational topics)
+                        try:
+                            row = next(cosmo_raw)
+                        except StopIteration:
+                            cosmo_raw = iter(load_dataset("HuggingFaceTB/cosmopedia-v2", "cosmopedia-v2", split="train", streaming=True))
+                            row = next(cosmo_raw)
+                        p = (row.get("prompt") or "").strip()
+                        r = (row.get("text") or "").strip()
+                        if len(p) < 10:
+                            p = "Explain the educational context of the following topic:"
+                        if len(r) >= 30:
+                            yield {"conversations": [{"from": "human", "value": p}, {"from": "gpt", "value": r}]}
+                    elif mod20 < 14:  # 35% FineWeb-Edu (diverse educational web crawl, score >= 3.0)
+                        for _ in range(30):
+                            try:
+                                row = next(fw_raw)
+                            except StopIteration:
+                                fw_raw = iter(load_dataset("HuggingFaceFW/fineweb-edu", name="sample-10BT", split="train", streaming=True))
+                                row = next(fw_raw)
                             score = float(row.get("score", 0.0) or row.get("educational_score", 0.0))
                             if score >= 3.0:
                                 text = (row.get("text") or "").strip()
@@ -449,9 +479,16 @@ def main(args=None):
                                         p = "Explain the educational context of the following topic:\n" + p
                                     yield {"conversations": [{"from": "human", "value": p.strip()}, {"from": "gpt", "value": r.strip()}]}
                                     break
-                    except StopIteration:
-                        break
+                    else:  # 30% OpenHermes-2.5 (complex problem-solving, code, reasoning dialogues)
+                        try:
+                            yield next(oh_raw)
+                        except StopIteration:
+                            oh_raw = iter(load_dataset("teknium/OpenHermes-2.5", split="train", streaming=True))
+                            yield next(oh_raw)
+                except Exception as stream_err:
+                    time.sleep(1.0)
                 turn += 1
+
         data_iter = _balanced_stream()
     else:
         print("\n📦 Initializing streaming reasoning data (teknium/OpenHermes-2.5)...")
