@@ -515,13 +515,21 @@ def main(args=None):
     batcher = PrefetchedBatcher(batcher, queue_size=12)
     print("⚡ Background Asynchronous Batch Prefetcher Active (Queue Depth: 12 batches)")
 
-    # 6. Fixed Held-Out Validation Split (Guards against fake low training loss)
+    # 6. Fixed Held-Out Validation Split (In-Distribution: OpenHermes + Cosmopedia + FineWeb-Edu)
     eval_batches = []
     try:
-        from scripts.eval_latest_checkpoint_loss import load_openhermes_eval_records, load_gsm8k_eval_records
+        from scripts.eval_latest_checkpoint_loss import (
+            load_openhermes_eval_records,
+            load_cosmopedia_eval_records,
+            load_fineweb_edu_eval_records,
+        )
         from training.train_v4_full import build_batch
         import random
-        eval_records = load_openhermes_eval_records(count=32) + load_gsm8k_eval_records(count=32)
+        eval_records = (
+            load_openhermes_eval_records(count=32)
+            + load_cosmopedia_eval_records(count=32)
+            + load_fineweb_edu_eval_records(count=32)
+        )
         rng_eval = random.Random(1337)
         for i in range(0, len(eval_records), args.batch_size):
             chunk = eval_records[i : i + args.batch_size]
@@ -536,7 +544,7 @@ def main(args=None):
                     f_arr = jnp.full_like(t_arr, -100)
                     f_arr = f_arr.at[:, 1:].set(t_arr[:, :-1])
                     eval_batches.append((jnp.array(p_eval.numpy()), t_arr, f_arr))
-        print(f"✅ Held-Out Validation: Prepared {len(eval_batches)} evaluation batches ({len(eval_records)} records).")
+        print(f"✅ In-Distribution Held-Out Validation: Prepared {len(eval_batches)} evaluation batches ({len(eval_records)} records: 32 OpenHermes + 32 Cosmopedia + 32 FineWeb-Edu).")
     except Exception as e:
         print(f"⚠️ Validation setup notice: {e} (will fallback to training EMA for checkpoint selection)")
 

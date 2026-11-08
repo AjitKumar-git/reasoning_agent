@@ -60,6 +60,53 @@ def load_openhermes_eval_records(count: int = 50):
         return records
 
 
+def load_cosmopedia_eval_records(count: int = 32):
+    """Loads held-out educational textbook samples from Cosmopedia-v2."""
+    from datasets import load_dataset
+    ds = load_dataset("HuggingFaceTB/cosmopedia-v2", "cosmopedia-v2", split="train", streaming=True)
+    records = []
+    # Skip initial 200 samples to avoid direct training overlap
+    for idx, row in enumerate(ds):
+        if idx < 200:
+            continue
+        p = (row.get("prompt") or "").strip()
+        r = (row.get("text") or "").strip()
+        if len(p) < 10:
+            p = "Explain the educational context of the following topic:"
+        if len(r) >= 50:
+            records.append(("cosmopedia", p, r))
+            if len(records) >= count:
+                break
+    return records
+
+
+def load_fineweb_edu_eval_records(count: int = 32):
+    """Loads held-out high-quality educational web samples from FineWeb-Edu."""
+    from datasets import load_dataset
+    ds = load_dataset("HuggingFaceFW/fineweb-edu", name="sample-10BT", split="train", streaming=True)
+    records = []
+    # Skip initial 200 samples to avoid direct training overlap
+    for idx, row in enumerate(ds):
+        if idx < 200:
+            continue
+        score = float(row.get("score", 0.0) or row.get("educational_score", 0.0))
+        if score >= 3.5:
+            text = (row.get("text") or "").strip()
+            if len(text) >= 60:
+                if "\n\n" in text:
+                    p, r = text.split("\n\n", 1)
+                else:
+                    lines = text.split(". ", 1)
+                    p = lines[0] + "."
+                    r = lines[1] if len(lines) > 1 else text
+                if len(p) < 15:
+                    p = "Explain the educational context of the following topic:\n" + p
+                records.append(("fineweb_edu", p.strip(), r.strip()))
+                if len(records) >= count:
+                    break
+    return records
+
+
 def load_gsm8k_eval_records(count: int = 50):
     """Loads held-out prompt-target pairs from GSM8K."""
     path = os.path.join(ROOT_DIR, "data/gsm8k/gsm8k_train.parquet")
