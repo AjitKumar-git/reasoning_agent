@@ -121,9 +121,23 @@ class ElasticBucketBatcher:
                     elif ("gpt" in sender or "assistant" in sender or "model" in sender) and not r_txt:
                         r_txt = val
                 if q_txt and r_txt:
-                    return q_txt, r_txt
+                    return str(q_txt), str(r_txt)
 
-            # 2. GSM8K / Q&A format
+            # 2. SmolTalk / UltraChat / ChatML format
+            msgs = row.get("messages", [])
+            if msgs:
+                q_txt, r_txt = "", ""
+                for msg in msgs:
+                    role = str(msg.get("role", "")).lower()
+                    val = msg.get("content", "")
+                    if ("user" in role or "human" in role) and not q_txt:
+                        q_txt = val
+                    elif ("assistant" in role or "model" in role or "gpt" in role) and not r_txt:
+                        r_txt = val
+                if q_txt and r_txt:
+                    return str(q_txt), str(r_txt)
+
+            # 3. GSM8K / Q&A format
             q_txt = row.get("question", row.get("prompt", row.get("input", "")))
             r_txt = row.get("answer", row.get("response", row.get("output", "")))
             return str(q_txt), str(r_txt)

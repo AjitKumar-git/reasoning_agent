@@ -80,9 +80,10 @@ def parse_args(args_list=None):
     parser.add_argument("--repetition_penalty", type=float, default=1.25, help="Two-tier refractory repetition penalty multiplier (default: 1.25)")
     parser.add_argument("--persona_id", type=int, default=None, help="Agentic persona ID (0=Reasoner, 1=Explorer, 2=Concise, 3=Verifier, or None for round-robin curriculum)")
     parser.add_argument("--dataset_source", type=str, default="dense_edu",
-                        choices=["openhermes", "fineweb_edu", "balanced_mix", "dense_edu"],
-                        help="Streaming training dataset: 'dense_edu' (40%% Cosmopedia-v2 + 40%% FineWeb-Edu [score>=4.0] + 20%% OpenHermes-2.5), "
-                             "'balanced_mix' (50%% OpenHermes, 50%% FineWeb-Edu), 'fineweb_edu', or 'openhermes'")
+                        choices=["openhermes", "fineweb_edu", "balanced_mix", "dense_edu", "conversation_sft", "chat_sft"],
+                        help="Streaming training dataset: 'conversation_sft' (50% SmolTalk + 30% OpenHermes + 20% UltraChat), "
+                             "'dense_edu' (40% Cosmopedia-v2 + 40% FineWeb-Edu [score>=4.0] + 20% OpenHermes-2.5), "
+                             "'balanced_mix' (50% OpenHermes, 50% FineWeb-Edu), 'fineweb_edu', or 'openhermes'")
     parser.add_argument("--cloud_sync", action="store_true", default=False, help="Enable automatic checkpoint syncing with bioflo.in")
     parser.add_argument("--resume_target", type=str, default="latest", choices=["latest", "best"], help="Target checkpoint to pull from bioflo.in ('latest' or 'best')")
     parser.add_argument("--cloud_url", type=str, default="https://bioflo.in/api/cerebro/sync.php", help="bioflo.in sync endpoint")
@@ -384,6 +385,41 @@ def main(args=None):
                     p = "Explain the educational context of the following topic:\n" + p
                 yield {"conversations": [{"from": "human", "value": p.strip()}, {"from": "gpt", "value": r.strip()}]}
         data_iter = _fineweb_stream()
+    elif ds_choice in ("conversation_sft", "chat_sft"):
+        print("\n💬 Initializing Super Fine-Tuning Conversational Stream (50% SmolTalk + 30% OpenHermes-2.5 + 20% UltraChat-200k)...")
+        smol_raw = iter(load_dataset("HuggingFaceTB/smoltalk", "all", split="train", streaming=True))
+        oh_raw = iter(load_dataset("teknium/OpenHermes-2.5", split="train", streaming=True))
+        ultra_raw = iter(load_dataset("HuggingFaceH4/ultrachat_200k", split="train_sft", streaming=True))
+
+        def _conversation_sft_stream():
+            nonlocal smol_raw, oh_raw, ultra_raw
+            turn = 0
+            while True:
+                mod10 = turn % 10
+                try:
+                    if mod10 < 5:  # 50% SmolTalk (everyday dialogue, natural chat, roleplay)
+                        try:
+                            yield next(smol_raw)
+                        except StopIteration:
+                            smol_raw = iter(load_dataset("HuggingFaceTB/smoltalk", "all", split="train", streaming=True))
+                            yield next(smol_raw)
+                    elif mod10 < 8:  # 30% OpenHermes-2.5 (complex instructions, reasoning QA)
+                        try:
+                            yield next(oh_raw)
+                        except StopIteration:
+                            oh_raw = iter(load_dataset("teknium/OpenHermes-2.5", split="train", streaming=True))
+                            yield next(oh_raw)
+                    else:  # 20% UltraChat-200k (multi-turn conversational banter and persona)
+                        try:
+                            yield next(ultra_raw)
+                        except StopIteration:
+                            ultra_raw = iter(load_dataset("HuggingFaceH4/ultrachat_200k", split="train_sft", streaming=True))
+                            yield next(ultra_raw)
+                except Exception as stream_err:
+                    time.sleep(1.0)
+                turn += 1
+
+        data_iter = _conversation_sft_stream()
     elif ds_choice == "balanced_mix":
         print("\n📦 Initializing balanced streaming mix (50% OpenHermes-2.5 + 50% FineWeb-Edu)...")
         oh_ds = iter(load_dataset("teknium/OpenHermes-2.5", split="train", streaming=True))
