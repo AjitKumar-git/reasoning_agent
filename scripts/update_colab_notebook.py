@@ -172,6 +172,8 @@ notebook = {
     "metadata": {
         "accelerator": "TPU",
         "colab": {
+            "accelerator": "TPU",
+            "gpuType": "V5E1",
             "provenance": [],
             "toc_visible": True
         },
