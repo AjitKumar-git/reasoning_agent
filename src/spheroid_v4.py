@@ -798,7 +798,7 @@ class CerebroSpheroidV4(nn.Module):
         if not os.path.exists(checkpoint_path):
             return False
         state = torch.load(checkpoint_path, map_location=device, weights_only=False)
-        weights = state.get("model", state.get("model_state_dict", state)) if isinstance(state, dict) else state
+        weights = state.get("params", state.get("model", state.get("model_state_dict", state))) if isinstance(state, dict) else state
         if not isinstance(weights, dict):
             return False
 
