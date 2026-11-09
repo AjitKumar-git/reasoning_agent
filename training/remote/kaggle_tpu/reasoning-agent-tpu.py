@@ -44,12 +44,12 @@ cmd = [
     "training/train_v4_jax.py",
     "--ckpt_dir", "/kaggle/working/checkpoints",
     "--resume_target", "latest",
-    "--dataset_source", "dense_edu",
+    "--dataset_source", "balanced_mix",
     "--dtype", "auto",
     "--elastic_window",
     "--total_window", "1024",
-    "--batch_size", "16",
-    "--grad_accum", "4",
+    "--batch_size", "64",
+    "--grad_accum", "2",
     "--lr", "0.0005",
     "--deliberation_mode", "scheduled",
     "--schedule_steps", "20000",
@@ -61,6 +61,7 @@ cmd = [
     "--cloud_save_hours", "1.0",
     "--log_every", "10",
     "--cloud_sync",
+    "--reset_best",
     "--source_node", "kaggle_tpu",
 ]
 
