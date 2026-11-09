@@ -61,6 +61,10 @@ def parse_args(args_list=None):
     parser.add_argument("--elastic_window", action="store_true", default=True, help="Enable elastic sliding context window")
     parser.add_argument("--lr", type=float, default=2.0e-3, help="Peak SpheroidOptimizer learning rate")
     parser.add_argument("--min_lr", type=float, default=1.0e-4, help="Final annealed learning rate")
+    parser.add_argument("--lr_schedule", type=str, default="warm_restart", choices=["cosine", "warm_restart", "session"],
+                        help="Learning rate annealing schedule: 'warm_restart' (SGDR cyclic cosine, prevents cold optimizer traps), 'session' (session-relative), or 'cosine' (global)")
+    parser.add_argument("--restart_steps", type=int, default=25000,
+                        help="Cycle period in steps for 'warm_restart' SGDR schedule (default: 25000)")
     parser.add_argument("--preset", type=str, default="small", choices=["small", "wide"])
     parser.add_argument("--dtype", type=str, default="auto", choices=["auto", "fp16", "bf16", "fp32"],
                         help="Matrix execution precision ('auto' selects fp16 on Turing GPUs to enable 65 TFLOPS Tensor Cores, and bf16 on TPU)")
@@ -81,9 +85,9 @@ def parse_args(args_list=None):
     parser.add_argument("--persona_id", type=int, default=None, help="Agentic persona ID (0=Reasoner, 1=Explorer, 2=Concise, 3=Verifier, or None for round-robin curriculum)")
     parser.add_argument("--dataset_source", type=str, default="dense_edu",
                         choices=["openhermes", "fineweb_edu", "balanced_mix", "dense_edu", "conversation_sft", "chat_sft"],
-                        help="Streaming training dataset: 'conversation_sft' (40% SmolTalk + 25% Cosmopedia-v2 + 20% OpenHermes-2.5 + 15% UltraChat-200k), "
-                             "'dense_edu' (40% Cosmopedia-v2 + 40% FineWeb-Edu [score>=4.0] + 20% OpenHermes-2.5), "
-                             "'balanced_mix' (35% Cosmopedia-v2 + 35% FineWeb-Edu + 30% OpenHermes-2.5), 'fineweb_edu', or 'openhermes'")
+                        help="Streaming training dataset: 'conversation_sft' (40%% SmolTalk + 25%% Cosmopedia-v2 + 20%% OpenHermes-2.5 + 15%% UltraChat-200k), "
+                             "'dense_edu' (40%% Cosmopedia-v2 + 40%% FineWeb-Edu [score>=4.0] + 20%% OpenHermes-2.5), "
+                             "'balanced_mix' (35%% Cosmopedia-v2 + 35%% FineWeb-Edu + 30%% OpenHermes-2.5), 'fineweb_edu', or 'openhermes'")
     parser.add_argument("--cloud_sync", action="store_true", default=False, help="Enable automatic checkpoint syncing with bioflo.in")
     parser.add_argument("--resume_target", type=str, default="latest", choices=["latest", "best"], help="Target checkpoint to pull from bioflo.in ('latest' or 'best')")
     parser.add_argument("--cloud_url", type=str, default="https://bioflo.in/api/cerebro/sync.php", help="bioflo.in sync endpoint")
@@ -600,15 +604,33 @@ def main(args=None):
         for step in range(start_step, args.steps + 1):
             current_step = step
 
-            # Learning Rate Schedule (Gentle warmup on start/resume, global cosine decay)
+            # Learning Rate Schedule (Warm restart SGDR, session cosine, or global cosine decay)
             step_offset = step - start_step
-            progress = float(step) / max(1.0, float(args.steps))
-            target_lr = args.min_lr + 0.5 * (args.lr - args.min_lr) * (1.0 + math.cos(math.pi * min(1.0, progress)))
-            if step_offset < 100:
-                # 100-step ramp from min_lr to target_lr on session start/resume
-                lr = args.min_lr + (target_lr - args.min_lr) * (float(step_offset) / 100.0)
-            else:
-                lr = target_lr
+            sched_mode = getattr(args, "lr_schedule", "warm_restart")
+            if sched_mode == "warm_restart":
+                r_steps = getattr(args, "restart_steps", 25000)
+                cycle_step = (step - start_step) % r_steps
+                cycle_prog = float(cycle_step) / float(r_steps)
+                target_lr = args.min_lr + 0.5 * (args.lr - args.min_lr) * (1.0 + math.cos(math.pi * cycle_prog))
+                if cycle_step < 100:
+                    lr = args.min_lr + (target_lr - args.min_lr) * (float(cycle_step) / 100.0)
+                else:
+                    lr = target_lr
+            elif sched_mode == "session":
+                sess_horizon = max(1000, args.steps - start_step)
+                sess_prog = min(1.0, float(step_offset) / float(sess_horizon))
+                target_lr = args.min_lr + 0.5 * (args.lr - args.min_lr) * (1.0 + math.cos(math.pi * sess_prog))
+                if step_offset < 100:
+                    lr = args.min_lr + (target_lr - args.min_lr) * (float(step_offset) / 100.0)
+                else:
+                    lr = target_lr
+            else:  # "cosine" (global)
+                progress = float(step) / max(1.0, float(args.steps))
+                target_lr = args.min_lr + 0.5 * (args.lr - args.min_lr) * (1.0 + math.cos(math.pi * min(1.0, progress)))
+                if step_offset < 100:
+                    lr = args.min_lr + (target_lr - args.min_lr) * (float(step_offset) / 100.0)
+                else:
+                    lr = target_lr
 
             # Scheduled sampling curriculum (Smooth Cosine Transition down to min_sampling_p)
             if args.deliberation_mode == "teacher_forcing":
