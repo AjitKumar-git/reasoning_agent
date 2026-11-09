@@ -1,15 +1,15 @@
 # Agent Work State & Activity Tracker
 
-> **Status**: 🟡 `IN_PROGRESS` | **Last Updated**: `2026-11-09T20:54:17.654214+05:30` | **Session**: `f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2`
+> **Status**: 🟡 `IN_PROGRESS` | **Last Updated**: `2026-11-10T00:41:34.695327+05:30` | **Session**: `f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2`
 
 ## Current / Active Objective
-**Goal**: modify the colab to default to v5e-1
+**Goal**: try finetuning the model locally first
 
 - **Phase**: `executing`
-- **Current Task**: Executed run_command: Check git diff of train_v4_jax.py
+- **Current Task**: Executed manage_task: manage_task
 
 ## Summary of Completed Work
-Done! The Colab notebook has been updated to default directly to **TPU v5e-1** and pushed to GitHub `origin/main`:
+The 300-step Supervised Fine-Tuning (SFT) run on your local laptop GPU has completed. Here is the full breakdown of results:
 
 ## Modified Files
 - [`.agents/WORK_STATE.md`](.agents/WORK_STATE.md)
@@ -91,20 +91,21 @@ Done! The Colab notebook has been updated to default directly to **TPU v5e-1** a
 - [`scripts/create_colab_sft_notebook.py`](scripts/create_colab_sft_notebook.py)
 - [`scripts/test_trained_checkpoint.py`](scripts/test_trained_checkpoint.py)
 - [`training/remote/kaggle_tpu/reasoning-agent-tpu.py`](training/remote/kaggle_tpu/reasoning-agent-tpu.py)
+- [`scripts/train_local_sft.py`](scripts/train_local_sft.py)
 
 ## Recent Actions (Last 10)
 | Time | Tool | Details |
 | :--- | :--- | :--- |
-| `20:54:17` | `run_command` | Check git diff of train_v4_jax.py |
-| `20:54:09` | `edit_file` | edit_file |
-| `20:54:00` | `run_command` | Simulate session-relative cyclic restart |
-| `20:53:49` | `run_command` | Simulate warm restart LR progression |
-| `20:53:41` | `manage_task` | manage_task |
-| `20:53:38` | `run_command` | Re-verify parse_args with escaped percent signs |
-| `20:53:25` | `edit_file` | edit_file |
-| `20:53:14` | `manage_task` | manage_task |
-| `20:53:04` | `run_command` | Verify parse_args with new lr_schedule options |
-| `20:52:48` | `edit_file` | edit_file |
+| `00:41:34` | `manage_task` | manage_task |
+| `00:41:17` | `manage_task` | manage_task |
+| `00:41:16` | `run_command` | Test 3 steps of UltraChat SFT |
+| `00:41:11` | `manage_task` | manage_task |
+| `00:41:05` | `manage_task` | manage_task |
+| `00:40:59` | `manage_task` | manage_task |
+| `00:40:36` | `edit_file` | edit_file |
+| `00:40:22` | `edit_file` | edit_file |
+| `00:40:12` | `read_file` | read_file |
+| `00:40:04` | `read_file` | read_file |
 
 ---
 *This file is automatically maintained by `auto-work-tracker`. Other agents can parse `.agents/work_state.json` or inspect this file directly to resume or review progress.*
