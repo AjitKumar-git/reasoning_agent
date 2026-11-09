@@ -17,7 +17,7 @@ from src.corpus import build_tokenizer
 from src.spheroid_v4 import build_spheroid_v4
 
 
-def run_comprehensive_test(ckpt_path: str):
+def run_comprehensive_test(ckpt_path: str, max_questions: int = None):
     print("=" * 75)
     print(f"🧠 CEREBRO-SPHEROID V4: COMPREHENSIVE CHECKPOINT PROBE")
     print(f"Checkpoint File: {ckpt_path}")
@@ -118,7 +118,7 @@ def run_comprehensive_test(ckpt_path: str):
             print(f"  '{w1}' <-> '{w2}'".ljust(26) + f" | {cat:<20} | {sim:+.3f}")
 
     # 4. Live Autoregressive Generation & Reasoning
-    print("\n💬 4. LIVE AUTOREGRESSIVE GENERATION (BIOLOGICAL DELIMITERS)")
+    print("\n💬 4. LIVE AUTOREGRESSIVE GENERATION (BENCHMARK QUESTIONS)")
     print("-" * 75)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(f"  Using device: {device}")
@@ -127,17 +127,29 @@ def run_comprehensive_test(ckpt_path: str):
     model.to(device=device, dtype=torch.float32)
     model.eval()
 
-    questions = [
-        "Hello! Who are you?",
-        "What is the capital of France?",
-        "What is 2 + 3?",
-        "Why is the sky blue?",
-        "If you have 4 apples and give 1 to a friend, how many apples do you have?",
-        "Explain photosynthesis in one simple sentence.",
-    ]
+    benchmark_json = os.path.join(ROOT_DIR, "eval", "benchmark_100_questions.json")
+    if not os.path.exists(benchmark_json):
+        benchmark_json = os.path.join(ROOT_DIR, "data", "benchmark_100_questions.json")
+    if os.path.exists(benchmark_json):
+        import json
+        with open(benchmark_json, "r", encoding="utf-8") as f:
+            bench_items = json.load(f)
+        questions = [item["question"] for item in bench_items]
+    else:
+        questions = [
+            "Hello! Who are you?",
+            "What is the capital of France?",
+            "What is 2 + 3?",
+            "Why is the sky blue?",
+            "If you have 4 apples and give 1 to a friend, how many apples do you have?",
+            "Explain photosynthesis in one simple sentence.",
+        ]
+
+    if max_questions and max_questions > 0:
+        questions = questions[:max_questions]
 
     for idx, q in enumerate(questions, 1):
-        print(f"\n[Test {idx}] User Prompt: \"{q}\"")
+        print(f"\n[Test {idx}/{len(questions)}] User Prompt: \"{q}\"")
         with torch.no_grad():
             ans = model.generate_text(
                 q,
@@ -158,5 +170,12 @@ def run_comprehensive_test(ckpt_path: str):
 
 
 if __name__ == "__main__":
-    path = sys.argv[1] if len(sys.argv) > 1 else "checkpoints/cerebro_spheroid_v4_latest.pt"
-    run_comprehensive_test(path)
+    import argparse
+    parser = argparse.ArgumentParser(description="Test CerebroSpheroid V4 checkpoint.")
+    parser.add_argument("path", nargs="?", default="checkpoints/cerebro_spheroid_v4_latest.pt")
+    parser.add_argument("--num_questions", "-n", type=int, default=10, help="Number of questions to test (up to 100)")
+    parser.add_argument("--all", action="store_true", help="Run all 100 questions")
+    args = parser.parse_args()
+
+    n_q = None if args.all else args.num_questions
+    run_comprehensive_test(args.path, max_questions=n_q)

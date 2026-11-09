@@ -1,0 +1,608 @@
+[
+  {
+    "id": 1,
+    "category": "World Facts & Geography",
+    "question": "What is the capital of France?",
+    "reference": "Paris"
+  },
+  {
+    "id": 2,
+    "category": "World Facts & Geography",
+    "question": "What is the capital of Japan?",
+    "reference": "Tokyo"
+  },
+  {
+    "id": 3,
+    "category": "World Facts & Geography",
+    "question": "Which continent is Egypt located on?",
+    "reference": "Africa"
+  },
+  {
+    "id": 4,
+    "category": "World Facts & Geography",
+    "question": "What is the largest ocean on Earth?",
+    "reference": "Pacific Ocean"
+  },
+  {
+    "id": 5,
+    "category": "World Facts & Geography",
+    "question": "What is the capital of Germany?",
+    "reference": "Berlin"
+  },
+  {
+    "id": 6,
+    "category": "World Facts & Geography",
+    "question": "Which river is widely considered the longest in the world?",
+    "reference": "Nile River (or Amazon River)"
+  },
+  {
+    "id": 7,
+    "category": "World Facts & Geography",
+    "question": "What is the capital of Canada?",
+    "reference": "Ottawa"
+  },
+  {
+    "id": 8,
+    "category": "World Facts & Geography",
+    "question": "What country has the largest land area in the world?",
+    "reference": "Russia"
+  },
+  {
+    "id": 9,
+    "category": "World Facts & Geography",
+    "question": "What is the capital of Australia?",
+    "reference": "Canberra"
+  },
+  {
+    "id": 10,
+    "category": "World Facts & Geography",
+    "question": "Mount Everest is located in which mountain range?",
+    "reference": "Himalayas"
+  },
+  {
+    "id": 11,
+    "category": "World Facts & Geography",
+    "question": "What is the capital of Brazil?",
+    "reference": "Brasilia"
+  },
+  {
+    "id": 12,
+    "category": "World Facts & Geography",
+    "question": "Which desert is the largest hot desert in the world?",
+    "reference": "Sahara Desert"
+  },
+  {
+    "id": 13,
+    "category": "World Facts & Geography",
+    "question": "What is the capital of Italy?",
+    "reference": "Rome"
+  },
+  {
+    "id": 14,
+    "category": "World Facts & Geography",
+    "question": "In which country would you find the Great Pyramid of Giza?",
+    "reference": "Egypt"
+  },
+  {
+    "id": 15,
+    "category": "World Facts & Geography",
+    "question": "What is the capital of the United Kingdom?",
+    "reference": "London"
+  },
+
+  {
+    "id": 16,
+    "category": "Science & Nature",
+    "question": "Why is the sky blue?",
+    "reference": "Rayleigh scattering of sunlight by gas molecules in Earth's atmosphere."
+  },
+  {
+    "id": 17,
+    "category": "Science & Nature",
+    "question": "What is the chemical formula for water?",
+    "reference": "H2O"
+  },
+  {
+    "id": 18,
+    "category": "Science & Nature",
+    "question": "What planet is closest to the Sun?",
+    "reference": "Mercury"
+  },
+  {
+    "id": 19,
+    "category": "Science & Nature",
+    "question": "What gas do plants absorb from the atmosphere for photosynthesis?",
+    "reference": "Carbon dioxide (CO2)"
+  },
+  {
+    "id": 20,
+    "category": "Science & Nature",
+    "question": "What is the fundamental unit of life?",
+    "reference": "The cell"
+  },
+  {
+    "id": 21,
+    "category": "Science & Nature",
+    "question": "What is the chemical symbol for gold?",
+    "reference": "Au"
+  },
+  {
+    "id": 22,
+    "category": "Science & Nature",
+    "question": "How many bones are in the adult human skeleton?",
+    "reference": "206"
+  },
+  {
+    "id": 23,
+    "category": "Science & Nature",
+    "question": "What particle inside an atom carries a negative electrical charge?",
+    "reference": "Electron"
+  },
+  {
+    "id": 24,
+    "category": "Science & Nature",
+    "question": "What is the process by which liquid water turns into water vapor?",
+    "reference": "Evaporation"
+  },
+  {
+    "id": 25,
+    "category": "Science & Nature",
+    "question": "What is the largest planet in our solar system?",
+    "reference": "Jupiter"
+  },
+  {
+    "id": 26,
+    "category": "Science & Nature",
+    "question": "What organ pumps blood throughout the human body?",
+    "reference": "Heart"
+  },
+  {
+    "id": 27,
+    "category": "Science & Nature",
+    "question": "What is the primary gas found in Earth's atmosphere?",
+    "reference": "Nitrogen"
+  },
+  {
+    "id": 28,
+    "category": "Science & Nature",
+    "question": "At what temperature Celsius does pure water freeze at standard pressure?",
+    "reference": "0 degrees Celsius"
+  },
+  {
+    "id": 29,
+    "category": "Science & Nature",
+    "question": "What force pulls objects toward the center of the Earth?",
+    "reference": "Gravity"
+  },
+  {
+    "id": 30,
+    "category": "Science & Nature",
+    "question": "What molecule carries genetic instructions in living organisms?",
+    "reference": "DNA (Deoxyribonucleic acid)"
+  },
+
+  {
+    "id": 31,
+    "category": "Basic Arithmetic & Math",
+    "question": "What is 2 + 3?",
+    "reference": "5"
+  },
+  {
+    "id": 32,
+    "category": "Basic Arithmetic & Math",
+    "question": "What is 12 multiplied by 8?",
+    "reference": "96"
+  },
+  {
+    "id": 33,
+    "category": "Basic Arithmetic & Math",
+    "question": "What is 100 divided by 4?",
+    "reference": "25"
+  },
+  {
+    "id": 34,
+    "category": "Basic Arithmetic & Math",
+    "question": "What is 45 minus 19?",
+    "reference": "26"
+  },
+  {
+    "id": 35,
+    "category": "Basic Arithmetic & Math",
+    "question": "What is the square root of 64?",
+    "reference": "8"
+  },
+  {
+    "id": 36,
+    "category": "Basic Arithmetic & Math",
+    "question": "If you have 15 apples and give away 7, how many do you have left?",
+    "reference": "8"
+  },
+  {
+    "id": 37,
+    "category": "Basic Arithmetic & Math",
+    "question": "What is 7 times 6?",
+    "reference": "42"
+  },
+  {
+    "id": 38,
+    "category": "Basic Arithmetic & Math",
+    "question": "What is half of 150?",
+    "reference": "75"
+  },
+  {
+    "id": 39,
+    "category": "Basic Arithmetic & Math",
+    "question": "What is 9 squared?",
+    "reference": "81"
+  },
+  {
+    "id": 40,
+    "category": "Basic Arithmetic & Math",
+    "question": "A train travels at 50 miles per hour for 4 hours. How far did it travel?",
+    "reference": "200 miles"
+  },
+  {
+    "id": 41,
+    "category": "Basic Arithmetic & Math",
+    "question": "What is 10 plus 25 minus 8?",
+    "reference": "27"
+  },
+  {
+    "id": 42,
+    "category": "Basic Arithmetic & Math",
+    "question": "How many minutes are in 3 hours?",
+    "reference": "180 minutes"
+  },
+  {
+    "id": 43,
+    "category": "Basic Arithmetic & Math",
+    "question": "What is 20 percent of 200?",
+    "reference": "40"
+  },
+  {
+    "id": 44,
+    "category": "Basic Arithmetic & Math",
+    "question": "If 3 pens cost 6 dollars, how much does 1 pen cost?",
+    "reference": "2 dollars"
+  },
+  {
+    "id": 45,
+    "category": "Basic Arithmetic & Math",
+    "question": "What is 1000 divided by 10?",
+    "reference": "100"
+  },
+
+  {
+    "id": 46,
+    "category": "Logical & Common-Sense Reasoning",
+    "question": "If all cats are mammals, and all mammals are animals, are all cats animals?",
+    "reference": "Yes"
+  },
+  {
+    "id": 47,
+    "category": "Logical & Common-Sense Reasoning",
+    "question": "If yesterday was Sunday, what day will tomorrow be?",
+    "reference": "Tuesday"
+  },
+  {
+    "id": 48,
+    "category": "Logical & Common-Sense Reasoning",
+    "question": "Which is heavier: one pound of feathers or one pound of bricks?",
+    "reference": "They weigh the exact same (both weigh one pound)."
+  },
+  {
+    "id": 49,
+    "category": "Logical & Common-Sense Reasoning",
+    "question": "If John is taller than Mary, and Mary is taller than Sue, who is the tallest?",
+    "reference": "John"
+  },
+  {
+    "id": 50,
+    "category": "Logical & Common-Sense Reasoning",
+    "question": "Can a person survive without water for three weeks?",
+    "reference": "No, a human typically survives only 3 to 7 days without water."
+  },
+  {
+    "id": 51,
+    "category": "Logical & Common-Sense Reasoning",
+    "question": "If a red box is inside a blue box, and the blue box is inside a green box, is the red box inside the green box?",
+    "reference": "Yes"
+  },
+  {
+    "id": 52,
+    "category": "Logical & Common-Sense Reasoning",
+    "question": "Why can an airplane fly but a submarine cannot fly in the air?",
+    "reference": "Airplanes generate aerodynamic lift with wings and engines; submarines are too dense and lack lift-generating wings."
+  },
+  {
+    "id": 53,
+    "category": "Logical & Common-Sense Reasoning",
+    "question": "If you turn a glass upside down, what happens to the water inside?",
+    "reference": "The water spills or pours out due to gravity."
+  },
+  {
+    "id": 54,
+    "category": "Logical & Common-Sense Reasoning",
+    "question": "Alice has 2 brothers. How many brothers does each of her brothers have?",
+    "reference": "1 brother"
+  },
+  {
+    "id": 55,
+    "category": "Logical & Common-Sense Reasoning",
+    "question": "Is it possible to take a photograph of the future with a camera?",
+    "reference": "No, cameras can only capture light arriving from the present/past."
+  },
+  {
+    "id": 56,
+    "category": "Logical & Common-Sense Reasoning",
+    "question": "If it rains on a dry sidewalk, what will happen to the sidewalk?",
+    "reference": "It will become wet."
+  },
+  {
+    "id": 57,
+    "category": "Logical & Common-Sense Reasoning",
+    "question": "You see smoke coming from an oven. What is the most likely cause?",
+    "reference": "Food or grease inside the oven is burning or overheating."
+  },
+  {
+    "id": 58,
+    "category": "Logical & Common-Sense Reasoning",
+    "question": "If you freeze hot soup, does it become solid ice or boil away?",
+    "reference": "It freezes and becomes solid."
+  },
+  {
+    "id": 59,
+    "category": "Logical & Common-Sense Reasoning",
+    "question": "A clock strikes 12 times at midnight. How many times will it strike at 1:00 AM?",
+    "reference": "1 time"
+  },
+  {
+    "id": 60,
+    "category": "Logical & Common-Sense Reasoning",
+    "question": "If an electric train is traveling north at 60 mph and the wind blows south at 10 mph, which way does the smoke blow?",
+    "reference": "An electric train produces no smoke."
+  },
+
+  {
+    "id": 61,
+    "category": "Conversational & Assistant Tasks",
+    "question": "Hello! Who are you?",
+    "reference": "Conversational greeting stating identity as CerebroSpheroid assistant."
+  },
+  {
+    "id": 62,
+    "category": "Conversational & Assistant Tasks",
+    "question": "Can you give me 3 practical tips for getting better sleep?",
+    "reference": "Consistent schedule, reduce blue light/screens, cool dark room."
+  },
+  {
+    "id": 63,
+    "category": "Conversational & Assistant Tasks",
+    "question": "Write a polite 2-sentence email thanking a colleague for their help on a project.",
+    "reference": "Thank you so much for your support on our recent project. Your insights made a huge difference."
+  },
+  {
+    "id": 64,
+    "category": "Conversational & Assistant Tasks",
+    "question": "Explain the difference between a fruit and a vegetable in simple terms.",
+    "reference": "Botanically, fruits develop from flowers and contain seeds, while vegetables are other edible plant parts."
+  },
+  {
+    "id": 65,
+    "category": "Conversational & Assistant Tasks",
+    "question": "What are 3 healthy breakfast ideas that can be prepared in under 10 minutes?",
+    "reference": "Oatmeal with fruit, Greek yogurt with nuts, scrambled eggs on whole-grain toast."
+  },
+  {
+    "id": 66,
+    "category": "Conversational & Assistant Tasks",
+    "question": "I am feeling overwhelmed with tasks today. What should I do first?",
+    "reference": "Take a deep breath, write down a list, prioritize the single most important task."
+  },
+  {
+    "id": 67,
+    "category": "Conversational & Assistant Tasks",
+    "question": "Give me a simple recipe for making pancakes from scratch.",
+    "reference": "Flour, milk, egg, baking powder, pinch of sugar and salt; mix and fry on skillet."
+  },
+  {
+    "id": 68,
+    "category": "Conversational & Assistant Tasks",
+    "question": "What is the best way to politely decline an invitation to an event?",
+    "reference": "Thank them warmly, state you cannot attend due to prior commitments, and wish them a great time."
+  },
+  {
+    "id": 69,
+    "category": "Conversational & Assistant Tasks",
+    "question": "Summarize what an API is in one clear sentence.",
+    "reference": "An API is a software interface that allows different computer programs to communicate and exchange data."
+  },
+  {
+    "id": 70,
+    "category": "Conversational & Assistant Tasks",
+    "question": "How can a student improve their study habits for exams?",
+    "reference": "Use active recall, spaced repetition, avoid multitasking, and take regular breaks."
+  },
+  {
+    "id": 71,
+    "category": "Conversational & Assistant Tasks",
+    "question": "Suggest 3 fun outdoor activities for a sunny afternoon.",
+    "reference": "Hiking in a park, cycling, having a picnic."
+  },
+  {
+    "id": 72,
+    "category": "Conversational & Assistant Tasks",
+    "question": "Can you explain inflation to a 10-year-old?",
+    "reference": "Inflation means prices for things go up over time, so your dollar buys a little less candy than before."
+  },
+  {
+    "id": 73,
+    "category": "Conversational & Assistant Tasks",
+    "question": "Write a short motivational quote about persistence.",
+    "reference": "Great accomplishments are not produced by strength alone, but by persevering one day at a time."
+  },
+  {
+    "id": 74,
+    "category": "Conversational & Assistant Tasks",
+    "question": "What are two good ways to save electricity at home?",
+    "reference": "Turn off lights when leaving rooms, and unplug unused electronics or use efficient LED bulbs."
+  },
+  {
+    "id": 75,
+    "category": "Conversational & Assistant Tasks",
+    "question": "If you don't know the answer to a question, what should you do?",
+    "reference": "Acknowledge the uncertainty truthfully rather than making up false information."
+  },
+
+  {
+    "id": 76,
+    "category": "In-Context Grounding & Extraction",
+    "question": "Context: 'Project Cerebro began in 2024 with a team of 4 neuroscientists in Zurich.' Question: In what year did Project Cerebro begin?",
+    "reference": "2024"
+  },
+  {
+    "id": 77,
+    "category": "In-Context Grounding & Extraction",
+    "question": "Context: 'Project Cerebro began in 2024 with a team of 4 neuroscientists in Zurich.' Question: In which city was the team based?",
+    "reference": "Zurich"
+  },
+  {
+    "id": 78,
+    "category": "In-Context Grounding & Extraction",
+    "question": "Context: 'The blue whale can weigh up to 200 tons and has a heart the size of a small car.' Question: How much can a blue whale weigh?",
+    "reference": "Up to 200 tons"
+  },
+  {
+    "id": 79,
+    "category": "In-Context Grounding & Extraction",
+    "question": "Context: 'Solar flares release high-energy photons that reach Earth in about 8.3 minutes.' Question: How long does it take solar flare photons to reach Earth?",
+    "reference": "About 8.3 minutes"
+  },
+  {
+    "id": 80,
+    "category": "In-Context Grounding & Extraction",
+    "question": "Context: 'Dr. Evans published the study in the Journal of Cellular Biology on October 14.' Question: Who published the study?",
+    "reference": "Dr. Evans"
+  },
+  {
+    "id": 81,
+    "category": "In-Context Grounding & Extraction",
+    "question": "Context: 'The robotic rover scanned 42 rock samples and detected traces of hematite.' Question: How many rock samples were scanned?",
+    "reference": "42"
+  },
+  {
+    "id": 82,
+    "category": "In-Context Grounding & Extraction",
+    "question": "Context: 'To bake the sourdough bread, preheat the cast-iron Dutch oven to 450 degrees Fahrenheit.' Question: What temperature should the oven be preheated to?",
+    "reference": "450 degrees Fahrenheit"
+  },
+  {
+    "id": 83,
+    "category": "In-Context Grounding & Extraction",
+    "question": "Context: 'The company reported a 15% growth in annual recurring revenue during Q3.' Question: What percentage did the revenue grow by?",
+    "reference": "15%"
+  },
+  {
+    "id": 84,
+    "category": "In-Context Grounding & Extraction",
+    "question": "Context: 'Elena purchased two notebooks for $5 each and a fountain pen for $12.' Question: What was the total cost of Elena's items?",
+    "reference": "$22 ($10 + $12)"
+  },
+  {
+    "id": 85,
+    "category": "In-Context Grounding & Extraction",
+    "question": "Context: 'The battery has a capacity of 5000 mAh and supports 65-watt fast charging.' Question: What is the battery capacity?",
+    "reference": "5000 mAh"
+  },
+  {
+    "id": 86,
+    "category": "In-Context Grounding & Extraction",
+    "question": "Context: 'The library will be closed for renovation from Monday through Thursday, reopening on Friday at 9 AM.' Question: On which day will the library reopen?",
+    "reference": "Friday"
+  },
+  {
+    "id": 87,
+    "category": "In-Context Grounding & Extraction",
+    "question": "Context: 'The spacecraft completed 12 orbits around Saturn before entering the atmosphere of Titan.' Question: Which planet did the spacecraft orbit?",
+    "reference": "Saturn"
+  },
+  {
+    "id": 88,
+    "category": "In-Context Grounding & Extraction",
+    "question": "Context: 'Patient temperature was measured at 38.5 C, accompanied by mild fatigue and a dry cough.' Question: What was the recorded temperature?",
+    "reference": "38.5 C"
+  },
+  {
+    "id": 89,
+    "category": "In-Context Grounding & Extraction",
+    "question": "Context: 'The software update requires 4 gigabytes of free disk space and macOS version 12 or newer.' Question: How much free disk space is required?",
+    "reference": "4 gigabytes"
+  },
+  {
+    "id": 90,
+    "category": "In-Context Grounding & Extraction",
+    "question": "Context: 'The recipe calls for 2 cups of almond flour and 1 teaspoon of vanilla extract.' Question: How much vanilla extract is needed?",
+    "reference": "1 teaspoon"
+  },
+
+  {
+    "id": 91,
+    "category": "Coding & Algorithmic Logic",
+    "question": "Write a Python function `is_even(n)` that returns True if integer n is even, otherwise False.",
+    "reference": "def is_even(n): return n % 2 == 0"
+  },
+  {
+    "id": 92,
+    "category": "Coding & Algorithmic Logic",
+    "question": "How do you reverse a string `s` in Python using slicing?",
+    "reference": "s[::-1]"
+  },
+  {
+    "id": 93,
+    "category": "Coding & Algorithmic Logic",
+    "question": "What is the time complexity of searching an element in a balanced binary search tree?",
+    "reference": "O(log n)"
+  },
+  {
+    "id": 94,
+    "category": "Coding & Algorithmic Logic",
+    "question": "What does the SQL command `SELECT * FROM users WHERE age > 21;` do?",
+    "reference": "Retrieves all columns from the 'users' table for rows where 'age' is greater than 21."
+  },
+  {
+    "id": 95,
+    "category": "Coding & Algorithmic Logic",
+    "question": "What keyword is used in Python to define a function?",
+    "reference": "def"
+  },
+  {
+    "id": 96,
+    "category": "Coding & Algorithmic Logic",
+    "question": "In Git, what command is used to record staged changes into the local repository history?",
+    "reference": "git commit"
+  },
+  {
+    "id": 97,
+    "category": "Coding & Algorithmic Logic",
+    "question": "What data structure operates on a Last-In, First-Out (LIFO) principle?",
+    "reference": "Stack"
+  },
+  {
+    "id": 98,
+    "category": "Coding & Algorithmic Logic",
+    "question": "Write a one-line Python list comprehension that squares all numbers in a list `nums`.",
+    "reference": "[x**2 for x in nums]"
+  },
+  {
+    "id": 99,
+    "category": "Coding & Algorithmic Logic",
+    "question": "What will `print(3 * 'ab')` output in Python?",
+    "reference": "ababab"
+  },
+  {
+    "id": 100,
+    "category": "Coding & Algorithmic Logic",
+    "question": "What is the boolean result of `not (True and False)` in Python?",
+    "reference": "True"
+  }
+]

@@ -119,16 +119,27 @@ def build_batch(tokenizer, pair_chunk, max_prompt_len=256, max_answer_len=128, d
 
 
 def run_sft_inference_eval(model, tokenizer, device, thinking_cycles=3):
-    """Runs zero-shot qualitative evaluation on diverse benchmark prompts."""
-    benchmark_prompts = [
-        "Hello! Who are you?",
-        "What is the capital of France?",
-        "What is 2 + 3?",
-        "Why is the sky blue?",
-    ]
+    """Runs zero-shot qualitative evaluation on diverse benchmark prompts from the 100-question suite."""
+    bench_file = os.path.join(ROOT_DIR, "data", "benchmark_100_questions.json")
+    if os.path.exists(bench_file):
+        import json
+        with open(bench_file, "r", encoding="utf-8") as f:
+            bench_items = json.load(f)
+        # Select representative prompts from diverse categories:
+        # 1 conversational, 1 geography, 1 math, 1 science, 1 logic, 1 grounded extraction
+        sample_ids = [61, 1, 31, 16, 46, 76]
+        id_map = {item["id"]: item for item in bench_items}
+        benchmark_prompts = [id_map[i]["question"] for i in sample_ids if i in id_map]
+    else:
+        benchmark_prompts = [
+            "Hello! Who are you?",
+            "What is the capital of France?",
+            "What is 2 + 3?",
+            "Why is the sky blue?",
+        ]
     model.eval()
     print("\n" + "=" * 65)
-    print("🤖 Live SFT Model Inference Probe:")
+    print("🤖 Live SFT Model Inference Probe (Diverse Benchmark Suite):")
     print("=" * 65)
     with torch.no_grad():
         for q in benchmark_prompts:
