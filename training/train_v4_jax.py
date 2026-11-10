@@ -678,8 +678,10 @@ def main(args=None):
         best_eval_loss = float("inf")
         print("🔄 [Benchmark Recalibration] Reset best_eval_loss baseline to allow new clean benchmark tracking.")
     else:
-        init_loss = float(meta.get("eval_loss", meta.get("loss", meta.get("best", float("inf"))))) if meta else float("inf")
+        init_loss = float(meta.get("best_eval_loss", meta.get("best", meta.get("eval_loss", meta.get("loss", float("inf")))))) if meta else float("inf")
         best_eval_loss = init_loss if (not math.isnan(init_loss) and init_loss > 0.0) else float("inf")
+        if best_eval_loss < float("inf"):
+            print(f"📊 Active Held-Out Loss Champion Baseline: {best_eval_loss:.6f}")
     best_ema_loss = best_eval_loss
     ema_loss = None
     t_start = time.time()
@@ -923,7 +925,7 @@ def main(args=None):
                         params,
                         buffers,
                         f"cerebro_spheroid_v4_jax_step_{step}.pt",
-                        meta_dict={"step": step, "loss": loss_val, "ema_loss": ema_loss},
+                        meta_dict={"step": step, "loss": loss_val, "ema_loss": ema_loss, "best_eval_loss": best_eval_loss},
                     )
 
             # Max wall-clock time limit guard (e.g. Kaggle 8.5-hour safety limit)

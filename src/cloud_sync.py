@@ -38,6 +38,19 @@ _IN_FLIGHT_UPLOADS: Dict[str, int] = {}
 _LAST_BEST_UPLOAD_TIME: float = 0.0
 _BEST_COOLDOWN_SECONDS: float = 300.0  # 5 minutes minimum between best.pt uploads
 _UPLOAD_LOCK = threading.Lock()
+_ACTIVE_UPLOAD_THREADS: list = []
+
+
+def wait_for_in_flight_uploads(timeout: float = 60.0):
+    """Waits for any background cloud upload threads to complete."""
+    global _ACTIVE_UPLOAD_THREADS
+    with _UPLOAD_LOCK:
+        threads = [t for t in _ACTIVE_UPLOAD_THREADS if t.is_alive()]
+    for t in threads:
+        print(f"⏳ [cloud_sync] Waiting for in-flight cloud upload to finish ({t.name})...")
+        t.join(timeout=timeout)
+    with _UPLOAD_LOCK:
+        _ACTIVE_UPLOAD_THREADS = [t for t in _ACTIVE_UPLOAD_THREADS if t.is_alive()]
 
 
 def detect_source_environment() -> str:
@@ -366,6 +379,9 @@ def push_checkpoint_async(
         daemon=True,
         name=f"CloudSync_{target_type}_{step}"
     )
+    with _UPLOAD_LOCK:
+        _ACTIVE_UPLOAD_THREADS.append(thread)
+        _ACTIVE_UPLOAD_THREADS = [t for t in _ACTIVE_UPLOAD_THREADS if t.is_alive()]
     thread.start()
     return thread
 
@@ -471,10 +487,14 @@ def auto_sync_checkpoints(
         success = pull_checkpoint(target_local_file, target_type=target_key, url=url, token=token)
         if success:
             loss_val = float(remote_target.get("loss", 7.34)) if isinstance(remote_target, dict) else 7.34
+            best_obj = remote_manifest.get("best", {}) if isinstance(remote_manifest, dict) else {}
+            best_val = float(best_obj.get("loss", loss_val)) if isinstance(best_obj, dict) else loss_val
             meta_payload = {
                 "step": remote_step,
                 "loss": loss_val,
-                "best": loss_val,
+                "best": best_val,
+                "best_eval_loss": best_val,
+                "eval_loss": best_val,
                 "selected": loss_val,
                 "source": remote_target.get("source", "bioflo"),
                 "resumed_from_cloud": True,
@@ -485,6 +505,17 @@ def auto_sync_checkpoints(
                         json.dump(meta_payload, f, indent=2)
                 except Exception:
                     pass
+
+            # Provide both naming conventions (cerebro_spheroid_v4_{key}.pt and cerebro_spheroid_v4_jax_{key}.pt)
+            alt_local_file = target_local_file.replace(f"v4_{target_key}.pt", f"v4_jax_{target_key}.pt")
+            try:
+                import shutil
+                shutil.copyfile(target_local_file, alt_local_file)
+                for meta_ext in [".json", ".meta.json"]:
+                    shutil.copyfile(target_local_file.replace(".pt", meta_ext), alt_local_file.replace(".pt", meta_ext))
+            except Exception:
+                pass
+
             return target_local_file
 
     if target_key == "best" and os.path.exists(target_local_file):

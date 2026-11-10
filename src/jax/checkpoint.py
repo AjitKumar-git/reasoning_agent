@@ -208,18 +208,19 @@ def discover_latest_checkpoint(
                     max_step = step_num
                     latest_path = pt_file
 
-    # Check named milestone variants (best.pt, latest.pt)
-    candidate_names = [
-        f"cerebro_spheroid_v4_{target_preference}.pt",
-        f"cerebro_spheroid_v4_jax_{target_preference}.pt",
-        f"{target_preference}.pt",
-        "cerebro_spheroid_v4_best.pt",
-        "cerebro_spheroid_v4_jax_best.pt",
-        "best.pt",
-        "cerebro_spheroid_v4_latest.pt",
-        "cerebro_spheroid_v4_jax_latest.pt",
-        "latest.pt",
-    ]
+    # Check named milestone variants strictly respecting target_preference
+    if target_preference == "best":
+        candidate_names = [
+            "cerebro_spheroid_v4_best.pt",
+            "cerebro_spheroid_v4_jax_best.pt",
+            "best.pt",
+        ]
+    else:
+        candidate_names = [
+            "cerebro_spheroid_v4_latest.pt",
+            "cerebro_spheroid_v4_jax_latest.pt",
+            "latest.pt",
+        ]
 
     for d in search_dirs:
         if not os.path.exists(d):
@@ -331,6 +332,43 @@ class AsyncCheckpointManager:
             shutil.copyfile(local_path, tmp_target)
             os.replace(tmp_target, target_path)
 
+            # Ensure both naming conventions (jax and non-jax) exist in target_dir
+            if "latest" in filename:
+                alt_name = filename.replace("_jax_latest.pt", "_latest.pt") if "_jax_latest" in filename else filename.replace("_latest.pt", "_jax_latest.pt")
+                if alt_name != filename:
+                    alt_target = os.path.join(self.target_dir, alt_name)
+                    try:
+                        shutil.copyfile(target_path, alt_target + ".tmp")
+                        os.replace(alt_target + ".tmp", alt_target)
+                        if meta_dict:
+                            shutil.copyfile(target_json, alt_target.replace(".pt", ".json"))
+                    except Exception:
+                        pass
+            elif "best" in filename:
+                alt_name = filename.replace("_jax_best.pt", "_best.pt") if "_jax_best" in filename else filename.replace("_best.pt", "_jax_best.pt")
+                if alt_name != filename:
+                    alt_target = os.path.join(self.target_dir, alt_name)
+                    try:
+                        shutil.copyfile(target_path, alt_target + ".tmp")
+                        os.replace(alt_target + ".tmp", alt_target)
+                        if meta_dict:
+                            shutil.copyfile(target_json, alt_target.replace(".pt", ".json"))
+                    except Exception:
+                        pass
+
+            # Optional automatic mirror to Google Drive if mounted
+            drive_dir = "/content/drive/MyDrive/cerebro_checkpoints"
+            if os.path.exists("/content/drive/MyDrive") and os.path.isdir("/content/drive/MyDrive"):
+                try:
+                    os.makedirs(drive_dir, exist_ok=True)
+                    drive_target = os.path.join(drive_dir, filename)
+                    shutil.copyfile(target_path, drive_target + ".tmp")
+                    os.replace(drive_target + ".tmp", drive_target)
+                    if meta_dict:
+                        shutil.copyfile(target_json, drive_target.replace(".pt", ".json"))
+                except Exception:
+                    pass
+
             # Prune scratch disk to prevent unbounded local disk growth
             self._prune_scratch()
 
@@ -379,8 +417,9 @@ class AsyncCheckpointManager:
         block_if_busy: bool = False,
     ) -> bool:
         """Dispatches an asynchronous save job. Returns True if job was queued."""
-        if not block_if_busy and (self._last_future is not None and not self._last_future.done()):
-            return False  # Prior backup is still writing; skip redundant queue
+        is_critical = ("best" in filename) or ("step_" in filename) or block_if_busy
+        if not is_critical and (self._last_future is not None and not self._last_future.done()):
+            return False  # Prior non-critical save is still writing; skip redundant intermediate queue
 
         # Rapid CPU memory hand-off (<15ms)
         params_cpu = {k: np.array(v) for k, v in params.items()}
@@ -399,7 +438,19 @@ class AsyncCheckpointManager:
         params_cpu = {k: np.array(v) for k, v in params.items()}
         buffers_cpu = (np.array(buffers[0]), np.array(buffers[1]))
         self._worker(params_cpu, buffers_cpu, filename, meta_dict)
+        if self.cloud_sync:
+            try:
+                from src.cloud_sync import wait_for_in_flight_uploads
+                wait_for_in_flight_uploads(timeout=60.0)
+            except Exception:
+                pass
 
     def shutdown(self, wait: bool = True):
-        """Waits for all in-flight Drive / cloud writes to complete."""
+        """Waits for all in-flight disk and cloud writes to complete."""
         self.executor.shutdown(wait=wait)
+        if wait and self.cloud_sync:
+            try:
+                from src.cloud_sync import wait_for_in_flight_uploads
+                wait_for_in_flight_uploads(timeout=60.0)
+            except Exception:
+                pass
