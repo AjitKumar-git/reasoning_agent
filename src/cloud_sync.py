@@ -35,6 +35,7 @@ DEFAULT_URL = os.environ.get("BIOFLO_SYNC_URL", "https://bioflo.in/api/cerebro/s
 DEFAULT_TOKEN = os.environ.get("BIOFLO_SYNC_TOKEN", "CerebroSpheroid_Sync_Secure_2026")
 
 _IN_FLIGHT_UPLOADS: Dict[str, int] = {}
+_IN_FLIGHT_UPLOAD_TIMES: Dict[str, float] = {}
 _LAST_BEST_UPLOAD_TIME: float = 0.0
 _BEST_COOLDOWN_SECONDS: float = 300.0  # 5 minutes minimum between best.pt uploads
 _UPLOAD_LOCK = threading.Lock()
@@ -233,7 +234,7 @@ def push_checkpoint(
         print(f"⚠️ [cloud_sync] Cannot push: {file_path} not found.")
         return False
 
-    global _IN_FLIGHT_UPLOADS, _LAST_BEST_UPLOAD_TIME
+    global _IN_FLIGHT_UPLOADS, _IN_FLIGHT_UPLOAD_TIMES, _LAST_BEST_UPLOAD_TIME
     with _UPLOAD_LOCK:
         now = time.time()
         if target_type == "best":
@@ -245,10 +246,15 @@ def push_checkpoint(
 
         if target_type in _IN_FLIGHT_UPLOADS and _IN_FLIGHT_UPLOADS[target_type] != step:
             prev_step = _IN_FLIGHT_UPLOADS[target_type]
-            print(f"⏳ [cloud_sync] Upload in flight for {target_type}.pt (step {prev_step}): skipping duplicate step {step}.")
-            return False
+            start_t = _IN_FLIGHT_UPLOAD_TIMES.get(target_type, now)
+            if now - start_t < 180.0:
+                print(f"⏳ [cloud_sync] Upload in flight for {target_type}.pt (step {prev_step}): skipping duplicate step {step}.")
+                return False
+            else:
+                print(f"⚠️ [cloud_sync] In-flight upload lock expired for {target_type}.pt. Resetting and proceeding with step {step}.")
 
         _IN_FLIGHT_UPLOADS[target_type] = step
+        _IN_FLIGHT_UPLOAD_TIMES[target_type] = now
         if target_type == "best":
             _LAST_BEST_UPLOAD_TIME = now
 
@@ -341,6 +347,7 @@ def push_checkpoint(
         with _UPLOAD_LOCK:
             if _IN_FLIGHT_UPLOADS.get(target_type) == step:
                 _IN_FLIGHT_UPLOADS.pop(target_type, None)
+                _IN_FLIGHT_UPLOAD_TIMES.pop(target_type, None)
 
 
 def push_checkpoint_async(
@@ -354,7 +361,7 @@ def push_checkpoint_async(
     chunk_size_mb: int = 10
 ):
     """Asynchronous background upload. 0 ms interruption to training loops."""
-    global _LAST_BEST_UPLOAD_TIME
+    global _LAST_BEST_UPLOAD_TIME, _ACTIVE_UPLOAD_THREADS, _IN_FLIGHT_UPLOADS, _IN_FLIGHT_UPLOAD_TIMES
     with _UPLOAD_LOCK:
         now = time.time()
         if target_type == "best":
@@ -366,24 +373,37 @@ def push_checkpoint_async(
 
         if target_type in _IN_FLIGHT_UPLOADS:
             prev_step = _IN_FLIGHT_UPLOADS[target_type]
-            print(f"⏳ [cloud_sync] Upload in flight for {target_type}.pt (step {prev_step}): skipping duplicate dispatch for step {step}.")
-            return None
+            start_t = _IN_FLIGHT_UPLOAD_TIMES.get(target_type, now)
+            if now - start_t < 180.0:  # 3 minutes timeout guard
+                print(f"⏳ [cloud_sync] Upload in flight for {target_type}.pt (step {prev_step}): skipping duplicate dispatch for step {step}.")
+                return None
+            else:
+                print(f"⚠️ [cloud_sync] Previous upload for {target_type}.pt (step {prev_step}) timed out after {now - start_t:.0f}s. Resetting lock.")
 
         _IN_FLIGHT_UPLOADS[target_type] = step
+        _IN_FLIGHT_UPLOAD_TIMES[target_type] = now
         if target_type == "best":
             _LAST_BEST_UPLOAD_TIME = now
 
-    thread = threading.Thread(
-        target=push_checkpoint,
-        args=(file_path, step, loss, target_type, source_node, url, token, chunk_size_mb),
-        daemon=True,
-        name=f"CloudSync_{target_type}_{step}"
-    )
-    with _UPLOAD_LOCK:
-        _ACTIVE_UPLOAD_THREADS.append(thread)
-        _ACTIVE_UPLOAD_THREADS = [t for t in _ACTIVE_UPLOAD_THREADS if t.is_alive()]
-    thread.start()
-    return thread
+    try:
+        thread = threading.Thread(
+            target=push_checkpoint,
+            args=(file_path, step, loss, target_type, source_node, url, token, chunk_size_mb),
+            daemon=True,
+            name=f"CloudSync_{target_type}_{step}"
+        )
+        with _UPLOAD_LOCK:
+            _ACTIVE_UPLOAD_THREADS.append(thread)
+            _ACTIVE_UPLOAD_THREADS = [t for t in _ACTIVE_UPLOAD_THREADS if t.is_alive()]
+        thread.start()
+        return thread
+    except Exception as e:
+        with _UPLOAD_LOCK:
+            if _IN_FLIGHT_UPLOADS.get(target_type) == step:
+                _IN_FLIGHT_UPLOADS.pop(target_type, None)
+                _IN_FLIGHT_UPLOAD_TIMES.pop(target_type, None)
+        print(f"⚠️ [CloudSync Error]: {e}")
+        return None
 
 
 def notify_training_start(
@@ -423,8 +443,9 @@ def notify_training_start(
             if data.get("success"):
                 print(f"📢 [cloud_sync] Active training notice registered on bioflo.in ({source}, {hours}h).")
                 return True
-    except Exception as e:
-        print(f"⚠️ [cloud_sync] Notice: Could not send start notification: {e}")
+    except Exception:
+        # Silently pass if endpoint is not deployed on server
+        pass
     return False
 
 
