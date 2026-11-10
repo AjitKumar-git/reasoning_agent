@@ -26,13 +26,26 @@ from src.corpus import build_tokenizer
 
 
 def load_conversation_pairs(parquet_path: str, max_records: int = 50000):
-    """Loads and yields clean (prompt, response) instruction pairs from local parquet (UltraChat or OpenHermes)."""
+    """Loads and yields clean (prompt, response) instruction pairs from local parquet (UltraChat, GSM8k, or CerebroCognitive)."""
     print(f"📖 Reading conversational records from {parquet_path}...")
     schema = pq.read_schema(parquet_path)
+    pairs = []
+
+    if "question" in schema.names and "answer" in schema.names:
+        table = pq.read_table(parquet_path, columns=["question", "answer"])
+        q_col = table["question"]
+        a_col = table["answer"]
+        for i in range(min(len(q_col), max_records)):
+            q = q_col[i].as_py()
+            a = a_col[i].as_py()
+            if q and a:
+                pairs.append((q.strip(), a.strip()))
+        print(f"✅ Loaded {len(pairs):,} question-answer pairs.")
+        return pairs
+
     col_name = "messages" if "messages" in schema.names else "conversations"
     table = pq.read_table(parquet_path, columns=[col_name])
     conv_col = table[col_name]
-    pairs = []
     
     for i in range(len(conv_col)):
         if len(pairs) >= max_records:

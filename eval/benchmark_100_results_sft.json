@@ -1,0 +1,941 @@
+{
+  "summary": {
+    "World Facts & Geography": {
+      "count": 15,
+      "total_tokens": 438,
+      "total_time": 2.16813588142395
+    },
+    "Science & Nature": {
+      "count": 15,
+      "total_tokens": 407,
+      "total_time": 1.7822766304016113
+    },
+    "Basic Arithmetic & Math": {
+      "count": 15,
+      "total_tokens": 462,
+      "total_time": 2.0398287773132324
+    },
+    "Logical & Common-Sense Reasoning": {
+      "count": 15,
+      "total_tokens": 363,
+      "total_time": 1.6403346061706543
+    },
+    "Conversational & Assistant Tasks": {
+      "count": 15,
+      "total_tokens": 485,
+      "total_time": 2.0861380100250244
+    },
+    "In-Context Grounding & Extraction": {
+      "count": 15,
+      "total_tokens": 536,
+      "total_time": 2.2857539653778076
+    },
+    "Coding & Algorithmic Logic": {
+      "count": 10,
+      "total_tokens": 365,
+      "total_time": 1.5506019592285156
+    }
+  },
+  "results": [
+    {
+      "id": 1,
+      "category": "World Facts & Geography",
+      "question": "What is the capital of France?",
+      "reference": "Paris",
+      "response": "The capital of the in",
+      "tokens": 5,
+      "time_sec": 0.326
+    },
+    {
+      "id": 2,
+      "category": "World Facts & Geography",
+      "question": "What is the capital of Japan?",
+      "reference": "Tokyo",
+      "response": "The capital city Japan is a in Japan and Asia is\nIn17743 on\nD4373\n\n347 x\n\n143967\n1898\n3",
+      "tokens": 46,
+      "time_sec": 0.191
+    },
+    {
+      "id": 3,
+      "category": "World Facts & Geography",
+      "question": "Which continent is Egypt located on?",
+      "reference": "Africa",
+      "response": "The count' Egypti is built on rock record16 and4 Jerusalem",
+      "tokens": 15,
+      "time_sec": 0.07
+    },
+    {
+      "id": 4,
+      "category": "World Facts & Geography",
+      "question": "What is the largest ocean on Earth?",
+      "reference": "Pacific Ocean",
+      "response": "Sure largest planet species Earth in",
+      "tokens": 6,
+      "time_sec": 0.035
+    },
+    {
+      "id": 5,
+      "category": "World Facts & Geography",
+      "question": "What is the capital of Germany?",
+      "reference": "Berlin",
+      "response": "Yes capital city Roman in The in Phili11 and Volks,413 and 833 39, 34, 16, 24, 26, 46, 8",
+      "tokens": 47,
+      "time_sec": 0.19
+    },
+    {
+      "id": 6,
+      "category": "World Facts & Geography",
+      "question": "Which river is widely considered the longest in the world?",
+      "reference": "Nile River (or Amazon River)",
+      "response": "The E River is",
+      "tokens": 4,
+      "time_sec": 0.027
+    },
+    {
+      "id": 7,
+      "category": "World Facts & Geography",
+      "question": "What is the capital of Canada?",
+      "reference": "Ottawa",
+      "response": "The capital of Islam capital of res is  179 11 144,\n, \n437 and 418 9.\n98629899.9",
+      "tokens": 46,
+      "time_sec": 0.19
+    },
+    {
+      "id": 8,
+      "category": "World Facts & Geography",
+      "question": "What country has the largest land area in the world?",
+      "reference": "Russia",
+      "response": "The area's largest area in Tokyo has",
+      "tokens": 9,
+      "time_sec": 0.046
+    },
+    {
+      "id": 9,
+      "category": "World Facts & Geography",
+      "question": "What is the capital of Australia?",
+      "reference": "Canberra",
+      "response": "The capital of Alexand capital of Alexand is  in 11%9- and5114,113,9,\nA79).3\n414518318781",
+      "tokens": 47,
+      "time_sec": 0.191
+    },
+    {
+      "id": 10,
+      "category": "World Facts & Geography",
+      "question": "Mount Everest is located in which mountain range?",
+      "reference": "Himalayas",
+      "response": "Yes, Shin Mowssss mountain is located in the south, France located- The17611 196,709.\n117",
+      "tokens": 36,
+      "time_sec": 0.151
+    },
+    {
+      "id": 11,
+      "category": "World Facts & Geography",
+      "question": "What is the capital of Brazil?",
+      "reference": "Brasilia",
+      "response": "The capital of the capital city often, Arag 19,119,719  13, 37, 22, 61  17, and14, 3",
+      "tokens": 45,
+      "time_sec": 0.192
+    },
+    {
+      "id": 12,
+      "category": "World Facts & Geography",
+      "question": "Which desert is the largest hot desert in the world?",
+      "reference": "Sahara Desert",
+      "response": "The largest architecture in the area is\nThe G17 The Agricult\nA16\n-.57\n4.4.2\n51479988896956\n89",
+      "tokens": 46,
+      "time_sec": 0.191
+    },
+    {
+      "id": 13,
+      "category": "World Facts & Geography",
+      "question": "What is the capital of Italy?",
+      "reference": "Rome",
+      "response": "Yes official of Roman1 \"A3 and11124434 x61446136807236497616283669893",
+      "tokens": 47,
+      "time_sec": 0.19
+    },
+    {
+      "id": 14,
+      "category": "World Facts & Geography",
+      "question": "In which country would you find the Great Pyramid of Giza?",
+      "reference": "Egypt",
+      "response": "The tid I can provide add a",
+      "tokens": 7,
+      "time_sec": 0.039
+    },
+    {
+      "id": 15,
+      "category": "World Facts & Geography",
+      "question": "What is the capital of the United Kingdom?",
+      "reference": "London",
+      "response": "The capital of the capital is  is  in Boh11,5,-W81\n \n234\n\n2 2 6",
+      "tokens": 32,
+      "time_sec": 0.139
+    },
+    {
+      "id": 16,
+      "category": "Science & Nature",
+      "question": "Why is the sky blue?",
+      "reference": "Rayleigh scattering of sunlight by gas molecules in Earth's atmosphere.",
+      "response": "The shape is bright when possible and not'\u0627A, and \n2 is of",
+      "tokens": 18,
+      "time_sec": 0.081
+    },
+    {
+      "id": 17,
+      "category": "Science & Nature",
+      "question": "What is the chemical formula for water?",
+      "reference": "H2O",
+      "response": "The process of the water water in for and1-,11 1,111.5,3 \n1243\n544 4 3 5 1 24 3",
+      "tokens": 46,
+      "time_sec": 0.191
+    },
+    {
+      "id": 18,
+      "category": "Science & Nature",
+      "question": "What planet is closest to the Sun?",
+      "reference": "Mercury",
+      "response": "The temperature of Mars is Sun Mars is Jup and 117 billion97,1\n241.18641,.6859838.71376919",
+      "tokens": 46,
+      "time_sec": 0.191
+    },
+    {
+      "id": 19,
+      "category": "Science & Nature",
+      "question": "What gas do plants absorb from the atmosphere for photosynthesis?",
+      "reference": "Carbon dioxide (CO2)",
+      "response": "Sure, carbon is an in studying and",
+      "tokens": 8,
+      "time_sec": 0.043
+    },
+    {
+      "id": 20,
+      "category": "Science & Nature",
+      "question": "What is the fundamental unit of life?",
+      "reference": "The cell",
+      "response": "According purpose of being foss and classical is related andeffect framework\n \n-1 E Arab (\n- This includes is 3- - 6-3\n 3   1 1  #1",
+      "tokens": 43,
+      "time_sec": 0.191
+    },
+    {
+      "id": 21,
+      "category": "Science & Nature",
+      "question": "What is the chemical symbol for gold?",
+      "reference": "Au",
+      "response": "Yes \" choice ispan scheme,\n- Rapb,\n- M-\n- Ven,\n- S: \n1.\n\n- Joe2\n-22\n-22--4,\n-",
+      "tokens": 46,
+      "time_sec": 0.191
+    },
+    {
+      "id": 22,
+      "category": "Science & Nature",
+      "question": "How many bones are in the adult human skeleton?",
+      "reference": "206",
+      "response": "The average degreea system of sera  powerful and \", gods: Gener and the - \n- T,\n\nThe. \n- -3\na. \n- 2\n3 3-",
+      "tokens": 44,
+      "time_sec": 0.192
+    },
+    {
+      "id": 23,
+      "category": "Science & Nature",
+      "question": "What particle inside an atom carries a negative electrical charge?",
+      "reference": "Electron",
+      "response": "The of a cell in an form is detect, generate\n-12 There electron of the -1.5a2  .3.4342 134243122 4",
+      "tokens": 45,
+      "time_sec": 0.192
+    },
+    {
+      "id": 24,
+      "category": "Science & Nature",
+      "question": "What is the process by which liquid water turns into water vapor?",
+      "reference": "Evaporation",
+      "response": "The water is designated in water the released to form up into",
+      "tokens": 12,
+      "time_sec": 0.058
+    },
+    {
+      "id": 25,
+      "category": "Science & Nature",
+      "question": "What is the largest planet in our solar system?",
+      "reference": "Jupiter",
+      "response": "The North number in Earth is\n on Earth and\n\n11592177\n4711858.1.79.791\n 89579980",
+      "tokens": 47,
+      "time_sec": 0.192
+    },
+    {
+      "id": 26,
+      "category": "Science & Nature",
+      "question": "What organ pumps blood throughout the human body?",
+      "reference": "Heart",
+      "response": "The heart and body for \u041c\u0443 body depends of blood ability structure size",
+      "tokens": 13,
+      "time_sec": 0.062
+    },
+    {
+      "id": 27,
+      "category": "Science & Nature",
+      "question": "What is the primary gas found in Earth's atmosphere?",
+      "reference": "Nitrogen",
+      "response": "Sure, hass solar of extremely is Ge1,9118",
+      "tokens": 15,
+      "time_sec": 0.07
+    },
+    {
+      "id": 28,
+      "category": "Science & Nature",
+      "question": "At what temperature Celsius does pure water freeze at standard pressure?",
+      "reference": "0 degrees Celsius",
+      "response": "The temperature of temperature in transport and",
+      "tokens": 7,
+      "time_sec": 0.039
+    },
+    {
+      "id": 29,
+      "category": "Science & Nature",
+      "question": "What force pulls objects toward the center of the Earth?",
+      "reference": "Gravity",
+      "response": "The force theory is revol and and architecture (",
+      "tokens": 9,
+      "time_sec": 0.047
+    },
+    {
+      "id": 30,
+      "category": "Science & Nature",
+      "question": "What molecule carries genetic instructions in living organisms?",
+      "reference": "DNA (Deoxyribonucleic acid)",
+      "response": "C l DNA mechan antries in also",
+      "tokens": 8,
+      "time_sec": 0.043
+    },
+    {
+      "id": 31,
+      "category": "Basic Arithmetic & Math",
+      "question": "What is 2 + 3?",
+      "reference": "5",
+      "response": "The! here are some steps details about how the use add",
+      "tokens": 12,
+      "time_sec": 0.058
+    },
+    {
+      "id": 32,
+      "category": "Basic Arithmetic & Math",
+      "question": "What is 12 multiplied by 8?",
+      "reference": "96",
+      "response": "Sure, here are some additional tips about the different objective of sizes in the mean12 \n1 ,\n22.4\n4  2  4,2614,62433",
+      "tokens": 44,
+      "time_sec": 0.191
+    },
+    {
+      "id": 33,
+      "category": "Basic Arithmetic & Math",
+      "question": "What is 100 divided by 4?",
+      "reference": "25",
+      "response": "The number 100 of of",
+      "tokens": 8,
+      "time_sec": 0.043
+    },
+    {
+      "id": 34,
+      "category": "Basic Arithmetic & Math",
+      "question": "What is 45 minus 19?",
+      "reference": "26",
+      "response": "The deal 1% 1 is\n\n4\n\n4 3,4  14 1,9  17   10121 19 11",
+      "tokens": 40,
+      "time_sec": 0.191
+    },
+    {
+      "id": 35,
+      "category": "Basic Arithmetic & Math",
+      "question": "What is the square root of 64?",
+      "reference": "8",
+      "response": "The act of log and the 44 and is160 \n  =1  11, 4,  4,, 16, 64, 8,, 69",
+      "tokens": 43,
+      "time_sec": 0.191
+    },
+    {
+      "id": 36,
+      "category": "Basic Arithmetic & Math",
+      "question": "If you have 15 apples and give away 7, how many do you have left?",
+      "reference": "8",
+      "response": "Sure! Here's how to do with",
+      "tokens": 9,
+      "time_sec": 0.046
+    },
+    {
+      "id": 37,
+      "category": "Basic Arithmetic & Math",
+      "question": "What is 7 times 6?",
+      "reference": "42",
+      "response": "Sure number 6 pairs7 and observable Maps and1,9,07,71 36 6, 6, 6, 6, 1, 8, 7, 8,",
+      "tokens": 46,
+      "time_sec": 0.191
+    },
+    {
+      "id": 38,
+      "category": "Basic Arithmetic & Math",
+      "question": "What is half of 150?",
+      "reference": "75",
+      "response": "The overall size-1 is5\n C174 is\n3111\n45\n11\n 14",
+      "tokens": 28,
+      "time_sec": 0.123
+    },
+    {
+      "id": 39,
+      "category": "Basic Arithmetic & Math",
+      "question": "What is 9 squared?",
+      "reference": "81",
+      "response": "The \" 191,\n 34\n \n4  ,3.63 \n-.9. 8693.\n  21",
+      "tokens": 36,
+      "time_sec": 0.162
+    },
+    {
+      "id": 40,
+      "category": "Basic Arithmetic & Math",
+      "question": "A train travels at 50 miles per hour for 4 hours. How far did it travel?",
+      "reference": "200 miles",
+      "response": "< 107 miles long the18-0 for4 hours 61121,\n 6426441731\n11166 8172 3",
+      "tokens": 47,
+      "time_sec": 0.192
+    },
+    {
+      "id": 41,
+      "category": "Basic Arithmetic & Math",
+      "question": "What is 10 plus 25 minus 8?",
+      "reference": "27",
+      "response": "The number of11  1 ( 1\n\n31 4 \n3 921 \n\n31 0 110 2 \n\n\n 1   0",
+      "tokens": 44,
+      "time_sec": 0.191
+    },
+    {
+      "id": 42,
+      "category": "Basic Arithmetic & Math",
+      "question": "How many minutes are in 3 hours?",
+      "reference": "180 minutes",
+      "response": "The'- Teamsat training substring",
+      "tokens": 6,
+      "time_sec": 0.039
+    },
+    {
+      "id": 43,
+      "category": "Basic Arithmetic & Math",
+      "question": "What is 20 percent of 200?",
+      "reference": "40",
+      "response": "I term of reward dataalgorithm in",
+      "tokens": 7,
+      "time_sec": 0.039
+    },
+    {
+      "id": 44,
+      "category": "Basic Arithmetic & Math",
+      "question": "If 3 pens cost 6 dollars, how much does 1 pen cost?",
+      "reference": "2 dollars",
+      "response": "C! can sp Pick'def p that\n4 Predick Man: (:- \"1 tablespoons wide p-freebsw\n- 1-4 p\niced pap sy- 1 tablespoons,",
+      "tokens": 46,
+      "time_sec": 0.191
+    },
+    {
+      "id": 45,
+      "category": "Basic Arithmetic & Math",
+      "question": "What is 1000 divided by 10?",
+      "reference": "100",
+      "response": "The is 100- is Division cases 001 \n4 31101 \n31 6\n1111 \n08 2 1 160",
+      "tokens": 46,
+      "time_sec": 0.191
+    },
+    {
+      "id": 46,
+      "category": "Logical & Common-Sense Reasoning",
+      "question": "If all cats are mammals, and all mammals are animals, are all cats animals?",
+      "reference": "Yes",
+      "response": "<pals are m that like amaz and that flowers. animals can",
+      "tokens": 14,
+      "time_sec": 0.067
+    },
+    {
+      "id": 47,
+      "category": "Logical & Common-Sense Reasoning",
+      "question": "If yesterday was Sunday, what day will tomorrow be?",
+      "reference": "Tuesday",
+      "response": "Yes chairman wants Toped ra \",",
+      "tokens": 7,
+      "time_sec": 0.043
+    },
+    {
+      "id": 48,
+      "category": "Logical & Common-Sense Reasoning",
+      "question": "Which is heavier: one pound of feathers or one pound of bricks?",
+      "reference": "They weigh the exact same (both weigh one pound).",
+      "response": "Yes, bitterigobychars may \" and\n and \"-nriB  and\n,\n-  \"C: \n- \" is",
+      "tokens": 31,
+      "time_sec": 0.136
+    },
+    {
+      "id": 49,
+      "category": "Logical & Common-Sense Reasoning",
+      "question": "If John is taller than Mary, and Mary is taller than Sue, who is the tallest?",
+      "reference": "John",
+      "response": "short Ss,",
+      "tokens": 4,
+      "time_sec": 0.023
+    },
+    {
+      "id": 50,
+      "category": "Logical & Common-Sense Reasoning",
+      "question": "Can a person survive without water for three weeks?",
+      "reference": "No, a human typically survives only 3 to 7 days without water.",
+      "response": "Sure <!ons are usually a in breath",
+      "tokens": 8,
+      "time_sec": 0.051
+    },
+    {
+      "id": 51,
+      "category": "Logical & Common-Sense Reasoning",
+      "question": "If a red box is inside a blue box, and the blue box is inside a green box, is the red box inside the green box?",
+      "reference": "Yes",
+      "response": "Sure \" label, Transport\nHere box that\n- green/\n- Green-\n\n blue p\n-width-green\n\n- ,\n- Blue,\n- White\n---\n- red-",
+      "tokens": 43,
+      "time_sec": 0.192
+    },
+    {
+      "id": 52,
+      "category": "Logical & Common-Sense Reasoning",
+      "question": "Why can an airplane fly but a submarine cannot fly in the air?",
+      "reference": "Airplanes generate aerodynamic lift with wings and engines; submarines are too dense and lack lift-generating wings.",
+      "response": "Yes absolutelyTheRA-O designed\n-T Auto:\n112,126446788\n979689616594689319",
+      "tokens": 45,
+      "time_sec": 0.191
+    },
+    {
+      "id": 53,
+      "category": "Logical & Common-Sense Reasoning",
+      "question": "If you turn a glass upside down, what happens to the water inside?",
+      "reference": "The water spills or pours out due to gravity.",
+      "response": "To Gla is a  Pol Prowater, and can d g blue\n1-. \"\n- A o up\n4 144   -\n1 2 2312px\n1",
+      "tokens": 44,
+      "time_sec": 0.191
+    },
+    {
+      "id": 54,
+      "category": "Logical & Common-Sense Reasoning",
+      "question": "Alice has 2 brothers. How many brothers does each of her brothers have?",
+      "reference": "1 brother",
+      "response": "Sure, here's an great attitude model more information about the potential sib and relationship of most: a\n\n1.",
+      "tokens": 25,
+      "time_sec": 0.108
+    },
+    {
+      "id": 55,
+      "category": "Logical & Common-Sense Reasoning",
+      "question": "Is it possible to take a photograph of the future with a camera?",
+      "reference": "No, cameras can only capture light arriving from the present/past.",
+      "response": "Sure! I's a updated questions for free visual-clicking camera camera\n\nR firstX by\nScene a100\nSpeed the\n\nJoin1\n\n1 2\n12  1",
+      "tokens": 45,
+      "time_sec": 0.191
+    },
+    {
+      "id": 56,
+      "category": "Logical & Common-Sense Reasoning",
+      "question": "If it rains on a dry sidewalk, what will happen to the sidewalk?",
+      "reference": "It will become wet.",
+      "response": "Yes, I Doore is also",
+      "tokens": 7,
+      "time_sec": 0.039
+    },
+    {
+      "id": 57,
+      "category": "Logical & Common-Sense Reasoning",
+      "question": "You see smoke coming from an oven. What is the most likely cause?",
+      "reference": "Food or grease inside the oven is burning or overheating.",
+      "response": "C most is suggests \"",
+      "tokens": 5,
+      "time_sec": 0.031
+    },
+    {
+      "id": 58,
+      "category": "Logical & Common-Sense Reasoning",
+      "question": "If you freeze hot soup, does it become solid ice or boil away?",
+      "reference": "It freezes and becomes solid.",
+      "response": "Noo I! r Heste to Replace or\n- m up is\n-olded\n\nInst \n-Scene and \n- Coll2\n- :",
+      "tokens": 35,
+      "time_sec": 0.151
+    },
+    {
+      "id": 59,
+      "category": "Logical & Common-Sense Reasoning",
+      "question": "A clock strikes 12 times at midnight. How many times will it strike at 1:00 AM?",
+      "reference": "1 time",
+      "response": "Sure overall to H function",
+      "tokens": 5,
+      "time_sec": 0.032
+    },
+    {
+      "id": 60,
+      "category": "Logical & Common-Sense Reasoning",
+      "question": "If an electric train is traveling north at 60 mph and the wind blows south at 10 mph, which way does the smoke blow?",
+      "reference": "An electric train produces no smoke.",
+      "response": "The temperature- Syn line and Pred inAn196\n\n51 11153\n\n117111\n 2 91112211-11",
+      "tokens": 45,
+      "time_sec": 0.194
+    },
+    {
+      "id": 61,
+      "category": "Conversational & Assistant Tasks",
+      "question": "Hello! Who are you?",
+      "reference": "Conversational greeting stating identity as CerebroSpheroid assistant.",
+      "response": "Sure! As Charizen- \" I-apple , \"\n- Arabr Dictionary",
+      "tokens": 17,
+      "time_sec": 0.082
+    },
+    {
+      "id": 62,
+      "category": "Conversational & Assistant Tasks",
+      "question": "Can you give me 3 practical tips for getting better sleep?",
+      "reference": "Consistent schedule, reduce blue light/screens, cool dark room.",
+      "response": "Sure! Here's a easy forby guide for providing perfect that:\nA1a Title -\n\n1 Use\n \n-  \n\n432\n-a\n\n-  4 s8",
+      "tokens": 45,
+      "time_sec": 0.192
+    },
+    {
+      "id": 63,
+      "category": "Conversational & Assistant Tasks",
+      "question": "Write a polite 2-sentence email thanking a colleague for their help on a project.",
+      "reference": "Thank you so much for your support on our recent project. Your insights made a huge difference.",
+      "response": "The Do by [Step-Phone\ninteger[act \n- A and email\n\nCre-\n\n#.\n-html: --\n[a [ Manager\n\nimportENT-\nD// @\n@file",
+      "tokens": 47,
+      "time_sec": 0.192
+    },
+    {
+      "id": 64,
+      "category": "Conversational & Assistant Tasks",
+      "question": "Explain the difference between a fruit and a vegetable in simple terms.",
+      "reference": "Botanically, fruits develop from flowers and contain seeds, while vegetables are other edible plant parts.",
+      "response": "Ing pal  and < (AIn function\n - \" dash paste\n-f can\n-sizein>\n- Gr-\n-- Pe\n v\n- G_f\n\n- ateas\n-",
+      "tokens": 45,
+      "time_sec": 0.191
+    },
+    {
+      "id": 65,
+      "category": "Conversational & Assistant Tasks",
+      "question": "What are 3 healthy breakfast ideas that can be prepared in under 10 minutes?",
+      "reference": "Oatmeal with fruit, Greek yogurt with nuts, scrambled eggs on whole-grain toast.",
+      "response": "Sureetic Healthy breakfast is conductedilin canin Sugh\n -Cally and -1-purycyl\n- -1- ki.\n- p3- Lem,6-4-4 t",
+      "tokens": 45,
+      "time_sec": 0.195
+    },
+    {
+      "id": 66,
+      "category": "Conversational & Assistant Tasks",
+      "question": "I am feeling overwhelmed with tasks today. What should I do first?",
+      "reference": "Take a deep breath, write down a list, prioritize the single most important task.",
+      "response": "Sure do not have a words for",
+      "tokens": 7,
+      "time_sec": 0.039
+    },
+    {
+      "id": 67,
+      "category": "Conversational & Assistant Tasks",
+      "question": "Give me a simple recipe for making pancakes from scratch.",
+      "reference": "Flour, milk, egg, baking powder, pinch of sugar and salt; mix and fry on skillet.",
+      "response": "Hereredients:\n- Ch1 tbsp c Sau-22 tepoons of whole\n- Salt1 tablesbsp saltwe-- 1 tepoon of beane\n- 1 largebsp",
+      "tokens": 46,
+      "time_sec": 0.192
+    },
+    {
+      "id": 68,
+      "category": "Conversational & Assistant Tasks",
+      "question": "What is the best way to politely decline an invitation to an event?",
+      "reference": "Thank them warmly, state you cannot attend due to prior commitments, and wish them a great time.",
+      "response": "The conversion is ( and The\n-go\n ( (A--  is Log-C\n- Bra:A",
+      "tokens": 24,
+      "time_sec": 0.108
+    },
+    {
+      "id": 69,
+      "category": "Conversational & Assistant Tasks",
+      "question": "Summarize what an API is in one clear sentence.",
+      "reference": "An API is a software interface that allows different computer programs to communicate and exchange data.",
+      "response": "The man fit of",
+      "tokens": 4,
+      "time_sec": 0.027
+    },
+    {
+      "id": 70,
+      "category": "Conversational & Assistant Tasks",
+      "question": "How can a student improve their study habits for exams?",
+      "reference": "Use active recall, spaced repetition, avoid multitasking, and take regular breaks.",
+      "response": "Sure! Here are some general optionsal resources-weightut that assess ther\n- DI studentD: This feature professor between paragraph forLos understanding, nom ther,\n\u0446\u0438\u043datelyant\n:- Fa: Scroll\n- Social is",
+      "tokens": 46,
+      "time_sec": 0.191
+    },
+    {
+      "id": 71,
+      "category": "Conversational & Assistant Tasks",
+      "question": "Suggest 3 fun outdoor activities for a sunny afternoon.",
+      "reference": "Hiking in a park, cycling, having a picnic.",
+      "response": "Ing Here! C, provide your beach and and you- resources,\n- Product the, \nCityest run\n- Blue-catchch,\n- Hot-- andiku,\n- S of Beach \n-",
+      "tokens": 46,
+      "time_sec": 0.191
+    },
+    {
+      "id": 72,
+      "category": "Conversational & Assistant Tasks",
+      "question": "Can you explain inflation to a 10-year-old?",
+      "reference": "Inflation means prices for things go up over time, so your dollar buys a little less candy than before.",
+      "response": "Sure! Here' some more information on specific",
+      "tokens": 9,
+      "time_sec": 0.047
+    },
+    {
+      "id": 73,
+      "category": "Conversational & Assistant Tasks",
+      "question": "Write a short motivational quote about persistence.",
+      "reference": "Great accomplishments are not produced by strength alone, but by persevering one day at a time.",
+      "response": "I idea of mindwalk (-F was\n\n(The-YMENTC(AY \n\nCharY\n\n\nThe1\n\n\n 1 3INT\n1",
+      "tokens": 39,
+      "time_sec": 0.166
+    },
+    {
+      "id": 74,
+      "category": "Conversational & Assistant Tasks",
+      "question": "What are two good ways to save electricity at home?",
+      "reference": "Turn off lights when leaving rooms, and unplug unused electronics or use efficient LED bulbs.",
+      "response": "Yes, I is Smith for Electric can Kal and\n- Zero home\n La Virtual-\n-Phoneined-1-\n- Ph:\n- Data:\n- Cross and\n- Att:\n- Ve and\n-",
+      "tokens": 47,
+      "time_sec": 0.192
+    },
+    {
+      "id": 75,
+      "category": "Conversational & Assistant Tasks",
+      "question": "If you don't know the answer to a question, what should you do?",
+      "reference": "Acknowledge the uncertainty truthfully rather than making up false information.",
+      "response": "Sure! There haved be happy to help! We I\nD say that Pline",
+      "tokens": 18,
+      "time_sec": 0.081
+    },
+    {
+      "id": 76,
+      "category": "In-Context Grounding & Extraction",
+      "question": "Context: 'Project Cerebro began in 2024 with a team of 4 neuroscientists in Zurich.' Question: In what year did Project Cerebro begin?",
+      "reference": "2024",
+      "response": "The E act1 ofC-N-Structur\ufffd\ufffd \u00fcIntroduction3\n\n-3134\n6\n\n\n11829\n289.68\n 68939",
+      "tokens": 46,
+      "time_sec": 0.193
+    },
+    {
+      "id": 77,
+      "category": "In-Context Grounding & Extraction",
+      "question": "Context: 'Project Cerebro began in 2024 with a team of 4 neuroscientists in Zurich.' Question: In which city was the team based?",
+      "reference": "Zurich",
+      "response": "The people Officer14C014supporteded of 3,1",
+      "tokens": 16,
+      "time_sec": 0.074
+    },
+    {
+      "id": 78,
+      "category": "In-Context Grounding & Extraction",
+      "question": "Context: 'The blue whale can weigh up to 200 tons and has a heart the size of a small car.' Question: How much can a blue whale weigh?",
+      "reference": "Up to 200 tons",
+      "response": "Yes! Here are a more information about cro\n1. Ch av is a common choice that smooth color-wly dur and a add texture or font to base a\n-a-h-uca, one 3D0",
+      "tokens": 47,
+      "time_sec": 0.193
+    },
+    {
+      "id": 79,
+      "category": "In-Context Grounding & Extraction",
+      "question": "Context: 'Solar flares release high-energy photons that reach Earth in about 8.3 minutes.' Question: How long does it take solar flare photons to reach Earth?",
+      "reference": "About 8.3 minutes",
+      "response": "The energy is widely\n1-1B7 particles\n114 S7\n-123,\n\n10322.383\n\n898.9\n21914",
+      "tokens": 47,
+      "time_sec": 0.193
+    },
+    {
+      "id": 80,
+      "category": "In-Context Grounding & Extraction",
+      "question": "Context: 'Dr. Evans published the study in the Journal of Cellular Biology on October 14.' Question: Who published the study?",
+      "reference": "Dr. Evans",
+      "response": "The study published Psych University published, \"In2inL' Pred: TheB14,5 billion\n-Magur Center 33 The",
+      "tokens": 31,
+      "time_sec": 0.132
+    },
+    {
+      "id": 81,
+      "category": "In-Context Grounding & Extraction",
+      "question": "Context: 'The robotic rover scanned 42 rock samples and detected traces of hematite.' Question: How many rock samples were scanned?",
+      "reference": "42",
+      "response": "The, the sp and precisiones quartike are specifically used in many modern math, temed, and, \u0423\u043a\u0440\u0430\u0438\u043d\u044b architecture, geometric domin, joy composition.\nInT, Wolfgang,,A1,   In: isA",
+      "tokens": 45,
+      "time_sec": 0.192
+    },
+    {
+      "id": 82,
+      "category": "In-Context Grounding & Extraction",
+      "question": "Context: 'To bake the sourdough bread, preheat the cast-iron Dutch oven to 450 degrees Fahrenheit.' Question: What temperature should the oven be preheated to?",
+      "reference": "450 degrees Fahrenheit",
+      "response": "The \"All not the111\n- O, 1 33,\n\n- 9 t o213- 2,5 -- 1/sp gact\n-21 t",
+      "tokens": 45,
+      "time_sec": 0.192
+    },
+    {
+      "id": 83,
+      "category": "In-Context Grounding & Extraction",
+      "question": "Context: 'The company reported a 15% growth in annual recurring revenue during Q3.' Question: What percentage did the revenue grow by?",
+      "reference": "15%",
+      "response": "The percentage of social 1act37 63% -11.1113164.\n\n1233\n212948.17699\n1",
+      "tokens": 46,
+      "time_sec": 0.192
+    },
+    {
+      "id": 84,
+      "category": "In-Context Grounding & Extraction",
+      "question": "Context: 'Elena purchased two notebooks for $5 each and a fountain pen for $12.' Question: What was the total cost of Elena's items?",
+      "reference": "$22 ($10 + $12)",
+      "response": "Yes, here's a updated stepsstep that that\nC \"1:Nb has\nPINT =:\n11\n\n\n11\n\n1 1\n\n\n \n1\n1\n2",
+      "tokens": 47,
+      "time_sec": 0.192
+    },
+    {
+      "id": 85,
+      "category": "In-Context Grounding & Extraction",
+      "question": "Context: 'The battery has a capacity of 5000 mAh and supports 65-watt fast charging.' Question: What is the battery capacity?",
+      "reference": "5000 mAh",
+      "response": "The potential of the smart' S technology computing SparkPower- Virtual is navigation technology:\n\n1. The Technology - Virtual\n  has Autom \n1University -\n-160\nN114 1",
+      "tokens": 47,
+      "time_sec": 0.192
+    },
+    {
+      "id": 86,
+      "category": "In-Context Grounding & Extraction",
+      "question": "Context: 'The library will be closed for renovation from Monday through Thursday, reopening on Friday at 9 AM.' Question: On which day will the library reopen?",
+      "reference": "Friday",
+      "response": "Sure process is that and the://www.mat.org/t/",
+      "tokens": 15,
+      "time_sec": 0.07
+    },
+    {
+      "id": 87,
+      "category": "In-Context Grounding & Extraction",
+      "question": "Context: 'The spacecraft completed 12 orbits around Saturn before entering the atmosphere of Titan.' Question: Which planet did the spacecraft orbit?",
+      "reference": "Saturn",
+      "response": "The Miami \"",
+      "tokens": 3,
+      "time_sec": 0.023
+    },
+    {
+      "id": 88,
+      "category": "In-Context Grounding & Extraction",
+      "question": "Context: 'Patient temperature was measured at 38.5 C, accompanied by mild fatigue and a dry cough.' Question: What was the recorded temperature?",
+      "reference": "38.5 C",
+      "response": "The provided of temperature and Pred can on temperature variations to temperature and",
+      "tokens": 13,
+      "time_sec": 0.062
+    },
+    {
+      "id": 89,
+      "category": "In-Context Grounding & Extraction",
+      "question": "Context: 'The software update requires 4 gigabytes of free disk space and macOS version 12 or newer.' Question: How much free disk space is required?",
+      "reference": "4 gigabytes",
+      "response": "Sure, I''. Predo \n-4 Network https filename-\n1Log Ve\n\n\n \n3114--1986\n711189846-",
+      "tokens": 44,
+      "time_sec": 0.193
+    },
+    {
+      "id": 90,
+      "category": "In-Context Grounding & Extraction",
+      "question": "Context: 'The recipe calls for 2 cups of almond flour and 1 teaspoon of vanilla extract.' Question: How much vanilla extract is needed?",
+      "reference": "1 teaspoon",
+      "response": "! Here are some additional that that suggest should graph1 such fabumin, \"\n1. Lemon S - ( Sp a-a sau and\n- Lem2 t4 olive, ali sau3 1",
+      "tokens": 44,
+      "time_sec": 0.192
+    },
+    {
+      "id": 91,
+      "category": "Coding & Algorithmic Logic",
+      "question": "Write a Python function `is_even(n)` that returns True if integer n is even, otherwise False.",
+      "reference": "def is_even(n): return n % 2 == 0",
+      "response": "Trueactif len(is_integer Python\ndefdef main_even__\ndef sum_dict(\n# function takes input_\n# convert input\nprint(\n_upper_bal):\n\n# function for",
+      "tokens": 46,
+      "time_sec": 0.192
+    },
+    {
+      "id": 92,
+      "category": "Coding & Algorithmic Logic",
+      "question": "How do you reverse a string `s` in Python using slicing?",
+      "reference": "s[::-1]",
+      "response": "Sure! here ares a Python program that you the `split()` function to convert each string as' as input and\n\n``` Num\nimport s\n   def reverse(string_squasvar = \"\n\ndef function",
+      "tokens": 47,
+      "time_sec": 0.192
+    },
+    {
+      "id": 93,
+      "category": "Coding & Algorithmic Logic",
+      "question": "What is the time complexity of searching an element in a balanced binary search tree?",
+      "reference": "O(log n)",
+      "response": "The search process that providing \" search is sub is a in",
+      "tokens": 12,
+      "time_sec": 0.058
+    },
+    {
+      "id": 94,
+      "category": "Coding & Algorithmic Logic",
+      "question": "What does the SQL command `SELECT * FROM users WHERE age > 21;` do?",
+      "reference": "Retrieves all columns from the 'users' table for rows where 'age' is greater than 21.",
+      "response": "The is ( is label values invalid\n '\\def1\n\nYou name refers\nMy\n\n\n# name `\n\n-- name for\n\n@ Define",
+      "tokens": 33,
+      "time_sec": 0.139
+    },
+    {
+      "id": 95,
+      "category": "Coding & Algorithmic Logic",
+      "question": "What keyword is used in Python to define a function?",
+      "reference": "def",
+      "response": "Sure, here iss functions function that uses the `n` function input and first function: `0:\n\n```\n\ndef main(_:\n    # Convert the 1   2 function to function the",
+      "tokens": 43,
+      "time_sec": 0.192
+    },
+    {
+      "id": 96,
+      "category": "Coding & Algorithmic Logic",
+      "question": "In Git, what command is used to record staged changes into the local repository history?",
+      "reference": "git commit",
+      "response": "The article is section.Val provides Do the on identifier,",
+      "tokens": 12,
+      "time_sec": 0.058
+    },
+    {
+      "id": 97,
+      "category": "Coding & Algorithmic Logic",
+      "question": "What data structure operates on a Last-In, First-Out (LIFO) principle?",
+      "reference": "Stack",
+      "response": "Sure, here are the additional examples of how the analysis and implemented:\n\n1. Quant-ization: https distribution consists \n\n110A = ( ( A343<1\n3.\n3",
+      "tokens": 46,
+      "time_sec": 0.191
+    },
+    {
+      "id": 98,
+      "category": "Coding & Algorithmic Logic",
+      "question": "Write a one-line Python list comprehension that squares all numbers in a list `nums`.",
+      "reference": "[x**2 for x in nums]",
+      "response": "I ```\n# print_numbers = []\n```defpython to string for Python in input:\n# function sort\nprint(numbers = list(nint n in numbers.\n# # Define the  of squares in",
+      "tokens": 46,
+      "time_sec": 0.192
+    },
+    {
+      "id": 99,
+      "category": "Coding & Algorithmic Logic",
+      "question": "What will `print(3 * 'ab')` output in Python?",
+      "reference": "ababab",
+      "response": "Sure, here's how example Python function that calculates the ` function using as an \" array:\n\n#python\ndef main():\n    try\n    s_ \n\n    \"\"\"()",
+      "tokens": 42,
+      "time_sec": 0.174
+    },
+    {
+      "id": 100,
+      "category": "Coding & Algorithmic Logic",
+      "question": "What is the boolean result of `not (True and False)` in Python?",
+      "reference": "True",
+      "response": "Sure, here are the Python Python that for\n\npython\n\n# is_largian(\n    numbers Define   of Base\n    print \" 2\n     # Define:",
+      "tokens": 38,
+      "time_sec": 0.163
+    }
+  ]
+}
