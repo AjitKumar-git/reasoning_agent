@@ -149,14 +149,6 @@ def load_torch_pt_to_jax(
         if nk == "motor.plan_decay":
             arr = jnp.clip(arr, 0.0, 0.90)
 
-        # Seed negative or near-zero scaling factors to positive floor (0.1) so they can start growing
-        if nk == "motor.shell_scale" and jnp.all(arr <= 0.0):
-            print(f"🌱 [checkpoint] Seeding {nk} (was {arr}): set to 0.1 to begin positive gradient ascent.")
-            arr = jnp.array([0.1], dtype=arr.dtype)
-        elif nk == "motor.plan_write" and jnp.all(arr <= 0.0):
-            print(f"🌱 [checkpoint] Seeding {nk} (was {arr}): set to 0.1 to begin positive gradient ascent.")
-            arr = jnp.array([0.1], dtype=arr.dtype)
-
         # If ref_params is known, verify shape compatibility
         if ref_params is not None and nk in ref_params:
             if arr.shape == ref_params[nk].shape:
@@ -204,6 +196,47 @@ def discover_latest_checkpoint(
     max_step: int = 0
     latest_meta: Optional[dict] = None
 
+    # If target_preference is "best", check named best milestones first
+    if target_preference == "best":
+        candidate_names = [
+            "cerebro_spheroid_v4_best.pt",
+            "cerebro_spheroid_v4_jax_best.pt",
+            "best.pt",
+        ]
+        for d in search_dirs:
+            if not os.path.exists(d):
+                continue
+            for fname in candidate_names:
+                candidate_file = os.path.join(d, fname)
+                if os.path.exists(candidate_file):
+                    step_val = 0
+                    meta = {}
+                    for meta_cand in [candidate_file.replace(".pt", ".meta.json"), candidate_file.replace(".pt", ".json")]:
+                        if os.path.exists(meta_cand):
+                            try:
+                                with open(meta_cand, "r") as f:
+                                    meta = json.load(f)
+                                    step_val = int(meta.get("step", 0))
+                                    if step_val > 0:
+                                        break
+                            except Exception:
+                                pass
+                    if step_val == 0 and HAS_TORCH:
+                        try:
+                            st = torch.load(candidate_file, map_location="cpu", weights_only=False)
+                            if isinstance(st, dict) and "step" in st:
+                                step_val = int(st["step"])
+                            elif isinstance(st, dict) and "meta" in st and "step" in st["meta"]:
+                                step_val = int(st["meta"]["step"])
+                        except Exception:
+                            pass
+                    if step_val > 0 or latest_path is None:
+                        latest_path = candidate_file
+                        max_step = step_val
+                        latest_meta = meta
+                        print(f"🎯 [checkpoint] Prioritizing champion 'best' milestone: {latest_path} (Step {max_step:,})")
+                        return latest_path, max_step, latest_meta
+
     for d in search_dirs:
         if not os.path.exists(d):
             continue
@@ -216,19 +249,11 @@ def discover_latest_checkpoint(
                     max_step = step_num
                     latest_path = pt_file
 
-    # Check named milestone variants strictly respecting target_preference
-    if target_preference == "best":
-        candidate_names = [
-            "cerebro_spheroid_v4_best.pt",
-            "cerebro_spheroid_v4_jax_best.pt",
-            "best.pt",
-        ]
-    else:
-        candidate_names = [
-            "cerebro_spheroid_v4_latest.pt",
-            "cerebro_spheroid_v4_jax_latest.pt",
-            "latest.pt",
-        ]
+    candidate_names = [
+        "cerebro_spheroid_v4_latest.pt",
+        "cerebro_spheroid_v4_jax_latest.pt",
+        "latest.pt",
+    ]
 
     for d in search_dirs:
         if not os.path.exists(d):

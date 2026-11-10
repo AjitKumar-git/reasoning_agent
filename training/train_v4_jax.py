@@ -83,12 +83,12 @@ def parse_args(args_list=None):
     parser.add_argument("--deliberation_mode", type=str, default="scheduled", choices=["scheduled", "teacher_forcing", "internal"])
     parser.add_argument("--repetition_penalty", type=float, default=1.25, help="Two-tier refractory repetition penalty multiplier (default: 1.25)")
     parser.add_argument("--persona_id", type=int, default=None, help="Agentic persona ID (0=Reasoner, 1=Explorer, 2=Concise, 3=Verifier, or None for round-robin curriculum)")
-    parser.add_argument("--dataset_source", type=str, default="dense_edu",
+    parser.add_argument("--dataset_source", type=str, default="balanced_mix",
                         choices=["openhermes", "fineweb_edu", "balanced_mix", "dense_edu", "conversation_sft", "chat_sft", "reasoning_anneal"],
-                        help="Streaming training dataset: 'reasoning_anneal' (40%% General Reasoning 10k + 30%% Cosmopedia-v2 + 30%% OpenHermes-2.5), "
-                             "'conversation_sft' (40%% SmolTalk + 25%% Cosmopedia-v2 + 20%% OpenHermes-2.5 + 15%% UltraChat-200k), "
+                        help="Streaming training dataset: 'balanced_mix' (35%% Cosmopedia-v2 + 35%% FineWeb-Edu + 30%% OpenHermes-2.5), "
                              "'dense_edu' (40%% Cosmopedia-v2 + 40%% FineWeb-Edu [score>=4.0] + 20%% OpenHermes-2.5), "
-                             "'balanced_mix' (35%% Cosmopedia-v2 + 35%% FineWeb-Edu + 30%% OpenHermes-2.5), 'fineweb_edu', or 'openhermes'")
+                             "'conversation_sft' (40%% SmolTalk + 25%% Cosmopedia-v2 + 20%% OpenHermes-2.5 + 15%% UltraChat-200k), "
+                             "'reasoning_anneal', 'fineweb_edu', or 'openhermes'")
     parser.add_argument("--cloud_sync", action="store_true", default=False, help="Enable automatic checkpoint syncing with bioflo.in")
     parser.add_argument("--resume_target", type=str, default="latest", choices=["latest", "best"], help="Target checkpoint to pull from bioflo.in ('latest' or 'best')")
     parser.add_argument("--cloud_url", type=str, default="https://bioflo.in/api/cerebro/sync.php", help="bioflo.in sync endpoint")
@@ -210,7 +210,7 @@ def main(args=None):
                             break
                 except Exception:
                     pass
-        if s_step >= max_step or latest_ckpt is None:
+        if args.resume_target == "best" or s_step >= max_step or latest_ckpt is None:
             latest_ckpt = synced_ckpt
             max_step = s_step
             meta = s_meta
