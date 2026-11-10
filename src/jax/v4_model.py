@@ -430,13 +430,13 @@ def training_rollout(
             target_kv=target_kv,
         )
 
-        # Thought re-afference for step t+1 (stop-gradient isolates recurrent input to prevent 512-step BPTT explosion)
-        soft_p = lax.stop_gradient(jax.nn.softmax(logits, axis=-1))
-        soft_emb = jnp.matmul(soft_p, params["sensory.embedding.weight"])
-        g = jax.nn.silu(jnp.matmul(soft_emb, params["sensory.fc1_gate.weight"].T))
-        v = jnp.matmul(soft_emb, params["sensory.fc1_val.weight"].T)
+        # Thought re-afference for step t+1 (discrete top-1 embedding lookup matches inference and eliminates 32,000-dim matmul)
+        tok_idx = lax.stop_gradient(jnp.argmax(logits, axis=-1))
+        tok_emb = params["sensory.embedding.weight"][tok_idx]
+        g = jax.nn.silu(jnp.matmul(tok_emb, params["sensory.fc1_gate.weight"].T))
+        v = jnp.matmul(tok_emb, params["sensory.fc1_val.weight"].T)
         h_norm = rms_norm(g * v, params["sensory.norm1.weight"])
-        nxt_thought = lax.stop_gradient(rms_norm(jnp.matmul(h_norm, params["sensory.fc2.weight"].T) + soft_emb, params["sensory.norm_out.weight"]))
+        nxt_thought = lax.stop_gradient(rms_norm(jnp.matmul(h_norm, params["sensory.fc2.weight"].T) + tok_emb, params["sensory.norm_out.weight"]))
 
         # Deep thalamic basin retention
         if thalamic_anchor_weight > 0.0:

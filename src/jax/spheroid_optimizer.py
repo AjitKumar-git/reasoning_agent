@@ -274,7 +274,6 @@ def build_spheroid_train_engine(
                 "power_v": new_power_v,
             }
             return safe_params, new_opt_state
-            return new_params, new_opt_state
 
         def _skip_step():
             return p, opt_s

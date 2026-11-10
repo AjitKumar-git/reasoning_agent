@@ -618,8 +618,8 @@ def main(args=None):
 
     # Asynchronous batch prefetching (prevents GPU/TPU starvation during I/O)
     from src.elastic_window import PrefetchedBatcher
-    batcher = PrefetchedBatcher(batcher, queue_size=12)
-    print("⚡ Background Asynchronous Batch Prefetcher Active (Queue Depth: 12 batches)")
+    batcher = PrefetchedBatcher(batcher, queue_size=20)
+    print("⚡ Background Asynchronous Batch Prefetcher Active (Queue Depth: 20 batches)")
 
     # 6. Fixed Held-Out Validation Split (Clean Educational QA Benchmark: Cosmopedia-v2 + OpenHermes-2.5)
     eval_batches = []
@@ -756,12 +756,11 @@ def main(args=None):
 
             t0 = time.time()
             accum_grads = None
-            accum_loss = 0.0
+            accum_loss = None
             last_bucket_name = ""
             total_step_tokens = 0
 
-            # Gradient accumulation across diverse elastic sliding window buckets
-            valid_micro_steps = 0
+            # Gradient accumulation across diverse elastic sliding window buckets (zero host-device sync stalls)
             for _ in range(args.grad_accum):
                 batch_data = batcher.next_batch()
                 if len(batch_data) == 5:
@@ -786,14 +785,7 @@ def main(args=None):
                     sampling_p=sampling_p,
                     persona_id=step_persona,
                 )
-                m_loss_f = float(micro_loss)
-
-                # Skip corrupted or non-finite micro-batches
-                if math.isnan(m_loss_f) or math.isinf(m_loss_f):
-                    continue
-
-                accum_loss += m_loss_f
-                valid_micro_steps += 1
+                accum_loss = micro_loss if accum_loss is None else (accum_loss + micro_loss)
 
                 scale = 1.0 / float(args.grad_accum)
                 if accum_grads is None:
@@ -801,26 +793,22 @@ def main(args=None):
                 else:
                     accum_grads = jax.tree_util.tree_map(lambda a, g: a + g * scale, accum_grads, micro_grads)
 
-            if valid_micro_steps > 0 and accum_grads is not None:
-                if valid_micro_steps < args.grad_accum:
-                    renorm = float(args.grad_accum) / float(valid_micro_steps)
-                    accum_grads = jax.tree_util.tree_map(lambda g: g * renorm, accum_grads)
-                    loss_val = accum_loss / float(valid_micro_steps)
-                else:
-                    loss_val = accum_loss / float(args.grad_accum)
-
+            if accum_grads is not None:
                 params, opt_state = apply_opt_step(params, opt_state, accum_grads, lr)
+
+            is_log_step = (step % args.log_every == 0 or step == start_step)
+            if is_log_step and accum_loss is not None:
+                loss_val = float(accum_loss / float(args.grad_accum))
+                if not math.isnan(loss_val):
+                    if ema_loss is None:
+                        ema_loss = loss_val
+                    else:
+                        ema_loss = 0.96 * ema_loss + 0.04 * loss_val
             else:
-                loss_val = float("nan")
+                loss_val = ema_loss if ema_loss is not None else float("nan")
 
             dt = time.time() - t0
             total_tokens_ingested += total_step_tokens
-
-            if not math.isnan(loss_val):
-                if ema_loss is None:
-                    ema_loss = loss_val
-                else:
-                    ema_loss = 0.96 * ema_loss + 0.04 * loss_val
 
             if step % args.log_every == 0 or step == start_step:
                 loss_disp = loss_val if not math.isnan(loss_val) else float("nan")
