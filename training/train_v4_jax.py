@@ -79,7 +79,7 @@ def parse_args(args_list=None):
     parser.add_argument("--schedule_steps", type=int, default=5000, help="Steps to anneal from teacher-forcing to internal deliberation")
     parser.add_argument("--min_sampling_p", type=float, default=0.35, help="Minimum teacher sampling floor for scheduled sampling (default: 0.35)")
     parser.add_argument("--eval_interval", type=int, default=200, help="Steps between held-out validation evaluations")
-    parser.add_argument("--thalamic_anchor_weight", type=float, default=0.1, help="Thalamic memory basin retention strength (0.0 to 0.3)")
+    parser.add_argument("--thalamic_anchor_weight", type=float, default=0.02, help="Thalamic memory basin retention strength (0.0 to 0.3)")
     parser.add_argument("--deliberation_mode", type=str, default="scheduled", choices=["scheduled", "teacher_forcing", "internal"])
     parser.add_argument("--repetition_penalty", type=float, default=1.25, help="Two-tier refractory repetition penalty multiplier (default: 1.25)")
     parser.add_argument("--persona_id", type=int, default=None, help="Agentic persona ID (0=Reasoner, 1=Explorer, 2=Concise, 3=Verifier, or None for round-robin curriculum)")

@@ -117,11 +117,11 @@ def init_v4_params(
         "motor.resonance_norm.weight": jnp.ones(s_dim, dtype=jnp.float32),
         "motor.shell_proj.weight": jax.random.normal(keys[13], (s_dim, s_dim)) * (1.0 / math.sqrt(s_dim)),
         "motor.shell_score": jnp.zeros((shells,), dtype=jnp.float32),
-        "motor.shell_scale": jnp.zeros((1,), dtype=jnp.float32),
+        "motor.shell_scale": jnp.ones((1,), dtype=jnp.float32),
         "motor.plan_gate.weight": jax.random.normal(keys[14], (s_dim, s_dim * 3)) * (1.0 / math.sqrt(s_dim * 3)),
         "motor.plan_gate.bias": jnp.zeros((s_dim,), dtype=jnp.float32),
         "motor.plan_update.weight": jax.random.normal(keys[15], (s_dim, s_dim * 3)) * (1.0 / math.sqrt(s_dim * 3)),
-        "motor.plan_write": jnp.zeros((1,), dtype=jnp.float32),
+        "motor.plan_write": jnp.full((1,), 0.5, dtype=jnp.float32),
         "motor.plan_decay": jnp.array(0.90, dtype=jnp.float32),
         "motor.fused_norm.weight": jnp.ones(fused_dim, dtype=jnp.float32),
         "motor.fc_gate.weight": jax.random.normal(keys[16], (s_dim * 2, fused_dim)) * (1.0 / math.sqrt(fused_dim)),
@@ -144,15 +144,33 @@ def init_v4_params(
 
 
 def encode_sensory(
-    params: Dict[str, jnp.ndarray], token_ids: jnp.ndarray, config: Optional[ModelConfigV4] = None
+    params: Dict[str, jnp.ndarray],
+    token_ids: jnp.ndarray,
+    config: Optional[ModelConfigV4] = None,
+    pad_id: Optional[int] = None,
 ) -> Tuple[jnp.ndarray, Tuple[jnp.ndarray, jnp.ndarray]]:
-    """Encodes token IDs into continuous sensory memory and precomputed Arcuate Fasciculus K/V."""
+    """Encodes token IDs into continuous sensory memory with contextual self-attention and precomputed Arcuate Fasciculus K/V."""
     x = params["sensory.embedding.weight"][token_ids]
     gate = jax.nn.silu(jnp.matmul(x, params["sensory.fc1_gate.weight"].T))
     val = jnp.matmul(x, params["sensory.fc1_val.weight"].T)
     h = rms_norm(gate * val, params["sensory.norm1.weight"])
     flux = jnp.matmul(h, params["sensory.fc2.weight"].T) + x
     sensory_memory = rms_norm(flux, params["sensory.norm_out.weight"])
+
+    # Contextual self-attention across tokens using existing motor QKV projections
+    D = sensory_memory.shape[-1]
+    q = jnp.matmul(sensory_memory, params["motor.q_proj.weight"].T)
+    k = jnp.matmul(sensory_memory, params["motor.k_proj.weight"].T)
+    v = jnp.matmul(sensory_memory, params["motor.v_proj.weight"].T)
+
+    scores = jnp.matmul(q, jnp.swapaxes(k, -1, -2)) / math.sqrt(D)
+    if pad_id is not None:
+        mask = (token_ids != pad_id)[:, None, :]
+        scores = jnp.where(mask, scores, -10000.0)
+    attn = jax.nn.softmax(scores, axis=-1)
+    context = jnp.matmul(attn, v)
+
+    sensory_memory = rms_norm(sensory_memory + context, params["sensory.norm_out.weight"])
     keys = jnp.matmul(sensory_memory, params["motor.k_proj.weight"].T)
     values = jnp.matmul(sensory_memory, params["motor.v_proj.weight"].T)
     return sensory_memory, (keys, values)
@@ -200,8 +218,9 @@ def emit_step(
     config: Optional[ModelConfigV4] = None,
     auditory_feedback: Optional[jnp.ndarray] = None,
     repetition_penalty: float = 1.25,
+    target_kv: Optional[Tuple[jnp.ndarray, jnp.ndarray]] = None,
 ) -> Tuple[jnp.ndarray, jnp.ndarray, Optional[jnp.ndarray], jnp.ndarray]:
-    """Single autoregressive / deliberative motor emission step with auditory feedback support."""
+    """Single autoregressive / deliberative motor emission step with causal KV history and auditory feedback support."""
     B, K, D = state.shape
     surface, core = state[:, -1, :], state[:, 0, :]
     max_phase = params["motor.phase_embed.weight"].shape[0]
@@ -215,12 +234,29 @@ def emit_step(
     if auditory_feedback is not None:
         motor_surface = motor_surface + auditory_feedback
 
-    # Cross-resonance with sensory prompt (Arcuate Fasciculus)
+    # Cross-resonance with sensory prompt + causal target history (Arcuate Fasciculus)
     keys, values = sensory_kv
     query = jnp.matmul(motor_surface, params["motor.q_proj.weight"].T)[:, None, :]
-    scores = jnp.matmul(query, jnp.swapaxes(keys, -1, -2)) / math.sqrt(D)
-    attn_weights = jax.nn.softmax(scores, axis=-1)
-    resonance = rms_norm(jnp.squeeze(jnp.matmul(attn_weights, values), axis=1), params["motor.resonance_norm.weight"])
+
+    if target_kv is not None:
+        t_keys, t_values = target_kv
+        all_keys = jnp.concatenate([keys, t_keys], axis=1)
+        all_values = jnp.concatenate([values, t_values], axis=1)
+
+        target_len = t_keys.shape[1]
+        target_indices = jnp.arange(target_len)
+        target_visible = (target_indices < step_idx)[None, None, :]
+        prompt_visible = jnp.ones((1, 1, keys.shape[1]), dtype=jnp.bool_)
+        causal_mask = jnp.concatenate([prompt_visible, target_visible], axis=-1)
+
+        scores = jnp.matmul(query, jnp.swapaxes(all_keys, -1, -2)) / math.sqrt(D)
+        scores = jnp.where(causal_mask, scores, -10000.0)
+        attn_weights = jax.nn.softmax(scores, axis=-1)
+        resonance = rms_norm(jnp.squeeze(jnp.matmul(attn_weights, all_values), axis=1), params["motor.resonance_norm.weight"])
+    else:
+        scores = jnp.matmul(query, jnp.swapaxes(keys, -1, -2)) / math.sqrt(D)
+        attn_weights = jax.nn.softmax(scores, axis=-1)
+        resonance = rms_norm(jnp.squeeze(jnp.matmul(attn_weights, values), axis=1), params["motor.resonance_norm.weight"])
 
     # Multi-shell pooling
     shell_weights = jax.nn.softmax(params["motor.shell_score"], axis=0)[None, :, None]
@@ -287,7 +323,7 @@ def training_rollout(
     feedback_tokens: Optional[jnp.ndarray] = None,
     deliberation_mode: str = "scheduled",
     sampling_p: float = 1.0,
-    thalamic_anchor_weight: float = 0.1,
+    thalamic_anchor_weight: float = 0.02,
     pad_id: int = 0,
     persona_id: Optional[Union[int, jnp.ndarray]] = None,
     repetition_penalty: float = 1.25,
@@ -301,10 +337,11 @@ def training_rollout(
     4. Agentic persona steering in the latent manifold.
     5. Scheduled sampling bridging teacher-forcing to internal thought re-afference.
     6. Thalamic memory basin anchoring deep shells (0 .. K//3) to prevent prompt erasure.
-    7. Two-tier refractory adaptation & repetition suppression.
+    7. Causal KV cross-resonance across preceding generated tokens.
+    8. Two-tier refractory adaptation & repetition suppression.
     """
     B, L = prompts.shape
-    sensory_mem, sensory_kv = encode_sensory(params, prompts)
+    sensory_mem, sensory_kv = encode_sensory(params, prompts, config=config, pad_id=pad_id)
     num_shells = config.num_shells if config is not None else params["core.intra_shell"].shape[0]
     surface_dim = config.surface_dim if config is not None else params["sensory.fc2.weight"].shape[0]
     vocab_size = config.vocab_size if config is not None else params["sensory.embedding.weight"].shape[0]
@@ -350,14 +387,19 @@ def training_rollout(
     init_refractory = jnp.zeros((B, vocab_size), dtype=jnp.float32)
     init_thought = jnp.zeros((B, surface_dim), dtype=jnp.float32)
 
-    # Pre-embed teacher feedback tokens if available
+    # Pre-embed teacher feedback tokens if available, or derive from targets
+    if feedback_tokens is None and targets is not None:
+        feedback_tokens = jnp.full_like(targets, -100).at[:, 1:].set(targets[:, :-1])
+
     if feedback_tokens is not None:
         safe_feed = jnp.maximum(feedback_tokens, 0)
         valid_feed = (feedback_tokens >= 0)[:, :, None].astype(jnp.float32)
-        tf_sensory, _ = encode_sensory(params, safe_feed, config=config)
+        tf_sensory, (tf_k, tf_v) = encode_sensory(params, safe_feed, config=config, pad_id=pad_id)
         tf_sensory = tf_sensory * valid_feed
+        target_kv = (tf_k * valid_feed, tf_v * valid_feed)
     else:
         tf_sensory = jnp.zeros((B, target_len, surface_dim), dtype=jnp.float32)
+        target_kv = None
 
     emit_step_remat = jax.checkpoint(emit_step)
 
@@ -385,6 +427,7 @@ def training_rollout(
             config=config,
             auditory_feedback=feed,
             repetition_penalty=repetition_penalty,
+            target_kv=target_kv,
         )
 
         # Thought re-afference for step t+1 (stop-gradient isolates recurrent input to prevent 512-step BPTT explosion)
@@ -429,7 +472,7 @@ def generate_v4(
     persona_id: Optional[int] = 0,
     temperature: float = 0.7,
     repetition_penalty: float = 1.25,
-    thalamic_anchor_weight: float = 0.15,
+    thalamic_anchor_weight: float = 0.02,
     pad_id: int = 0,
     eos_token_id: Optional[int] = None,
 ) -> List[List[int]]:
@@ -437,7 +480,7 @@ def generate_v4(
     High-fidelity autoregressive generation engine for CerebroSpheroid V4.
     """
     B, L = prompts.shape
-    sensory_mem, sensory_kv = encode_sensory(params, prompts)
+    sensory_mem, sensory_kv = encode_sensory(params, prompts, config=config, pad_id=pad_id)
     num_shells = config.num_shells if config is not None else params["core.intra_shell"].shape[0]
     surface_dim = config.surface_dim if config is not None else params["sensory.fc2.weight"].shape[0]
     vocab_size = config.vocab_size if config is not None else params["sensory.embedding.weight"].shape[0]
@@ -479,6 +522,10 @@ def generate_v4(
     results = [[] for _ in range(B)]
     completed = [False] * B
 
+    # Dynamic causal KV history for generated tokens
+    target_k_buf = jnp.zeros((B, max_new_tokens, surface_dim), dtype=jnp.float32)
+    target_v_buf = jnp.zeros((B, max_new_tokens, surface_dim), dtype=jnp.float32)
+
     for step_idx in range(max_new_tokens):
         logits, state, refractory, plan = emit_step(
             params,
@@ -491,6 +538,7 @@ def generate_v4(
             config=config,
             auditory_feedback=prev_thought,
             repetition_penalty=repetition_penalty,
+            target_kv=(target_k_buf, target_v_buf),
         )
 
         # Thought re-afference for step t+1
@@ -515,6 +563,11 @@ def generate_v4(
             probs = jax.nn.softmax(scaled_logits, axis=-1)
             # Greedy argmax of tempered/penalized distribution
             next_tokens = jnp.argmax(probs, axis=-1)
+
+        # Encode newly generated tokens into causal target KV buffer for subsequent steps
+        _, (tok_k, tok_v) = encode_sensory(params, next_tokens[:, None], config=config, pad_id=pad_id)
+        target_k_buf = target_k_buf.at[:, step_idx, :].set(tok_k[:, 0, :])
+        target_v_buf = target_v_buf.at[:, step_idx, :].set(tok_v[:, 0, :])
 
         for b in range(B):
             if not completed[b]:

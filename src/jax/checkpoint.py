@@ -149,6 +149,14 @@ def load_torch_pt_to_jax(
         if nk == "motor.plan_decay":
             arr = jnp.clip(arr, 0.0, 0.90)
 
+        # Un-stifle dead parameters from early checkpoints to enable multi-shell and plan capacity
+        if nk == "motor.shell_scale" and jnp.all(arr <= 0.05):
+            print(f"⚡ [checkpoint] Un-stifling {nk} (was {arr}): resetting to 1.0 for multi-shell pooling.")
+            arr = jnp.array([1.0], dtype=arr.dtype)
+        elif nk == "motor.plan_write" and jnp.all(arr <= 0.05):
+            print(f"⚡ [checkpoint] Un-stifling {nk} (was {arr}): resetting to 0.5 for active planning.")
+            arr = jnp.array([0.5], dtype=arr.dtype)
+
         # If ref_params is known, verify shape compatibility
         if ref_params is not None and nk in ref_params:
             if arr.shape == ref_params[nk].shape:
