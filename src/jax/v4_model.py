@@ -207,7 +207,10 @@ def emit_step(
     max_phase = params["motor.phase_embed.weight"].shape[0]
     phase_idx = jnp.clip(step_idx, 0, max_phase - 1)
     phase = params["motor.phase_embed.weight"][phase_idx]
-    motor_surface = surface + phase
+    # Scaled phase injection: scale temporal clock signal to prevent static attractor well traps
+    p_norm = jnp.maximum(jnp.linalg.norm(phase, axis=-1, keepdims=True), 1e-6)
+    p_scaled = phase * (2.0 / p_norm)
+    motor_surface = surface + p_scaled
 
     if auditory_feedback is not None:
         motor_surface = motor_surface + auditory_feedback
@@ -233,7 +236,7 @@ def emit_step(
     h = rms_norm(gate * val, params["motor.norm_mid.weight"])
 
     # Premotor recurrent plan update
-    phase_batch = jnp.repeat(phase[None, :], B, axis=0)
+    phase_batch = jnp.repeat(p_scaled[None, :], B, axis=0)
     plan_input = jnp.concatenate([h, phase_batch], axis=-1)
     p_gate = jax.nn.sigmoid(jnp.matmul(plan_input, params["motor.plan_gate.weight"].T) + params["motor.plan_gate.bias"])
     plan_decay = jnp.clip(params["motor.plan_decay"], 0.0, 0.92)

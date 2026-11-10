@@ -61,8 +61,8 @@ def parse_args(args_list=None):
     parser.add_argument("--elastic_window", action="store_true", default=True, help="Enable elastic sliding context window")
     parser.add_argument("--lr", type=float, default=2.0e-3, help="Peak SpheroidOptimizer learning rate")
     parser.add_argument("--min_lr", type=float, default=1.0e-4, help="Final annealed learning rate")
-    parser.add_argument("--lr_schedule", type=str, default="warm_restart", choices=["cosine", "warm_restart", "session"],
-                        help="Learning rate annealing schedule: 'warm_restart' (SGDR cyclic cosine, prevents cold optimizer traps), 'session' (session-relative), or 'cosine' (global)")
+    parser.add_argument("--lr_schedule", type=str, default="warm_restart", choices=["cosine", "warm_restart", "session", "anneal"],
+                        help="Learning rate annealing schedule: 'warm_restart' (SGDR cyclic cosine, prevents cold optimizer traps), 'session' (session-relative), 'anneal' (smooth cooldown to completion), or 'cosine' (global)")
     parser.add_argument("--restart_steps", type=int, default=25000,
                         help="Cycle period in steps for 'warm_restart' SGDR schedule (default: 25000)")
     parser.add_argument("--preset", type=str, default="small", choices=["small", "wide"])
@@ -84,8 +84,9 @@ def parse_args(args_list=None):
     parser.add_argument("--repetition_penalty", type=float, default=1.25, help="Two-tier refractory repetition penalty multiplier (default: 1.25)")
     parser.add_argument("--persona_id", type=int, default=None, help="Agentic persona ID (0=Reasoner, 1=Explorer, 2=Concise, 3=Verifier, or None for round-robin curriculum)")
     parser.add_argument("--dataset_source", type=str, default="dense_edu",
-                        choices=["openhermes", "fineweb_edu", "balanced_mix", "dense_edu", "conversation_sft", "chat_sft"],
-                        help="Streaming training dataset: 'conversation_sft' (40%% SmolTalk + 25%% Cosmopedia-v2 + 20%% OpenHermes-2.5 + 15%% UltraChat-200k), "
+                        choices=["openhermes", "fineweb_edu", "balanced_mix", "dense_edu", "conversation_sft", "chat_sft", "reasoning_anneal"],
+                        help="Streaming training dataset: 'reasoning_anneal' (40%% General Reasoning 10k + 30%% Cosmopedia-v2 + 30%% OpenHermes-2.5), "
+                             "'conversation_sft' (40%% SmolTalk + 25%% Cosmopedia-v2 + 20%% OpenHermes-2.5 + 15%% UltraChat-200k), "
                              "'dense_edu' (40%% Cosmopedia-v2 + 40%% FineWeb-Edu [score>=4.0] + 20%% OpenHermes-2.5), "
                              "'balanced_mix' (35%% Cosmopedia-v2 + 35%% FineWeb-Edu + 30%% OpenHermes-2.5), 'fineweb_edu', or 'openhermes'")
     parser.add_argument("--cloud_sync", action="store_true", default=False, help="Enable automatic checkpoint syncing with bioflo.in")
@@ -495,6 +496,106 @@ def main(args=None):
                 turn += 1
 
         data_iter = _balanced_stream()
+    elif ds_choice == "reasoning_anneal":
+        print("\n🧠 Initializing Reasoning Annealing Curriculum (40% Reasoning Tasks 10k + 30% Cosmopedia-v2 + 30% OpenHermes-2.5)...")
+        reasoning_records = []
+        possible_paths = [
+            os.path.join(ROOT_DIR, "data", "cerebro_cognitive_8k", "cerebro_cognitive_10k.parquet"),
+            os.path.join(ROOT_DIR, "data", "cerebro_cognitive_8k", "cerebro_cognitive_10k.jsonl"),
+            "/kaggle/input/general-reasoning-tasks-10k/cerebro_cognitive_10k.parquet",
+            "/kaggle/input/general-reasoning-tasks-10k/cerebro_cognitive_10k.jsonl",
+        ]
+        for p in possible_paths:
+            if os.path.exists(p):
+                try:
+                    if p.endswith(".parquet"):
+                        import pandas as pd
+                        df = pd.read_parquet(p)
+                        for _, row in df.iterrows():
+                            q = str(row.get("question", "")).strip()
+                            a = str(row.get("answer", "")).strip()
+                            if q and a:
+                                reasoning_records.append({"conversations": [{"from": "human", "value": q}, {"from": "gpt", "value": a}]})
+                    elif p.endswith(".jsonl"):
+                        import json
+                        with open(p, "r", encoding="utf-8") as f:
+                            for line in f:
+                                if line.strip():
+                                    obj = json.loads(line)
+                                    q = str(obj.get("question", "")).strip()
+                                    a = str(obj.get("answer", "")).strip()
+                                    if q and a:
+                                        reasoning_records.append({"conversations": [{"from": "human", "value": q}, {"from": "gpt", "value": a}]})
+                    if reasoning_records:
+                        print(f"   Loaded {len(reasoning_records):,} curated reasoning samples from {p}")
+                        break
+                except Exception as e:
+                    print(f"   Warning loading {p}: {e}")
+
+        # Fallback to GSM8K streaming if local reasoning tasks not found
+        gsm8k_raw = None
+        if not reasoning_records:
+            print("   Local reasoning file not found, streaming GSM8K as fallback...")
+            try:
+                gsm8k_raw = iter(load_dataset("gsm8k", "main", split="train", streaming=True))
+            except Exception as e:
+                print(f"   Warning loading GSM8k: {e}")
+
+        cosmo_raw = iter(load_dataset("HuggingFaceTB/cosmopedia-v2", "cosmopedia-v2", split="train", streaming=True))
+        oh_raw = iter(load_dataset("teknium/OpenHermes-2.5", split="train", streaming=True))
+
+        def _reasoning_anneal_stream():
+            nonlocal cosmo_raw, oh_raw, gsm8k_raw
+            turn = 0
+            r_idx = 0
+            num_reasoning = len(reasoning_records)
+            import random
+            shuffled_indices = list(range(num_reasoning)) if num_reasoning > 0 else []
+            if shuffled_indices:
+                random.shuffle(shuffled_indices)
+
+            while True:
+                mod10 = turn % 10
+                try:
+                    if mod10 < 4:  # 40% Reasoning Tasks / Scratchpad / GSM8K
+                        if num_reasoning > 0:
+                            idx = shuffled_indices[r_idx % num_reasoning]
+                            r_idx += 1
+                            if r_idx % num_reasoning == 0:
+                                random.shuffle(shuffled_indices)
+                            yield reasoning_records[idx]
+                        elif gsm8k_raw is not None:
+                            try:
+                                row = next(gsm8k_raw)
+                            except StopIteration:
+                                gsm8k_raw = iter(load_dataset("gsm8k", "main", split="train", streaming=True))
+                                row = next(gsm8k_raw)
+                            yield {"conversations": [{"from": "human", "value": row["question"]}, {"from": "gpt", "value": row["answer"]}]}
+                        else:
+                            yield next(oh_raw)
+                    elif mod10 < 7:  # 30% Cosmopedia-v2 (syntactic clarity and educational depth)
+                        try:
+                            row = next(cosmo_raw)
+                        except StopIteration:
+                            cosmo_raw = iter(load_dataset("HuggingFaceTB/cosmopedia-v2", "cosmopedia-v2", split="train", streaming=True))
+                            row = next(cosmo_raw)
+                        p = (row.get("prompt") or "").strip()
+                        r = (row.get("text") or "").strip()
+                        if not p:
+                            p = "Explain the educational context of the following topic:"
+                        if len(r) >= 30:
+                            yield {"conversations": [{"from": "human", "value": p}, {"from": "gpt", "value": r}]}
+                    else:  # 30% OpenHermes-2.5 (complex problem-solving, code, reasoning dialogues)
+                        try:
+                            yield next(oh_raw)
+                        except StopIteration:
+                            oh_raw = iter(load_dataset("teknium/OpenHermes-2.5", split="train", streaming=True))
+                            yield next(oh_raw)
+                except Exception as stream_err:
+                    time.sleep(1.0)
+                turn += 1
+
+        data_iter = _reasoning_anneal_stream()
     else:
         print("\n📦 Initializing streaming reasoning data (teknium/OpenHermes-2.5)...")
         dataset = load_dataset("teknium/OpenHermes-2.5", split="train", streaming=True)
@@ -616,7 +717,7 @@ def main(args=None):
                     lr = args.min_lr + (target_lr - args.min_lr) * (float(cycle_step) / 100.0)
                 else:
                     lr = target_lr
-            elif sched_mode == "session":
+            elif sched_mode in ("session", "anneal"):
                 sess_horizon = max(1000, args.steps - start_step)
                 sess_prog = min(1.0, float(step_offset) / float(sess_horizon))
                 target_lr = args.min_lr + 0.5 * (args.lr - args.min_lr) * (1.0 + math.cos(math.pi * sess_prog))

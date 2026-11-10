@@ -278,7 +278,10 @@ class PremotorMotorDecoderV4(nn.Module):
         max_phase = self.phase_embed.weight.shape[0]
         phase_idx = min(max(0, int(step_idx)), max_phase - 1)
         phase = self.phase_embed.weight[phase_idx].to(state.dtype)
-        motor_surface = surface + phase
+        # Scaled phase injection: scale temporal clock signal to prevent static attractor well traps
+        p_norm = phase.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+        p_scaled = phase * (2.0 / p_norm)
+        motor_surface = surface + p_scaled
 
         if auditory_feedback is not None:
             motor_surface = motor_surface + auditory_feedback.to(motor_surface.dtype)
@@ -308,7 +311,7 @@ class PremotorMotorDecoderV4(nn.Module):
 
         # Premotor recurrent plan update
         if self.use_plan:
-            phase_batch = phase.unsqueeze(0).expand(B, -1)
+            phase_batch = p_scaled.unsqueeze(0).expand(B, -1)
             plan_input = torch.cat([h, phase_batch], dim=-1)
             p_gate = torch.sigmoid(self.plan_gate(plan_input))
             p_decay = torch.clamp(self.plan_decay, 0.0, 0.92)
@@ -720,10 +723,8 @@ class CerebroSpheroidV4(nn.Module):
                 if finished.all():
                     break
 
-            # Thought re-afference
-            soft_p = F.softmax(logits, dim=-1)
-            soft_emb = soft_p @ self.sensory_dnn.embedding.weight
-            prev_thought = self.sensory_dnn(soft_emb)
+            # Thought re-afference matching discrete token embedding from training
+            prev_thought = self.sensory_dnn(next_tok.squeeze(-1))
 
             # State propagation
             state_eff = self.volumetric_core.inject_efference_copy(state, efference)
@@ -751,10 +752,11 @@ class CerebroSpheroidV4(nn.Module):
         **kwargs,
     ) -> str:
         """Helper to generate text from a prompt string with 1-token biological framing."""
-        from src.corpus import format_stimulus_prompt, clean_motor_response
+        from src.corpus import clean_motor_response
         dev = device if device is not None else next(self.parameters()).device
-        formatted = format_stimulus_prompt(prompt)
-        input_ids = tokenizer.encode(formatted, add_special_tokens=False)
+        STIM_ID = 20436
+        raw_ids = tokenizer.encode(prompt, add_special_tokens=False)
+        input_ids = [STIM_ID] + raw_ids if (not raw_ids or raw_ids[0] != STIM_ID) else raw_ids
         tok_tensor = torch.tensor([input_ids], dtype=torch.long, device=dev)
         out_ids = self.generate(
             tok_tensor,

@@ -91,11 +91,33 @@ def parallel_download(target_type: str, dest_path: str, num_threads: int = 12):
 
 if __name__ == "__main__":
     import argparse
+    import json
     parser = argparse.ArgumentParser()
     parser.add_argument("--type", choices=["latest", "best", "both"], default="both")
     args = parser.parse_args()
 
+    # Query manifest to get real step numbers
+    manifest = {}
+    try:
+        req = urllib.request.Request(DEFAULT_URL, headers={"Authorization": f"Bearer {DEFAULT_TOKEN}", "User-Agent": "CerebroFastSync/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            manifest = data.get("manifest", {})
+    except Exception as e:
+        print(f"⚠️ Warning: Could not fetch manifest: {e}")
+
+    latest_step = manifest.get("latest", {}).get("step", "latest")
+    best_step = manifest.get("best", {}).get("step", "best")
+
     if args.type in ("latest", "both"):
-        parallel_download("latest", "checkpoints/cerebro_spheroid_v4_step_64600_latest.pt", num_threads=12)
+        dest = f"checkpoints/cerebro_spheroid_v4_step{latest_step}_latest.pt" if latest_step != "latest" else "checkpoints/cerebro_spheroid_v4_latest.pt"
+        parallel_download("latest", dest, num_threads=12)
+        if dest != "checkpoints/cerebro_spheroid_v4_latest.pt":
+            import shutil
+            shutil.copyfile(dest, "checkpoints/cerebro_spheroid_v4_latest.pt")
     if args.type in ("best", "both"):
-        parallel_download("best", "checkpoints/cerebro_spheroid_v4_step_56600_best.pt", num_threads=12)
+        dest = f"checkpoints/cerebro_spheroid_v4_step{best_step}_best.pt" if best_step != "best" else "checkpoints/cerebro_spheroid_v4_best.pt"
+        parallel_download("best", dest, num_threads=12)
+        if dest != "checkpoints/cerebro_spheroid_v4_best.pt":
+            import shutil
+            shutil.copyfile(dest, "checkpoints/cerebro_spheroid_v4_best.pt")
