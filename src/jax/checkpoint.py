@@ -149,6 +149,14 @@ def load_torch_pt_to_jax(
         if nk == "motor.plan_decay":
             arr = jnp.clip(arr, 0.0, 0.90)
 
+        # Seed negative or near-zero scaling factors to positive floor (0.1) so they can start growing
+        if nk == "motor.shell_scale" and jnp.all(arr <= 0.0):
+            print(f"🌱 [checkpoint] Seeding {nk} (was {arr}): set to 0.1 to begin positive gradient ascent.")
+            arr = jnp.array([0.1], dtype=arr.dtype)
+        elif nk == "motor.plan_write" and jnp.all(arr <= 0.0):
+            print(f"🌱 [checkpoint] Seeding {nk} (was {arr}): set to 0.1 to begin positive gradient ascent.")
+            arr = jnp.array([0.1], dtype=arr.dtype)
+
         # If ref_params is known, verify shape compatibility
         if ref_params is not None and nk in ref_params:
             if arr.shape == ref_params[nk].shape:
