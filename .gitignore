@@ -15,7 +15,8 @@ checkpoints/
 .qoder/
 
 # Heavy data directories and caches
-data/
+data/*
+!data/cerebro_cognitive_8k/
 archive/
 .hf_cache/
 .kaggle_output/
@@ -24,6 +25,10 @@ chat_logs/
 *.zip
 *.tar.gz
 *.tar
+
+# Curated cognitive reasoning dataset for training & anneal
+data/cerebro_cognitive_8k/*.jsonl
+!data/cerebro_cognitive_8k/cerebro_cognitive_10k.parquet
 
 # Environments
 .env

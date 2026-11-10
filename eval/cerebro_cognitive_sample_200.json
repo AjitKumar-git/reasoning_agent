@@ -30,8 +30,8 @@
     "category": "counterfactual_premise_rejection"
   },
   {
-    "question": "In the word 'equinox', which letter appears more frequently: 'n' or 'q'?",
-    "answer": "Let's count the occurrences of each letter in 'equinox':\n1. Counting 'n': appears 1 time(s).\n2. Counting 'q': appears 1 time(s).\nConclusion: Both 'n' and 'q' appear with equal frequency (1 times each).\n#### equal",
+    "question": "In the word 'equinox', which letter appears more frequently: 'n' or 'u'?",
+    "answer": "Let's count the occurrences of each letter in 'equinox':\n1. Counting 'n': appears 1 time(s).\n2. Counting 'u': appears 1 time(s).\nConclusion: Both 'n' and 'u' appear with equal frequency (1 times each).\n#### equal",
     "category": "orthographic_scratchpad"
   },
   {
@@ -165,8 +165,8 @@
     "category": "temporal_state_machine"
   },
   {
-    "question": "In the word 'cryptography', which letter appears more frequently: 'g' or 'o'?",
-    "answer": "Let's count the occurrences of each letter in 'cryptography':\n1. Counting 'g': appears 1 time(s).\n2. Counting 'o': appears 1 time(s).\nConclusion: Both 'g' and 'o' appear with equal frequency (1 times each).\n#### equal",
+    "question": "In the word 'cryptography', which letter appears more frequently: 'c' or 'r'?",
+    "answer": "Let's count the occurrences of each letter in 'cryptography':\n1. Counting 'c': appears 1 time(s).\n2. Counting 'r': appears 2 time(s).\nConclusion: 'r' appears more frequently (2 vs 1).\n#### r",
     "category": "orthographic_scratchpad"
   },
   {
@@ -175,8 +175,8 @@
     "category": "counterfactual_premise_rejection"
   },
   {
-    "question": "In the word 'chrysanthemum', which letter appears more frequently: 'c' or 'm'?",
-    "answer": "Let's count the occurrences of each letter in 'chrysanthemum':\n1. Counting 'c': appears 1 time(s).\n2. Counting 'm': appears 2 time(s).\nConclusion: 'm' appears more frequently (2 vs 1).\n#### m",
+    "question": "In the word 'chrysanthemum', which letter appears more frequently: 's' or 'y'?",
+    "answer": "Let's count the occurrences of each letter in 'chrysanthemum':\n1. Counting 's': appears 1 time(s).\n2. Counting 'y': appears 1 time(s).\nConclusion: Both 's' and 'y' appear with equal frequency (1 times each).\n#### equal",
     "category": "orthographic_scratchpad"
   },
   {
@@ -245,8 +245,8 @@
     "category": "orthographic_scratchpad"
   },
   {
-    "question": "In the word 'thermodynamics', which letter appears more frequently: 'e' or 's'?",
-    "answer": "Let's count the occurrences of each letter in 'thermodynamics':\n1. Counting 'e': appears 1 time(s).\n2. Counting 's': appears 1 time(s).\nConclusion: Both 'e' and 's' appear with equal frequency (1 times each).\n#### equal",
+    "question": "In the word 'thermodynamics', which letter appears more frequently: 'a' or 'n'?",
+    "answer": "Let's count the occurrences of each letter in 'thermodynamics':\n1. Counting 'a': appears 1 time(s).\n2. Counting 'n': appears 1 time(s).\nConclusion: Both 'a' and 'n' appear with equal frequency (1 times each).\n#### equal",
     "category": "orthographic_scratchpad"
   },
   {
@@ -310,8 +310,8 @@
     "category": "temporal_state_machine"
   },
   {
-    "question": "In the word 'volcano', which letter appears more frequently: 'a' or 'c'?",
-    "answer": "Let's count the occurrences of each letter in 'volcano':\n1. Counting 'a': appears 1 time(s).\n2. Counting 'c': appears 1 time(s).\nConclusion: Both 'a' and 'c' appear with equal frequency (1 times each).\n#### equal",
+    "question": "In the word 'volcano', which letter appears more frequently: 'v' or 'o'?",
+    "answer": "Let's count the occurrences of each letter in 'volcano':\n1. Counting 'v': appears 1 time(s).\n2. Counting 'o': appears 2 time(s).\nConclusion: 'o' appears more frequently (2 vs 1).\n#### o",
     "category": "orthographic_scratchpad"
   },
   {
@@ -330,8 +330,8 @@
     "category": "temporal_state_machine"
   },
   {
-    "question": "In the word 'resonance', which letter appears more frequently: 'c' or 'n'?",
-    "answer": "Let's count the occurrences of each letter in 'resonance':\n1. Counting 'c': appears 1 time(s).\n2. Counting 'n': appears 2 time(s).\nConclusion: 'n' appears more frequently (2 vs 1).\n#### n",
+    "question": "In the word 'resonance', which letter appears more frequently: 'o' or 'c'?",
+    "answer": "Let's count the occurrences of each letter in 'resonance':\n1. Counting 'o': appears 1 time(s).\n2. Counting 'c': appears 1 time(s).\nConclusion: Both 'o' and 'c' appear with equal frequency (1 times each).\n#### equal",
     "category": "orthographic_scratchpad"
   },
   {
@@ -535,8 +535,8 @@
     "category": "temporal_state_machine"
   },
   {
-    "question": "In the word 'sunlight', which letter appears more frequently: 's' or 'l'?",
-    "answer": "Let's count the occurrences of each letter in 'sunlight':\n1. Counting 's': appears 1 time(s).\n2. Counting 'l': appears 1 time(s).\nConclusion: Both 's' and 'l' appear with equal frequency (1 times each).\n#### equal",
+    "question": "In the word 'sunlight', which letter appears more frequently: 'h' or 'g'?",
+    "answer": "Let's count the occurrences of each letter in 'sunlight':\n1. Counting 'h': appears 1 time(s).\n2. Counting 'g': appears 1 time(s).\nConclusion: Both 'h' and 'g' appear with equal frequency (1 times each).\n#### equal",
     "category": "orthographic_scratchpad"
   },
   {
@@ -600,8 +600,8 @@
     "category": "temporal_state_machine"
   },
   {
-    "question": "In the word 'oxygen', which letter appears more frequently: 'x' or 'e'?",
-    "answer": "Let's count the occurrences of each letter in 'oxygen':\n1. Counting 'x': appears 1 time(s).\n2. Counting 'e': appears 1 time(s).\nConclusion: Both 'x' and 'e' appear with equal frequency (1 times each).\n#### equal",
+    "question": "In the word 'oxygen', which letter appears more frequently: 'y' or 'n'?",
+    "answer": "Let's count the occurrences of each letter in 'oxygen':\n1. Counting 'y': appears 1 time(s).\n2. Counting 'n': appears 1 time(s).\nConclusion: Both 'y' and 'n' appear with equal frequency (1 times each).\n#### equal",
     "category": "orthographic_scratchpad"
   },
   {
@@ -635,8 +635,8 @@
     "category": "elementary_math_gsm8k"
   },
   {
-    "question": "In the word 'contractive', which letter appears more frequently: 'a' or 'e'?",
-    "answer": "Let's count the occurrences of each letter in 'contractive':\n1. Counting 'a': appears 1 time(s).\n2. Counting 'e': appears 1 time(s).\nConclusion: Both 'a' and 'e' appear with equal frequency (1 times each).\n#### equal",
+    "question": "In the word 'contractive', which letter appears more frequently: 'i' or 'a'?",
+    "answer": "Let's count the occurrences of each letter in 'contractive':\n1. Counting 'i': appears 1 time(s).\n2. Counting 'a': appears 1 time(s).\nConclusion: Both 'i' and 'a' appear with equal frequency (1 times each).\n#### equal",
     "category": "orthographic_scratchpad"
   },
   {
@@ -685,8 +685,8 @@
     "category": "counterfactual_premise_rejection"
   },
   {
-    "question": "In the word 'lightning', which letter appears more frequently: 'n' or 'i'?",
-    "answer": "Let's count the occurrences of each letter in 'lightning':\n1. Counting 'n': appears 2 time(s).\n2. Counting 'i': appears 2 time(s).\nConclusion: Both 'n' and 'i' appear with equal frequency (2 times each).\n#### equal",
+    "question": "In the word 'lightning', which letter appears more frequently: 'n' or 'l'?",
+    "answer": "Let's count the occurrences of each letter in 'lightning':\n1. Counting 'n': appears 2 time(s).\n2. Counting 'l': appears 1 time(s).\nConclusion: 'n' appears more frequently (2 vs 1).\n#### n",
     "category": "orthographic_scratchpad"
   },
   {
@@ -740,8 +740,8 @@
     "category": "counterfactual_premise_rejection"
   },
   {
-    "question": "In the word 'refractory', which letter appears more frequently: 'y' or 'r'?",
-    "answer": "Let's count the occurrences of each letter in 'refractory':\n1. Counting 'y': appears 1 time(s).\n2. Counting 'r': appears 3 time(s).\nConclusion: 'r' appears more frequently (3 vs 1).\n#### r",
+    "question": "In the word 'refractory', which letter appears more frequently: 'o' or 'a'?",
+    "answer": "Let's count the occurrences of each letter in 'refractory':\n1. Counting 'o': appears 1 time(s).\n2. Counting 'a': appears 1 time(s).\nConclusion: Both 'o' and 'a' appear with equal frequency (1 times each).\n#### equal",
     "category": "orthographic_scratchpad"
   },
   {
@@ -750,8 +750,8 @@
     "category": "orthographic_scratchpad"
   },
   {
-    "question": "In the word 'chrysanthemum', which letter appears more frequently: 'm' or 'h'?",
-    "answer": "Let's count the occurrences of each letter in 'chrysanthemum':\n1. Counting 'm': appears 2 time(s).\n2. Counting 'h': appears 2 time(s).\nConclusion: Both 'm' and 'h' appear with equal frequency (2 times each).\n#### equal",
+    "question": "In the word 'chrysanthemum', which letter appears more frequently: 'y' or 'm'?",
+    "answer": "Let's count the occurrences of each letter in 'chrysanthemum':\n1. Counting 'y': appears 1 time(s).\n2. Counting 'm': appears 2 time(s).\nConclusion: 'm' appears more frequently (2 vs 1).\n#### m",
     "category": "orthographic_scratchpad"
   },
   {
@@ -975,8 +975,8 @@
     "category": "temporal_state_machine"
   },
   {
-    "question": "In the word 'compass', which letter appears more frequently: 'c' or 's'?",
-    "answer": "Let's count the occurrences of each letter in 'compass':\n1. Counting 'c': appears 1 time(s).\n2. Counting 's': appears 2 time(s).\nConclusion: 's' appears more frequently (2 vs 1).\n#### s",
+    "question": "In the word 'compass', which letter appears more frequently: 's' or 'a'?",
+    "answer": "Let's count the occurrences of each letter in 'compass':\n1. Counting 's': appears 2 time(s).\n2. Counting 'a': appears 1 time(s).\nConclusion: 's' appears more frequently (2 vs 1).\n#### s",
     "category": "orthographic_scratchpad"
   },
   {
