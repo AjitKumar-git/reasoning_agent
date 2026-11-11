@@ -174,12 +174,42 @@ class ResidualVolumetricCoreV4(nn.Module):
         return curr
 
 
+def precompute_rope_freqs(dim: int, max_seq_len: int = 8192, theta: float = 500000.0) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Precomputes rotary frequency cos and sin tables up to max_seq_len with YaRN-compatible base."""
+    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2).float() / dim))
+    t = torch.arange(max_seq_len, dtype=torch.float)
+    freqs = torch.outer(t, freqs)  # [max_seq_len, dim // 2]
+    cos = torch.cos(freqs).repeat_interleave(2, dim=-1)  # [max_seq_len, dim]
+    sin = torch.sin(freqs).repeat_interleave(2, dim=-1)  # [max_seq_len, dim]
+    return cos, sin
+
+
+def apply_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, offset: int = 0) -> torch.Tensor:
+    """
+    Applies Rotary Position Embedding to x shaped [B, H, L, D] or [B, H, 1, D].
+    offset indexes into the precomputed rotary frequencies.
+    """
+    L = x.shape[2]
+    if offset + L > cos.shape[0]:
+        new_max = max(offset + L + 1024, cos.shape[0] * 2)
+        dim = x.shape[-1]
+        c_new, s_new = precompute_rope_freqs(dim, max_seq_len=new_max)
+        cos = c_new.to(device=x.device, dtype=x.dtype)
+        sin = s_new.to(device=x.device, dtype=x.dtype)
+    c = cos[offset : offset + L].to(device=x.device, dtype=x.dtype).unsqueeze(0).unsqueeze(0)  # [1, 1, L, D]
+    s = sin[offset : offset + L].to(device=x.device, dtype=x.dtype).unsqueeze(0).unsqueeze(0)
+    x1 = x[..., 0::2]
+    x2 = x[..., 1::2]
+    x_rot = torch.stack([-x2, x1], dim=-1).flatten(-2)
+    return x * c + x_rot * s
+
+
 class PremotorMotorDecoderV4(nn.Module):
     """
     V4 Premotor Motor Decoder:
     - Retains internal plan buffer, corollary discharge, and multi-shell softmax tap.
-    - Upgrades Arcuate Fasciculus cross-resonance to F.scaled_dot_product_attention (SDPA).
-    - Preserves exact 1:1 parameter naming and shapes with pure JAX v4_model.py.
+    - Upgrades Arcuate Fasciculus cross-resonance to Multi-Head Scaled Dot-Product Attention with RoPE and Causal KV.
+    - Preserves exact 1:1 parameter naming and shapes with pure JAX v4_model.py (118,534,071 parameters for v4_small).
     """
     def __init__(
         self,
@@ -190,6 +220,9 @@ class PremotorMotorDecoderV4(nn.Module):
         dropout: float = 0.0,
         use_plan: bool = True,
         use_shell_tap: bool = True,
+        num_heads: Optional[int] = None,
+        rope_theta: float = 500000.0,
+        max_seq_len: int = 4096,
     ):
         super().__init__()
         self.num_shells = num_shells
@@ -198,6 +231,20 @@ class PremotorMotorDecoderV4(nn.Module):
         self.max_phase_steps = max_phase_steps
         self.use_plan = use_plan
         self.use_shell_tap = use_shell_tap
+
+        if num_heads is None:
+            for h in [8, 10, 16, 4, 12, 6, 2, 1]:
+                if surface_dim % h == 0 and (surface_dim // h) % 2 == 0:
+                    num_heads = h
+                    break
+            if num_heads is None:
+                num_heads = 1
+        self.num_heads = num_heads
+        self.head_dim = surface_dim // num_heads
+
+        cos, sin = precompute_rope_freqs(self.head_dim, max_seq_len=max_seq_len, theta=rope_theta)
+        self.register_buffer("rope_cos", cos, persistent=False)
+        self.register_buffer("rope_sin", sin, persistent=False)
 
         self.phase_embed = nn.Embedding(max_phase_steps, surface_dim)
         nn.init.normal_(self.phase_embed.weight, mean=0.0, std=0.02)
@@ -225,6 +272,7 @@ class PremotorMotorDecoderV4(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
         self.head = nn.Linear(hidden_dim, vocab_size, bias=False)
+        nn.init.normal_(self.head.weight, mean=0.0, std=0.02 / math.sqrt(2))
         self.temperature_scale = nn.Parameter(torch.tensor(1.0))
 
         self.refractory_strength = nn.Parameter(torch.tensor(1.2))
@@ -257,12 +305,16 @@ class PremotorMotorDecoderV4(nn.Module):
         return torch.zeros(batch_size, self.surface_dim, device=device)
 
     def prime_sensory(self, sensory_memory: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        return self.k_proj(sensory_memory), self.v_proj(sensory_memory)
+        B, L, D = sensory_memory.shape
+        k = self.k_proj(sensory_memory).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
+        v = self.v_proj(sensory_memory).view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
+        return k, v
 
     def forward(
         self,
         state: torch.Tensor,
         sensory_kv: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        causal_kv: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         plan: Optional[torch.Tensor] = None,
         refractory_trace: Optional[torch.Tensor] = None,
         step_idx: int = 0,
@@ -286,12 +338,29 @@ class PremotorMotorDecoderV4(nn.Module):
         if auditory_feedback is not None:
             motor_surface = motor_surface + auditory_feedback.to(motor_surface.dtype)
 
-        # Arcuate Fasciculus cross-resonance via Scaled Dot-Product Attention (SDPA)
+        # Arcuate Fasciculus cross-resonance via Scaled Dot-Product Attention (SDPA) with Causal KV & RoPE
         if sensory_kv is not None:
             keys, values = sensory_kv
-            q = self.q_proj(motor_surface).unsqueeze(1)
-            res = F.scaled_dot_product_attention(q.to(keys.dtype), keys, values)
-            resonance = self.resonance_norm(res.squeeze(1).to(motor_surface.dtype))
+            if keys.ndim == 3:  # handle legacy [B, L, D]
+                keys = keys.view(B, -1, self.num_heads, self.head_dim).transpose(1, 2)
+                values = values.view(B, -1, self.num_heads, self.head_dim).transpose(1, 2)
+
+            if causal_kv is not None and causal_kv[0].shape[2] > 0:
+                c_k, c_v = causal_kv
+                if c_k.ndim == 3:
+                    c_k = c_k.view(B, -1, self.num_heads, self.head_dim).transpose(1, 2)
+                    c_v = c_v.view(B, -1, self.num_heads, self.head_dim).transpose(1, 2)
+                keys = torch.cat([keys, c_k], dim=2)
+                values = torch.cat([values, c_v], dim=2)
+
+            L_total = keys.shape[2]
+            q = self.q_proj(motor_surface).view(B, self.num_heads, 1, self.head_dim)
+            q_rot = apply_rope(q, self.rope_cos, self.rope_sin, offset=max(0, L_total - 1))
+            k_rot = apply_rope(keys, self.rope_cos, self.rope_sin, offset=0)
+
+            res = F.scaled_dot_product_attention(q_rot.to(keys.dtype), k_rot, values)
+            res = res.transpose(1, 2).contiguous().view(B, D)
+            resonance = self.resonance_norm(res.to(motor_surface.dtype))
         else:
             resonance = torch.zeros_like(motor_surface)
 
@@ -366,6 +435,8 @@ class CerebroSpheroidV4(nn.Module):
         use_shell_tap: bool = True,
         enable_multimodal: bool = False,
         use_causal_ingestion: bool = False,
+        num_heads: Optional[int] = None,
+        rope_theta: float = 500000.0,
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -392,6 +463,9 @@ class CerebroSpheroidV4(nn.Module):
             dropout=dropout,
             use_plan=use_plan,
             use_shell_tap=use_shell_tap,
+            num_heads=num_heads,
+            rope_theta=rope_theta,
+            max_seq_len=max(max_len, max_phase_steps * 2),
         )
         self.gradient_checkpointing = True
 
@@ -458,6 +532,7 @@ class CerebroSpheroidV4(nn.Module):
         self,
         state: torch.Tensor,
         sensory_kv: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        causal_kv: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         plan: Optional[torch.Tensor] = None,
         refractory_trace: Optional[torch.Tensor] = None,
         step_idx: int = 0,
@@ -467,6 +542,7 @@ class CerebroSpheroidV4(nn.Module):
         logits, efference, next_trace, next_plan = self.motor_dnn(
             state=state,
             sensory_kv=sensory_kv,
+            causal_kv=causal_kv,
             plan=plan,
             refractory_trace=refractory_trace,
             step_idx=step_idx,
@@ -525,7 +601,7 @@ class CerebroSpheroidV4(nn.Module):
         delib_summary = torch.cat([state[:, 0, :], prompt_flux], dim=-1)
         plan = self.motor_dnn.init_plan(delib_summary, persona_id=persona_id)
 
-        # 5. Pre-embed teacher feedback tokens if available
+        # 5. Pre-embed teacher feedback tokens and compute multi-head causal KV
         feed = feedback_tokens if feedback_tokens is not None else (
             targets if targets is not None else None
         )
@@ -533,8 +609,11 @@ class CerebroSpheroidV4(nn.Module):
             safe_feed = feed.clamp(min=0)
             valid_mask = (feed >= 0).unsqueeze(-1).to(sensory_mem.dtype)
             tf_sensory = self.sensory_dnn(safe_feed) * valid_mask
+            tf_k, tf_v = self.motor_dnn.prime_sensory(tf_sensory)
         else:
             tf_sensory = torch.zeros(B, response_steps, self.surface_dim, device=prompt_tokens.device, dtype=sensory_mem.dtype)
+            tf_k = torch.empty(B, self.motor_dnn.num_heads, 0, self.motor_dnn.head_dim, device=prompt_tokens.device, dtype=sensory_mem.dtype)
+            tf_v = torch.empty(B, self.motor_dnn.num_heads, 0, self.motor_dnn.head_dim, device=prompt_tokens.device, dtype=sensory_mem.dtype)
 
         refractory_trace = torch.zeros(B, self.vocab_size, device=prompt_tokens.device, dtype=torch.float32)
         prev_thought = torch.zeros(B, self.surface_dim, device=prompt_tokens.device, dtype=sensory_mem.dtype)
@@ -551,6 +630,14 @@ class CerebroSpheroidV4(nn.Module):
                 internal_feed = tf_aud if step_idx == 0 else prev_thought
                 aud_feed = sampling_p * tf_aud + (1.0 - sampling_p) * internal_feed
 
+            # Causal KV slice: past targets strictly prior to step_idx
+            if step_idx > 0 and tf_k.shape[2] >= step_idx:
+                c_k = tf_k[:, :, :step_idx, :]
+                c_v = tf_v[:, :, :step_idx, :]
+            else:
+                c_k = torch.empty(B, self.motor_dnn.num_heads, 0, self.motor_dnn.head_dim, device=prompt_tokens.device, dtype=sensory_mem.dtype)
+                c_v = torch.empty(B, self.motor_dnn.num_heads, 0, self.motor_dnn.head_dim, device=prompt_tokens.device, dtype=sensory_mem.dtype)
+
             if use_ckpt:
                 logits, state, plan, refractory_trace = torch.utils.checkpoint.checkpoint(
                     self._recurrent_step,
@@ -560,6 +647,8 @@ class CerebroSpheroidV4(nn.Module):
                     aud_feed,
                     sensory_kv[0],
                     sensory_kv[1],
+                    c_k,
+                    c_v,
                     step_idx,
                     thalamic_anchor,
                     thalamic_end,
@@ -575,6 +664,8 @@ class CerebroSpheroidV4(nn.Module):
                     aud_feed,
                     sensory_kv[0],
                     sensory_kv[1],
+                    c_k,
+                    c_v,
                     step_idx,
                     thalamic_anchor,
                     thalamic_end,
@@ -600,15 +691,19 @@ class CerebroSpheroidV4(nn.Module):
         aud_feed: torch.Tensor,
         sensory_k: torch.Tensor,
         sensory_v: torch.Tensor,
+        causal_k: torch.Tensor,
+        causal_v: torch.Tensor,
         step_idx: int,
         thalamic_anchor: torch.Tensor,
         thalamic_end: int,
         thalamic_anchor_weight: float,
         repetition_penalty: float,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        causal_kv = (causal_k, causal_v) if causal_k.shape[2] > 0 else None
         logits, efference, next_trace, next_plan = self.motor_dnn(
             state=state,
             sensory_kv=(sensory_k, sensory_v),
+            causal_kv=causal_kv,
             plan=plan,
             refractory_trace=refractory_trace,
             step_idx=step_idx,
@@ -671,7 +766,7 @@ class CerebroSpheroidV4(nn.Module):
         thalamic_anchor_weight: float = 0.1,
         **kwargs,
     ) -> torch.Tensor:
-        """Autoregressive generative rollout matching JAX generate_v4."""
+        """Autoregressive generative rollout matching JAX generate_v4 with causal KV retention."""
         self.eval()
         B, L = prompt_tokens.shape
         sensory_mem, sensory_kv = self.encode_sensory(prompt_tokens)
@@ -695,14 +790,19 @@ class CerebroSpheroidV4(nn.Module):
         refractory_trace = torch.zeros(B, self.vocab_size, device=prompt_tokens.device, dtype=torch.float32)
         prev_thought = torch.zeros(B, self.surface_dim, device=prompt_tokens.device, dtype=sensory_mem.dtype)
 
+        causal_keys = []
+        causal_values = []
         emitted: List[torch.Tensor] = []
         finished = torch.zeros(B, dtype=torch.bool, device=prompt_tokens.device)
 
         for step_idx in range(max_new_tokens):
             aud_feed = torch.zeros_like(prev_thought) if step_idx == 0 else prev_thought
+            causal_kv = (torch.cat(causal_keys, dim=2), torch.cat(causal_values, dim=2)) if causal_keys else None
+
             logits, efference, refractory_trace, plan = self.motor_dnn(
                 state=state,
                 sensory_kv=sensory_kv,
+                causal_kv=causal_kv,
                 plan=plan,
                 refractory_trace=refractory_trace,
                 step_idx=step_idx,
@@ -723,8 +823,14 @@ class CerebroSpheroidV4(nn.Module):
                 if finished.all():
                     break
 
+            # Project emitted token into multi-head key/value space and append to causal KV cache
+            tok_sensory = self.sensory_dnn(next_tok)  # [B, 1, D]
+            tok_k, tok_v = self.motor_dnn.prime_sensory(tok_sensory)  # [B, H, 1, head_dim]
+            causal_keys.append(tok_k)
+            causal_values.append(tok_v)
+
             # Thought re-afference matching discrete token embedding from training
-            prev_thought = self.sensory_dnn(next_tok.squeeze(-1))
+            prev_thought = tok_sensory.squeeze(1)
 
             # State propagation
             state_eff = self.volumetric_core.inject_efference_copy(state, efference)
