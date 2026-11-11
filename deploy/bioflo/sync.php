@@ -1,11 +1,12 @@
 <?php
 /**
- * CerebroSpheroid Model Synchronization Hub
+ * CerebroSpheroid Multi-Model Synchronization Hub
  * Hosted on bioflo.in
  *
  * Strict Bounded Storage Policy:
- * Only stores `latest.pt` and `best.pt` (plus lightweight `manifest.json`).
- * Employs chunked uploads to bypass Cloudflare 100 MB payload limits and PHP upload caps.
+ * Supports 3 model tiers: `v5_small` (101M), `v5_compact` (244M), `v5_base` (617M).
+ * Each model tier maintains strictly bounded slots: `{model}_latest.pt` and `{model}_best.pt`.
+ * Employs chunked streaming to bypass Cloudflare 100 MB payload limits and PHP upload caps.
  */
 
 // Disable execution time limit for large stream transfers
@@ -50,6 +51,25 @@ if (!is_dir($storage_dir)) {
     file_put_contents($storage_dir . '/.htaccess', "Order Deny,Allow\nDeny from all\n");
 }
 
+function normalize_model_name($model) {
+    if (empty($model)) return '';
+    $clean = preg_replace('/[^a-zA-Z0-9_\-]/', '', strtolower($model));
+    if ($clean === 'small' || $clean === 'v5_small') return 'v5_small';
+    if ($clean === 'compact' || $clean === 'v5_compact') return 'v5_compact';
+    if ($clean === 'base' || $clean === 'v5_base') return 'v5_base';
+    return $clean;
+}
+
+function get_model_filename($model, $type) {
+    $valid_types = ['latest', 'best'];
+    $clean_type = in_array($type, $valid_types) ? $type : 'latest';
+    $norm_model = normalize_model_name($model);
+    if (!empty($norm_model)) {
+        return $norm_model . '_' . $clean_type . '.pt';
+    }
+    return $clean_type . '.pt';
+}
+
 $action = isset($_REQUEST['action']) ? $_REQUEST['action'] : 'status';
 
 // --------------------------------------------------------------------------------------------
@@ -58,20 +78,51 @@ $action = isset($_REQUEST['action']) ? $_REQUEST['action'] : 'status';
 if ($action === 'status') {
     header('Content-Type: application/json');
     $manifest_file = $storage_dir . '/manifest.json';
-    $manifest = (file_exists($manifest_file) && filesize($manifest_file) > 2) ? json_decode(file_get_contents($manifest_file), true) : null;
-    if (!is_array($manifest) || empty($manifest)) {
-        $manifest = new stdClass();
+    $manifest = (file_exists($manifest_file) && filesize($manifest_file) > 2) ? json_decode(file_get_contents($manifest_file), true) : [];
+    if (!is_array($manifest)) {
+        $manifest = [];
     }
 
-    $latest_exists = file_exists($storage_dir . '/latest.pt');
-    $best_exists = file_exists($storage_dir . '/best.pt');
+    $models = ['v5_small', 'v5_compact', 'v5_base'];
+    $model_status = [];
+    foreach ($models as $m) {
+        $l_file = $storage_dir . '/' . $m . '_latest.pt';
+        $b_file = $storage_dir . '/' . $m . '_best.pt';
+        $has_l = file_exists($l_file);
+        $has_b = file_exists($b_file);
+        $model_status[$m] = [
+            'has_latest' => $has_l,
+            'has_best' => $has_b,
+            'latest_size' => $has_l ? filesize($l_file) : 0,
+            'best_size' => $has_b ? filesize($b_file) : 0,
+            'latest_manifest' => isset($manifest[$m . '_latest']) ? $manifest[$m . '_latest'] : null,
+            'best_manifest' => isset($manifest[$m . '_best']) ? $manifest[$m . '_best'] : null,
+        ];
+    }
+
+    $req_model = isset($_REQUEST['model']) ? normalize_model_name($_REQUEST['model']) : '';
+    if (!empty($req_model) && isset($model_status[$req_model])) {
+        $has_latest = $model_status[$req_model]['has_latest'];
+        $has_best = $model_status[$req_model]['has_best'];
+        $latest_size = $model_status[$req_model]['latest_size'];
+        $best_size = $model_status[$req_model]['best_size'];
+    } else {
+        $legacy_l = file_exists($storage_dir . '/latest.pt');
+        $legacy_b = file_exists($storage_dir . '/best.pt');
+        $has_latest = $legacy_l || $model_status['v5_small']['has_latest'] || $model_status['v5_compact']['has_latest'];
+        $has_best = $legacy_b || $model_status['v5_small']['has_best'] || $model_status['v5_compact']['has_best'];
+        $latest_size = $legacy_l ? filesize($storage_dir . '/latest.pt') : 0;
+        $best_size = $legacy_b ? filesize($storage_dir . '/best.pt') : 0;
+    }
 
     echo json_encode([
         'status' => 'online',
-        'has_latest' => $latest_exists,
-        'has_best' => $best_exists,
-        'latest_size' => $latest_exists ? filesize($storage_dir . '/latest.pt') : 0,
-        'best_size' => $best_exists ? filesize($storage_dir . '/best.pt') : 0,
+        'model' => $req_model,
+        'has_latest' => $has_latest,
+        'has_best' => $has_best,
+        'latest_size' => $latest_size,
+        'best_size' => $best_size,
+        'models' => $model_status,
         'manifest' => $manifest,
         'server_time' => date('c'),
     ]);
@@ -83,8 +134,9 @@ if ($action === 'status') {
 // --------------------------------------------------------------------------------------------
 if ($action === 'notify' || $action === 'start' || $action === 'training_start') {
     header('Content-Type: application/json');
-    $source = isset($_REQUEST['source']) ? preg_replace('/[^a-zA-Z0-9_\-]/', '', $_REQUEST['source']) : 'kaggle_tpu';
-    $message = isset($_REQUEST['message']) ? trim($_REQUEST['message']) : "🚀 CerebroSpheroid training active on {$source}";
+    $source = isset($_REQUEST['source']) ? preg_replace('/[^a-zA-Z0-9_\-]/', '', $_REQUEST['source']) : 'colab';
+    $model = isset($_REQUEST['model']) ? normalize_model_name($_REQUEST['model']) : 'v5_compact';
+    $message = isset($_REQUEST['message']) ? trim($_REQUEST['message']) : "🚀 CerebroSpheroid {$model} training active on {$source}";
     $step = isset($_REQUEST['step']) ? intval($_REQUEST['step']) : 0;
     $hours = isset($_REQUEST['hours']) ? floatval($_REQUEST['hours']) : 8.5;
 
@@ -94,7 +146,9 @@ if ($action === 'notify' || $action === 'start' || $action === 'training_start')
         $manifest = [];
     }
 
-    $manifest['active_session'] = [
+    $session_key = !empty($model) ? "active_session_{$model}" : "active_session";
+    $manifest[$session_key] = [
+        'model' => $model,
         'source' => $source,
         'status' => 'training',
         'message' => $message,
@@ -107,16 +161,16 @@ if ($action === 'notify' || $action === 'start' || $action === 'training_start')
 
     // Send email alert to user so they know training has started
     $to = 'meajitsheoran@gmail.com';
-    $subject = "🚀 [BioFlo AI] CerebroSpheroid Training Started on {$source}";
+    $subject = "🚀 [BioFlo AI] CerebroSpheroid {$model} Training Started on {$source}";
     $body = "Hi Ajit,\n\n"
-          . "CerebroSpheroid V4 training has just started on {$source}.\n\n"
+          . "CerebroSpheroid V5 ({$model}) training has just started on {$source}.\n\n"
           . "Details:\n"
+          . "• Model Tier: {$model}\n"
           . "• Node: {$source}\n"
           . "• Starting Step: " . number_format($step) . "\n"
           . "• Planned Window: {$hours} hours\n"
           . "• Time: " . date('Y-m-d H:i:s T') . "\n"
           . "• Message: {$message}\n\n"
-          . "Please avoid starting concurrent training runs in Colab until this session finishes.\n\n"
           . "BioFlo AI Training Cluster";
 
     $headers = "From: BioFlo AI <notifications@bioflo.in>\r\n"
@@ -128,8 +182,9 @@ if ($action === 'notify' || $action === 'start' || $action === 'training_start')
     echo json_encode([
         'success' => true,
         'notified' => true,
+        'model' => $model,
         'source' => $source,
-        'active_session' => $manifest['active_session']
+        'active_session' => $manifest[$session_key]
     ]);
     exit;
 }
@@ -138,14 +193,22 @@ if ($action === 'notify' || $action === 'start' || $action === 'training_start')
 // Action: DOWNLOAD (Supports HTTP Range Requests & Streaming Proxy Bypass)
 // --------------------------------------------------------------------------------------------
 if ($action === 'download') {
+    $model = isset($_GET['model']) ? trim($_GET['model']) : '';
     $type = (isset($_GET['type']) && $_GET['type'] === 'best') ? 'best' : 'latest';
-    $target_file = $storage_dir . '/' . $type . '.pt';
+    $target_filename = get_model_filename($model, $type);
+    $target_file = $storage_dir . '/' . $target_filename;
 
     if (!file_exists($target_file)) {
-        http_response_code(404);
-        header('Content-Type: application/json');
-        echo json_encode(['error' => "Checkpoint {$type}.pt not found on server"]);
-        exit;
+        // Fallback to legacy un-prefixed file if model-specific file does not exist yet
+        $fallback = $storage_dir . '/' . $type . '.pt';
+        if (file_exists($fallback)) {
+            $target_file = $fallback;
+        } else {
+            http_response_code(404);
+            header('Content-Type: application/json');
+            echo json_encode(['error' => "Checkpoint {$target_filename} not found on server"]);
+            exit;
+        }
     }
 
     $file_size = filesize($target_file);
@@ -160,7 +223,7 @@ if ($action === 'download') {
     header('Accept-Ranges: bytes');
     header('Content-Description: File Transfer');
     header('Content-Type: application/octet-stream');
-    header('Content-Disposition: attachment; filename="cerebro_spheroid_v4_' . $type . '.pt"');
+    header('Content-Disposition: attachment; filename="' . basename($target_file) . '"');
     header('Cache-Control: no-cache, no-store, must-revalidate');
     header('Pragma: no-cache');
 
@@ -213,15 +276,18 @@ if ($action === 'download') {
 if ($action === 'upload_chunk') {
     header('Content-Type: application/json');
 
+    $model = isset($_POST['model']) ? trim($_POST['model']) : (isset($_GET['model']) ? trim($_GET['model']) : '');
     $type = (isset($_POST['type']) && $_POST['type'] === 'best') ? 'best' : 'latest';
+    $target_filename = get_model_filename($model, $type);
+
     $chunk_index = isset($_POST['chunk_index']) ? intval($_POST['chunk_index']) : 0;
     $total_chunks = isset($_POST['total_chunks']) ? intval($_POST['total_chunks']) : 1;
     $step = isset($_POST['step']) ? intval($_POST['step']) : 0;
     $loss = isset($_POST['loss']) ? floatval($_POST['loss']) : 0.0;
     $source = isset($_POST['source']) ? preg_replace('/[^a-zA-Z0-9_\-]/', '', $_POST['source']) : 'unknown';
 
-    $part_file = $storage_dir . '/' . $type . '.pt.part';
-    $final_file = $storage_dir . '/' . $type . '.pt';
+    $part_file = $storage_dir . '/' . $target_filename . '.part';
+    $final_file = $storage_dir . '/' . $target_filename;
 
     // Retrieve binary chunk payload
     $chunk_data = null;
@@ -266,7 +332,11 @@ if ($action === 'upload_chunk') {
         // Update manifest
         $manifest_file = $storage_dir . '/manifest.json';
         $manifest = file_exists($manifest_file) ? json_decode(file_get_contents($manifest_file), true) : [];
-        $manifest[$type] = [
+        $norm_m = normalize_model_name($model);
+        $manifest_key = !empty($norm_m) ? ($norm_m . '_' . $type) : $type;
+        $manifest[$manifest_key] = [
+            'model' => $norm_m,
+            'type' => $type,
             'step' => $step,
             'loss' => $loss,
             'source' => $source,
@@ -279,10 +349,11 @@ if ($action === 'upload_chunk') {
         echo json_encode([
             'success' => true,
             'status' => 'completed',
+            'model' => $norm_m,
             'type' => $type,
             'chunk_index' => $chunk_index,
             'total_chunks' => $total_chunks,
-            'manifest' => $manifest[$type]
+            'manifest' => $manifest[$manifest_key]
         ]);
         exit;
     }
@@ -290,6 +361,7 @@ if ($action === 'upload_chunk') {
     echo json_encode([
         'success' => true,
         'status' => 'in_progress',
+        'model' => normalize_model_name($model),
         'type' => $type,
         'chunk_index' => $chunk_index,
         'total_chunks' => $total_chunks

@@ -1116,6 +1116,10 @@ def build_v4_model(args, vocab_size: int = 32000) -> CerebroSpheroidV4:
         cfg["num_shortcut_tracts"] = args.num_shortcut_tracts
     if getattr(args, "max_len", None):
         cfg["max_len"] = args.max_len
+    if getattr(args, "num_heads", None):
+        cfg["num_heads"] = args.num_heads
+    if getattr(args, "rope_theta", None):
+        cfg["rope_theta"] = args.rope_theta
 
     return CerebroSpheroidV4(**cfg)
 

@@ -609,6 +609,8 @@ def main():
     parser.add_argument("--num_shells", type=int, default=None, help="Explicit shell count override")
     parser.add_argument("--radial_dim", type=int, default=None, help="Explicit radial dimension override")
     parser.add_argument("--num_shortcut_tracts", type=int, default=None, help="Explicit shortcut tracts override")
+    parser.add_argument("--num_heads", type=int, default=None, help="Explicit attention heads count override (default: dynamic / 8)")
+    parser.add_argument("--rope_theta", type=float, default=500000.0, help="RoPE theta base frequency (default: 500,000.0)")
     parser.add_argument("--compile", action="store_true", help="Compile deliberate step using torch.compile")
     parser.add_argument("--batch_size", type=int, default=1, help="Records per micro-batch")
     parser.add_argument("--grad_accum", type=int, default=8, help="Micro-batches per gradient step")

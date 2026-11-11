@@ -83,6 +83,13 @@ try:
         "build_spheroid_optimizer",
         "create_spheroid_param_groups",
     ]
+
+    try:
+        from .spheroid_v5 import CerebroSpheroidV5, ModelConfigV5
+        __all__ += ["CerebroSpheroidV5", "ModelConfigV5"]
+    except ImportError:
+        pass
+
     HAS_TORCH = True
 except (ImportError, SystemError, Exception) as _torch_err:
     HAS_TORCH = False
