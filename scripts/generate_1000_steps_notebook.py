@@ -1,0 +1,393 @@
+#!/usr/bin/env python3
+"""Generates colab/cerebro_spheroid_v4_1000_steps.ipynb"""
+
+import json
+import os
+
+cells = [
+    {
+        "cell_type": "markdown",
+        "metadata": {},
+        "source": [
+            "# 🧠 CerebroSpheroid V4: 1,000-Step Scratch Training & Core Weight Diagnostic\n",
+            "### Continuous Concentric Manifold with Multi-Head RoPE & Causal Autoregressive KV Memory\n",
+            "\n",
+            "This notebook executes a targeted **1,000-step training run from scratch** to:\n",
+            "1. **Train From Scratch**: Initialize weights cleanly at theoretical baseline ($\\mathcal{L} \\approx \\ln(V)$).\n",
+            "2. **Track Weight Dynamics**: Observe how gradients shape the sensory vocabulary, multi-head arcuate fasciculus attention, and the volumetric core.\n",
+            "3. **Core Injection & Verification**: Evaluate how the Volumetric Core circulates linguistic flux, verifying that engaging subconscious deliberation maintains or lowers the loss.\n",
+            "4. **Autonomous Generation**: Validate that the new Causal KV cache eliminates the earlier repetition loops.\n"
+        ]
+    },
+    {
+        "cell_type": "markdown",
+        "metadata": {},
+        "source": [
+            "## Step 1: GPU Hardware Check\n",
+            "Confirm NVIDIA GPU availability and CUDA acceleration."
+        ]
+    },
+    {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+            "!nvidia-smi\n",
+            "import torch\n",
+            "print(f\"PyTorch Version: {torch.__version__}\")\n",
+            "print(f\"CUDA Available: {torch.cuda.is_available()}\")\n",
+            "if torch.cuda.is_available():\n",
+            "    print(f\"Device Name: {torch.cuda.get_device_name(0)}\")\n"
+        ]
+    },
+    {
+        "cell_type": "markdown",
+        "metadata": {},
+        "source": [
+            "## Step 2: Clone Latest Repository & Install Dependencies\n",
+            "Pulls the latest commit with the fixed Multi-Head Attention, RoPE tables, and Causal KV cache."
+        ]
+    },
+    {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+            "import os\n",
+            "import sys\n",
+            "\n",
+            "# Clone or pull latest repository\n",
+            "if not os.path.exists(\"/content/reasoning_agent\"):\n",
+            "    !git clone https://github.com/AjitKumar-git/reasoning_agent.git /content/reasoning_agent\n",
+            "    %cd /content/reasoning_agent\n",
+            "else:\n",
+            "    %cd /content/reasoning_agent\n",
+            "    !git pull origin main\n",
+            "\n",
+            "!pip install -q transformers datasets accelerate sentencepiece matplotlib pyarrow\n"
+        ]
+    },
+    {
+        "cell_type": "markdown",
+        "metadata": {},
+        "source": [
+            "## Step 3: Run Architecture & Scratch Convergence Verification\n",
+            "Verifies the parameter count (118,534,071), RoPE tables, and scratch loss descent."
+        ]
+    },
+    {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+            "!python3 training/test_v4_architecture.py\n",
+            "!python3 training/test_v4_scratch_training.py\n"
+        ]
+    },
+    {
+        "cell_type": "markdown",
+        "metadata": {},
+        "source": [
+            "## Step 4: 1,000-Step Precision Trainer with Live Weight Tracking\n",
+            "Trains the fresh model for 1,000 steps with:\n",
+            "- Elastic context window\n",
+            "- Scheduled internal deliberation\n",
+            "- Live gradient norm and weight norm logging\n",
+            "- Matplotlib loss curve visualization\n"
+        ]
+    },
+    {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+            "import os\n",
+            "import sys\n",
+            "import math\n",
+            "import time\n",
+            "import torch\n",
+            "import torch.nn as nn\n",
+            "import torch.nn.functional as F\n",
+            "import matplotlib.pyplot as plt\n",
+            "\n",
+            "ROOT_DIR = \"/content/reasoning_agent\"\n",
+            "if ROOT_DIR not in sys.path:\n",
+            "    sys.path.insert(0, ROOT_DIR)\n",
+            "\n",
+            "from src.spheroid_v4 import build_spheroid_v4, compute_manifold_diagnostics\n",
+            "from src.corpus import build_tokenizer\n",
+            "from training.train_v4_full import build_batch\n",
+            "from datasets import load_dataset\n",
+            "\n",
+            "dev = torch.device(\"cuda:0\" if torch.cuda.is_available() else \"cpu\")\n",
+            "print(f\"Using device: {dev}\")\n",
+            "\n",
+            "# 1. Tokenizer\n",
+            "tokenizer = build_tokenizer(\"llama\")\n",
+            "pad_id = tokenizer.pad_token_id or 0\n",
+            "vocab_size = len(tokenizer)\n",
+            "\n",
+            "# 2. Build Fresh V4 Model (v4_small, 118.5M params)\n",
+            "model = build_spheroid_v4(\"v4_small\", vocab_size=vocab_size).to(dev)\n",
+            "total_params = sum(p.numel() for p in model.parameters())\n",
+            "print(f\"✅ Initialized fresh CerebroSpheroid V4: {total_params:,} parameters\")\n",
+            "\n",
+            "# 3. Stream Training Data (OpenHermes-2.5)\n",
+            "print(\"📥 Loading OpenHermes-2.5 streaming dataset...\")\n",
+            "ds = load_dataset(\"teknium/OpenHermes-2.5\", split=\"train\", streaming=True)\n",
+            "data_iter = iter(ds)\n",
+            "\n",
+            "# 4. Optimizer & Scheduler\n",
+            "optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=0.01, betas=(0.9, 0.95))\n",
+            "scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=1000, eta_min=1e-5)\n",
+            "\n",
+            "# 5. Training Loop Tracking\n",
+            "steps, losses, grad_norms, embed_norms, q_norms = [], [], [], [], []\n",
+            "\n",
+            "print(\"=\" * 80)\n",
+            "print(\"🚀 STARTING 1,000-STEP SCRATCH TRAINING RUN\")\n",
+            "print(\"=\" * 80)\n",
+            "\n",
+            "model.train()\n",
+            "t0 = time.time()\n",
+            "batch_size = 4\n",
+            "target_len = 32\n",
+            "\n",
+            "for step in range(1, 1001):\n",
+            "    # Collect batch\n",
+            "    pairs = []\n",
+            "    while len(pairs) < batch_size:\n",
+            "        item = next(data_iter)\n",
+            "        convs = item.get(\"conversations\", [])\n",
+            "        if len(convs) >= 2:\n",
+            "            prompt = convs[0].get(\"value\", \"\")\n",
+            "            answer = convs[1].get(\"value\", \"\")\n",
+            "            if len(prompt.strip()) > 5 and len(answer.strip()) > 5:\n",
+            "                pairs.append((\"openhermes\", prompt, answer))\n",
+            "    \n",
+            "    batch = build_batch(tokenizer, pairs, window=target_len, rng=__import__(\"random\").Random(step),\n",
+            "                        max_prompt_len=128, max_answer_tokens=target_len, pad_token_id=pad_id)\n",
+            "    if batch is None:\n",
+            "        continue\n",
+            "    p_t, t_t, f_t = batch\n",
+            "    p_t, t_t, f_t = p_t.to(dev), t_t.to(dev), f_t.to(dev)\n",
+            "\n",
+            "    optimizer.zero_grad()\n",
+            "    \n",
+            "    # Scheduled deliberation: gradually ramp up internal thinking cycles\n",
+            "    delib_cycles = 1 if step < 300 else 3\n",
+            "    sampling_p = max(0.35, 1.0 - (step / 1000.0) * 0.65)\n",
+            "    \n",
+            "    logits = model(\n",
+            "        p_t,\n",
+            "        response_steps=t_t.size(1),\n",
+            "        thinking_cycles=delib_cycles,\n",
+            "        targets=t_t,\n",
+            "        feedback_tokens=f_t,\n",
+            "        deliberation_mode=\"scheduled\",\n",
+            "        sampling_p=sampling_p,\n",
+            "        pad_token_id=pad_id,\n",
+            "    )\n",
+            "    \n",
+            "    loss = F.cross_entropy(logits.view(-1, vocab_size), t_t.view(-1), ignore_index=-100)\n",
+            "    loss.backward()\n",
+            "    \n",
+            "    # Compute total gradient norm\n",
+            "    total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)\n",
+            "    optimizer.step()\n",
+            "    scheduler.step()\n",
+            "\n",
+            "    # Track metrics\n",
+            "    if step % 20 == 0 or step == 1:\n",
+            "        e_norm = model.sensory_dnn.embedding.weight.norm().item()\n",
+            "        q_norm = model.motor_dnn.q_proj.weight.norm().item()\n",
+            "        \n",
+            "        steps.append(step)\n",
+            "        losses.append(loss.item())\n",
+            "        grad_norms.append(total_norm.item())\n",
+            "        embed_norms.append(e_norm)\n",
+            "        q_norms.append(q_norm)\n",
+            "        \n",
+            "        elapsed = time.time() - t0\n",
+            "        tok_sec = (step * batch_size * target_len) / max(1, elapsed)\n",
+            "        print(f\"Step {step:04d}/1000 | Loss: {loss.item():.4f} | GradNorm: {total_norm.item():.3f} | EmbedNorm: {e_norm:.1f} | LR: {scheduler.get_last_lr()[0]:.2e} | {tok_sec:.1f} tok/s\")\n",
+            "\n",
+            "# Save Checkpoint at Step 1000\n",
+            "os.makedirs(\"checkpoints\", exist_ok=True)\n",
+            "ckpt_path = \"checkpoints/cerebro_spheroid_v4_step_1000.pt\"\n",
+            "model.save_compatible_checkpoint(ckpt_path, step=1000, best=min(losses), loss=losses[-1])\n",
+            "print(f\"\\n💾 Checkpoint saved to: {ckpt_path}\")\n",
+            "\n",
+            "# Plot Training Dynamics\n",
+            "plt.figure(figsize=(14, 5))\n",
+            "plt.subplot(1, 2, 1)\n",
+            "plt.plot(steps, losses, \"b-\", lw=2, label=\"Cross-Entropy Loss\")\n",
+            "plt.xlabel(\"Step\")\n",
+            "plt.ylabel(\"Loss\")\n",
+            "plt.title(\"V4 Scratch Training Loss (1,000 Steps)\")\n",
+            "plt.grid(True, alpha=0.3)\n",
+            "plt.legend()\n",
+            "\n",
+            "plt.subplot(1, 2, 2)\n",
+            "plt.plot(steps, grad_norms, \"r-\", lw=1.5, label=\"Gradient Norm\")\n",
+            "plt.xlabel(\"Step\")\n",
+            "plt.ylabel(\"Norm\")\n",
+            "plt.title(\"Gradient Stability\")\n",
+            "plt.grid(True, alpha=0.3)\n",
+            "plt.legend()\n",
+            "plt.tight_layout()\n",
+            "plt.show()\n"
+        ]
+    },
+    {
+        "cell_type": "markdown",
+        "metadata": {},
+        "source": [
+            "## Step 5: Core Engagement Diagnostic\n",
+            "Inspects weight statistics and evaluates the loss impact of engaging the Volumetric Core:\n",
+            "- Tests loss with 0 core circulation cycles (shallow baseline)\n",
+            "- Tests loss with 1, 2, and 3 core circulation cycles\n",
+            "- Confirms that the core maintains or improves cross-entropy loss without disruption."
+        ]
+    },
+    {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+            "model.eval()\n",
+            "\n",
+            "print(\"=\" * 80)\n",
+            "print(\"🔬 STEP 1,000 WEIGHT & CORE COUPLING DIAGNOSTIC\")\n",
+            "print(\"=\" * 80)\n",
+            "\n",
+            "# 1. Weight Distributions\n",
+            "print(\"\\n📊 Active Weight Norms & Dimensions:\")\n",
+            "for name, p in model.named_parameters():\n",
+            "    if any(k in name for k in [\"embedding\", \"intra_shell\", \"reentrant\", \"shortcut\", \"q_proj\", \"k_proj\", \"v_proj\", \"head\"]):\n",
+            "        print(f\"  {name:<38} | Shape: {str(list(p.shape)):<18} | Norm: {p.norm().item():.3f} | Mean: {p.mean().item():+.5f} | Std: {p.std().item():.5f}\")\n",
+            "\n",
+            "# 2. Test Core Engagement Impact on Held-Out Records\n",
+            "test_pairs = [\n",
+            "    (\"openhermes\", \"What is the capital of France?\", \"The capital of France is Paris.\"),\n",
+            "    (\"openhermes\", \"What is 2 + 3?\", \"2 + 3 is 5.\"),\n",
+            "    (\"openhermes\", \"Why is the ocean salty?\", \"The ocean is salty due to dissolved minerals from rocks and volcanic vents.\"),\n",
+            "    (\"openhermes\", \"Name three primary colors.\", \"The three primary colors are red, blue, and yellow.\"),\n",
+            "]\n",
+            "\n",
+            "test_batch = build_batch(tokenizer, test_pairs, window=32, rng=__import__(\"random\").Random(1337),\n",
+            "                         max_prompt_len=128, max_answer_tokens=32, pad_token_id=pad_id)\n",
+            "p_t, t_t, f_t = [t.to(dev) for t in test_batch]\n",
+            "\n",
+            "print(\"\\n🧠 Evaluating Loss Across Subconscious Core Thinking Cycles:\")\n",
+            "for cycles in [0, 1, 2, 3, 4]:\n",
+            "    with torch.no_grad():\n",
+            "        out_logits = model(p_t, response_steps=t_t.size(1), thinking_cycles=cycles, targets=t_t, deliberation_mode=\"teacher_forcing\")\n",
+            "        ce = F.cross_entropy(out_logits.view(-1, vocab_size), t_t.view(-1), ignore_index=-100).item()\n",
+            "        print(f\"  Thinking Cycles = {cycles} | Cross-Entropy Loss: {ce:.4f} (Perplexity: {math.exp(ce):.2f})\")\n",
+            "\n",
+            "# 3. Manifold Shell Diagnostics\n",
+            "state = model.ingest_stimulus(p_t, pad_token_id=pad_id)\n",
+            "diag = compute_manifold_diagnostics(model, state)\n",
+            "print(f\"\\n🌐 Volumetric Manifold Effective Rank: {diag['mean_effective_rank']:.3f} | Shell Energy RMS: {diag['mean_shell_rms']:.4f}\")\n"
+        ]
+    },
+    {
+        "cell_type": "markdown",
+        "metadata": {},
+        "source": [
+            "## Step 6: Test Autoregressive Free Generation\n",
+            "Validates that the causal KV cache allows the model to verbalize smoothly without repetition loops."
+        ]
+    },
+    {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+            "test_prompts = [\n",
+            "    \"What is the capital of France?\",\n",
+            "    \"Explain why the sky is blue in simple words.\",\n",
+            "    \"What is 2 + 3?\",\n",
+            "    \"Write a short sentence about artificial intelligence.\",\n",
+            "    \"If you have 5 apples and give 2 to a friend, how many do you have left?\",\n",
+            "]\n",
+            "\n",
+            "print(\"=\" * 80)\n",
+            "print(\"📝 STEP 1,000 AUTOREGRESSIVE GENERATION (Active Causal KV Cache)\")\n",
+            "print(\"=\" * 80)\n",
+            "\n",
+            "for prompt in test_prompts:\n",
+            "    response = model.generate_text(\n",
+            "        prompt,\n",
+            "        tokenizer=tokenizer,\n",
+            "        thinking_cycles=3,\n",
+            "        max_new_tokens=48,\n",
+            "        temperature=0.6,\n",
+            "        repetition_penalty=1.2,\n",
+            "        device=dev,\n",
+            "        strip_bio_prefix=True,\n",
+            "    )\n",
+            "    print(f\"\\nUser:      {prompt}\")\n",
+            "    print(f\"Spheroid:  {response}\")\n",
+            "    print(\"-\" * 60)\n"
+        ]
+    },
+    {
+        "cell_type": "markdown",
+        "metadata": {},
+        "source": [
+            "## Step 7: Export Checkpoint to Google Drive (Optional)"
+        ]
+    },
+    {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+            "try:\n",
+            "    from google.colab import drive\n",
+            "    drive.mount('/content/drive')\n",
+            "    !cp -v checkpoints/cerebro_spheroid_v4_step_1000.pt /content/drive/MyDrive/\n",
+            "    print(\"✅ Checkpoint backed up to Google Drive!\")\n",
+            "except Exception as e:\n",
+            "    print(\"Google Drive mount skipped or not running on Colab.\")\n"
+        ]
+    }
+]
+
+notebook = {
+    "cells": cells,
+    "metadata": {
+        "accelerator": "GPU",
+        "colab": {
+            "gpuType": "T4",
+            "provenance": []
+        },
+        "kernelspec": {
+            "display_name": "Python 3",
+            "name": "python3"
+        },
+        "language_info": {
+            "name": "python"
+        }
+    },
+    "nbformat": 4,
+    "nbformat_minor": 0
+}
+
+out_dir = "/home/ajit/Documents/Startup/Active_Development/reasoning_agent/colab"
+os.makedirs(out_dir, exist_ok=True)
+out_path = os.path.join(out_dir, "cerebro_spheroid_v4_1000_steps.ipynb")
+
+with open(out_path, "w") as f:
+    json.dump(notebook, f, indent=2)
+
+print(f"✅ Successfully wrote notebook to: {out_path}")
