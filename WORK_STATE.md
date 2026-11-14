@@ -1,15 +1,15 @@
 # Agent Work State & Activity Tracker
 
-> **Status**: 🟡 `IN_PROGRESS` | **Last Updated**: `2026-11-14T16:49:46.718869+05:30` | **Session**: `f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2`
+> **Status**: 🟡 `IN_PROGRESS` | **Last Updated**: `2026-11-14T20:02:31.074671+05:30` | **Session**: `f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2`
 
 ## Current / Active Objective
-**Goal**: add python-edu and advanced tool calling in this phase as well
+**Goal**: test latest checkpoint on openhermes questions
 
 - **Phase**: `executing`
-- **Current Task**: Executed run_command: Check WORK_STATE diff
+- **Current Task**: Executed run_command: Check status in reasoning_agent
 
 ## Summary of Completed Work
-The Phase 3 curriculum in [`src/elastic_window.py`](file:///home/ajit/Documents/Startup/Active_Development/cerebro_spheroid_v5/src/elastic_window.py) has been upgraded and pushed to GitHub (`commit b16c817`).
+We evaluated the converged checkpoints on authentic questions sampled directly from [`teknium/OpenHermes-2.5`](file:///home/ajit/Documents/Startup/Active_Development/reasoning_agent/data/openhermes/openhermes_2_5.parquet) across mathematics, scientific domain knowledge, deductive reasoning, and code synthesis.
 
 ## Modified Files
 - [`src/__init__.py`](src/__init__.py)
@@ -188,6 +188,8 @@ The Phase 3 curriculum in [`src/elastic_window.py`](file:///home/ajit/Documents/
 - [`../cerebro_spheroid_v5/tests/test_multimodal_parity.py`](../cerebro_spheroid_v5/tests/test_multimodal_parity.py)
 - [`../cerebro_spheroid_v5/scripts/run_colab_reasoning.py`](../cerebro_spheroid_v5/scripts/run_colab_reasoning.py)
 - [`../cerebro_spheroid_v5/scripts/test_reasoning_probe.py`](../cerebro_spheroid_v5/scripts/test_reasoning_probe.py)
+- [`../cerebro_spheroid_v5/scripts/audit_weight_saturation.py`](../cerebro_spheroid_v5/scripts/audit_weight_saturation.py)
+- [`../cerebro_spheroid_v5/scripts/test_openhermes_eval.py`](../cerebro_spheroid_v5/scripts/test_openhermes_eval.py)
 
 ## Key Findings & Decisions
 - Checkpoint resumption was starting with cold zero-momentum buffers and full learning rate, causing immediate parameter manifold disruptions.
@@ -205,16 +207,16 @@ The Phase 3 curriculum in [`src/elastic_window.py`](file:///home/ajit/Documents/
 ## Recent Actions (Last 10)
 | Time | Tool | Details |
 | :--- | :--- | :--- |
-| `16:49:46` | `run_command` | Check WORK_STATE diff |
-| `16:49:42` | `run_command` | Check git status in reasoning_agent |
-| `16:49:38` | `run_command` | Commit and push 5-pillar stream to origin/main |
-| `16:49:25` | `run_command` | Check git diff stat in cerebro_spheroid_v5 |
-| `16:49:19` | `read_file` | read_file |
-| `16:49:15` | `manage_task` | manage_task |
-| `16:49:10` | `run_command` | Wait 5 seconds for task completion |
-| `16:49:02` | `manage_task` | manage_task |
-| `16:48:58` | `manage_task` | manage_task |
-| `16:48:52` | `manage_task` | manage_task |
+| `20:02:31` | `run_command` | Check status in reasoning_agent |
+| `20:02:27` | `run_command` | Sync src/corpus.py to reasoning_agent |
+| `20:02:23` | `run_command` | Check diff of src/corpus.py |
+| `20:02:20` | `run_command` | Check reasoning_agent status |
+| `20:02:14` | `run_command` | Commit and push default latest fix |
+| `20:02:00` | `run_command` | Check git status in cerebro_spheroid_v5 |
+| `20:01:56` | `run_command` | Git status check in current dir |
+| `20:01:52` | `run_command` | Inspect test_openhermes_eval.py |
+| `20:01:48` | `run_command` | Check git status in cerebro_spheroid_v5 |
+| `20:01:44` | `run_command` | Inspect run_colab_reasoning.py lines 280-310 |
 
 ---
 *This file is automatically maintained by `auto-work-tracker`. Other agents can parse `.agents/work_state.json` or inspect this file directly to resume or review progress.*

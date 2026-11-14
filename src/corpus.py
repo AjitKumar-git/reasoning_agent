@@ -180,13 +180,26 @@ def small_parquet_pairs(path: str, seed: int = 0, holdout_every: int = 0,
 # streaming fluff-free educational corpora (zero disk download, zero setup wait)
 # --------------------------------------------------------------------------------------------
 
+def _get_hf_token() -> Optional[str]:
+    """Retrieve Hugging Face API token from environment if present."""
+    return (
+        os.environ.get("HF_TOKEN")
+        or os.environ.get("HUGGINGFACE_HUB_TOKEN")
+        or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    )
+
+
 def cosmopedia_stream(seed: int = 0) -> Iterator[Pair]:
     """Pure online streaming iterator for Cosmopedia v2 (100% synthetic fluff-free textbooks/articles)."""
     import time
     from datasets import load_dataset
+    hf_tok = _get_hf_token()
+    kw = {"split": "train", "streaming": True}
+    if hf_tok:
+        kw["token"] = hf_tok
     while True:
         try:
-            ds = load_dataset("HuggingFaceTB/smollm-corpus", "cosmopedia-v2", split="train", streaming=True)
+            ds = load_dataset("HuggingFaceTB/smollm-corpus", "cosmopedia-v2", **kw)
             for item in ds:
                 prompt = (item.get("prompt") or "").strip()
                 text = (item.get("text") or item.get("content") or "").strip()
@@ -198,20 +211,26 @@ def cosmopedia_stream(seed: int = 0) -> Iterator[Pair]:
                 if prompt and text:
                     yield (prompt, text)
         except Exception as e:
-            print(f"[corpus stream] Cosmopedia transient stream reconnect: {e}")
-            time.sleep(2)
+            err_msg = str(e).lower()
+            wait_s = 10 if ("429" in err_msg or "rate limit" in err_msg or "too many requests" in err_msg) else 2
+            print(f"[corpus stream] Cosmopedia transient stream reconnect: {e} (backing off {wait_s}s)")
+            time.sleep(wait_s)
 
 
 def fineweb_edu_stream(seed: int = 0, min_score: float = 3.0) -> Iterator[Pair]:
     """Pure online streaming iterator for FineWeb-Edu (AI-scored educational web text >= 3.0)."""
     import time
     from datasets import load_dataset
+    hf_tok = _get_hf_token()
+    kw = {"split": "train", "streaming": True}
+    if hf_tok:
+        kw["token"] = hf_tok
     while True:
         try:
             try:
-                ds = load_dataset("HuggingFaceTB/smollm-corpus", "fineweb-edu-dedup", split="train", streaming=True)
+                ds = load_dataset("HuggingFaceTB/smollm-corpus", "fineweb-edu-dedup", **kw)
             except Exception:
-                ds = load_dataset("HuggingFaceFW/fineweb-edu", name="sample-10BT", split="train", streaming=True)
+                ds = load_dataset("HuggingFaceFW/fineweb-edu", name="sample-10BT", **kw)
             for item in ds:
                 score = float(item.get("score", 3.5) or item.get("educational_score", 3.5) or 3.5)
                 if score < min_score:
@@ -230,17 +249,23 @@ def fineweb_edu_stream(seed: int = 0, min_score: float = 3.0) -> Iterator[Pair]:
                 if prompt and response:
                     yield (prompt, response)
         except Exception as e:
-            print(f"[corpus stream] FineWeb-Edu transient stream reconnect: {e}")
-            time.sleep(2)
+            err_msg = str(e).lower()
+            wait_s = 10 if ("429" in err_msg or "rate limit" in err_msg or "too many requests" in err_msg) else 2
+            print(f"[corpus stream] FineWeb-Edu transient stream reconnect: {e} (backing off {wait_s}s)")
+            time.sleep(wait_s)
 
 
 def finemath_stream(seed: int = 0) -> Iterator[Pair]:
     """Pure online streaming iterator for FineMath (high-density mathematical equations and proofs)."""
     import time
     from datasets import load_dataset
+    hf_tok = _get_hf_token()
+    kw = {"split": "train", "streaming": True}
+    if hf_tok:
+        kw["token"] = hf_tok
     while True:
         try:
-            ds = load_dataset("HuggingFaceTB/finemath", "finemath-4plus", split="train", streaming=True)
+            ds = load_dataset("HuggingFaceTB/finemath", "finemath-4plus", **kw)
             for item in ds:
                 text = (item.get("text") or "").strip()
                 if len(text) < 60:
@@ -255,17 +280,23 @@ def finemath_stream(seed: int = 0) -> Iterator[Pair]:
                 if prompt and response:
                     yield (prompt, response)
         except Exception as e:
-            print(f"[corpus stream] FineMath transient stream reconnect: {e}")
-            time.sleep(2)
+            err_msg = str(e).lower()
+            wait_s = 10 if ("429" in err_msg or "rate limit" in err_msg or "too many requests" in err_msg) else 2
+            print(f"[corpus stream] FineMath transient stream reconnect: {e} (backing off {wait_s}s)")
+            time.sleep(wait_s)
 
 
 def stack_edu_stream(seed: int = 0) -> Iterator[Pair]:
     """Pure online streaming iterator for Stack-Edu (curated production-grade code)."""
     import time
     from datasets import load_dataset
+    hf_tok = _get_hf_token()
+    kw = {"split": "train", "streaming": True}
+    if hf_tok:
+        kw["token"] = hf_tok
     while True:
         try:
-            ds = load_dataset("devngho/the-stack-mini-edu", "scored_over_4", split="train", streaming=True)
+            ds = load_dataset("devngho/the-stack-mini-edu", "scored_over_4", **kw)
             for item in ds:
                 text = (item.get("content") or item.get("text") or "").strip()
                 if len(text) < 60:
@@ -278,8 +309,10 @@ def stack_edu_stream(seed: int = 0) -> Iterator[Pair]:
                 if prompt and response:
                     yield (prompt, response)
         except Exception as e:
-            print(f"[corpus stream] Stack-Edu transient stream reconnect: {e}")
-            time.sleep(2)
+            err_msg = str(e).lower()
+            wait_s = 10 if ("429" in err_msg or "rate limit" in err_msg or "too many requests" in err_msg) else 2
+            print(f"[corpus stream] Stack-Edu transient stream reconnect: {e} (backing off {wait_s}s)")
+            time.sleep(wait_s)
 
 
 def cosmopedia_pairs(path: str, seed: int = 0, holdout_every: int = 0,
@@ -497,28 +530,50 @@ def total_weights(specs: List[Tuple[str, float]]) -> Dict[str, float]:
 def build_tokenizer(name: str = "llama"):
     """
     Builds and configures a tokenizer for CerebroSpheroid models:
-    - 'llama': Modern 32,000 Byte-Fallback BPE (via huggyllama/llama-7b or TinyLlama).
+    - 'llama': Modern 32,000 Byte-Fallback BPE (prefers local bundled data/tokenizer, then HuggingFace).
       Features byte-level UTF-8 fallback (zero <unk>), single-digit number tokenization,
-      pad_token_id=0, bos_token_id=1, eos_token_id=2.
-    - 'gpt2': Legacy 50,257 BPE tokenizer.
+      pad_token_id=0, bos_token_id=1, eos_token_id=2. Strictly 32,000 vocabulary.
     """
+    if name == "gpt2":
+        raise ValueError(
+            "GPT-2 tokenizer (50,257 vocab) has been deprecated and completely removed from CerebroSpheroid V5. "
+            "V5 models have an architectural vocabulary size of exactly 32,000 tokens. "
+            "Please use the bundled LLaMA-32k tokenizer (data/tokenizer)."
+        )
+
     os.environ["HF_HOME"] = os.path.expanduser("~/.hf_cache")
     from transformers import AutoTokenizer
-    if name == "llama":
-        tok = AutoTokenizer.from_pretrained("huggyllama/llama-7b")
+
+    # 1. First priority: Check local bundled LLaMA-32k tokenizer in data/tokenizer
+    local_tok = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "tokenizer")
+    if os.path.exists(os.path.join(local_tok, "tokenizer.json")):
+        try:
+            tok = AutoTokenizer.from_pretrained(local_tok, local_files_only=True)
+            if tok.pad_token_id is None:
+                tok.pad_token_id = 0
+            tok.model_max_length = 100_000
+            return tok
+        except Exception:
+            pass
+
+    # 2. Remote LLaMA 32k fallback
+    for cand in ["huggyllama/llama-7b", "openlm-research/open_llama_7b", "TinyLlama/TinyLlama-1.1B-Chat-v1.0"]:
+        try:
+            tok = AutoTokenizer.from_pretrained(cand)
+            if tok.pad_token_id is None:
+                tok.pad_token_id = 0
+            tok.model_max_length = 100_000
+            return tok
+        except Exception:
+            continue
+
+    if name and name not in ("llama", "default"):
+        tok = AutoTokenizer.from_pretrained(name)
         if tok.pad_token_id is None:
             tok.pad_token_id = 0
         return tok
-    elif name == "gpt2":
-        tok = AutoTokenizer.from_pretrained("gpt2")
-        if tok.pad_token_id is None:
-            tok.pad_token_id = tok.eos_token_id
-        return tok
-    else:
-        tok = AutoTokenizer.from_pretrained(name)
-        if tok.pad_token_id is None:
-            tok.pad_token_id = tok.eos_token_id or 0
-        return tok
+
+    raise RuntimeError("Failed to load LLaMA-32k tokenizer. Ensure data/tokenizer is present.")
 
 
 # Biology-derived enclosed delimiters: <stim> ... </stim> and <act> ... </act>
@@ -526,8 +581,6 @@ BIO_STIM_PREFIX = "<stim> "
 BIO_STIM_SUFFIX = " </stim>"
 BIO_ACT_PREFIX = "<act> "
 BIO_ACT_SUFFIX = " </act>"
-BIO_STIM_TOKEN_ID = 20436  # Legacy reference for 'stim '
-BIO_ACT_TOKEN_ID = 1044    # Legacy reference for 'act '
 
 
 def format_stimulus_prompt(prompt: str) -> str:
@@ -554,8 +607,13 @@ def format_motor_response(answer: str) -> str:
     return a
 
 
-def clean_motor_response(text: str) -> str:
-    """Strips <act> and </act> delimiters if present, with fallback for legacy prefixes."""
+def clean_motor_response(text: str, strict: bool = True) -> str:
+    """
+    Strips biological <act> and </act> delimiters and returns strictly the interior payload.
+    If <act> and </act> tags are present, extracts strictly the text between them,
+    discarding all tokens before <act> and all tokens after </act>.
+    If only <act> is present without </act>, extracts from <act> onwards.
+    """
     t = text.strip()
     m = re.search(r"<act>\s*(.*?)(?:\s*</act>|$)", t, re.DOTALL)
     if m:
@@ -568,17 +626,120 @@ def clean_motor_response(text: str) -> str:
         t = t[4:].strip()
     if t.startswith("act:"):
         t = t[4:].strip()
+    if strict and "</act>" in t:
+        t = t.split("</act>")[0].strip()
     return t
+
+
+def extract_strict_act_tokens(
+    tokens: Sequence[int],
+    tokenizer: Any = None,
+    bio_ids: Optional[Dict[str, Optional[int]]] = None,
+) -> List[int]:
+    """
+    Extracts strictly the token IDs inside the biological delimiters <act> (33) and </act> (34).
+    Discards any tokens prior to <act>, skips the <act> token itself, and truncates
+    immediately upon encountering </act> or EOS.
+    """
+    if bio_ids is None and tokenizer is not None:
+        bio_ids = get_bio_token_ids(tokenizer)
+    act_id = bio_ids.get("act", 33) if bio_ids else 33
+    act_end_id = bio_ids.get("act_end", 34) if bio_ids else 34
+    eos_id = getattr(tokenizer, "eos_token_id", 2) if tokenizer is not None else 2
+
+    stop_ids = {t for t in (eos_id, act_end_id) if t is not None}
+
+    token_list = list(tokens)
+    if not token_list:
+        return []
+
+    # Find start: if act_id is present, start right after it; otherwise start at 0
+    if act_id in token_list:
+        start_idx = token_list.index(act_id) + 1
+    else:
+        start_idx = 0
+
+    # Find end: stop at the first occurrence of any stop_id after start_idx
+    end_idx = len(token_list)
+    for i in range(start_idx, len(token_list)):
+        if token_list[i] in stop_ids:
+            end_idx = i
+            break
+
+    return token_list[start_idx:end_idx]
+
+
+def extract_strict_act_payload(
+    tokens: Sequence[int],
+    tokenizer: Any,
+) -> str:
+    """
+    Extracts strictly the text payload inside <act> and </act> from a sequence of token IDs.
+    """
+    payload_tokens = extract_strict_act_tokens(tokens, tokenizer=tokenizer)
+    decoded = tokenizer.decode(payload_tokens, skip_special_tokens=True).strip()
+    return clean_motor_response(decoded, strict=True)
+
+
+def encode_no_special(tokenizer, text: str, max_length: Optional[int] = None) -> List[int]:
+    """Encode text without prepending/appending BOS/EOS tokens."""
+    if hasattr(tokenizer, "encode"):
+        kwargs: Dict[str, Any] = {"add_special_tokens": False}
+        if max_length is not None:
+            kwargs["max_length"] = max_length
+            kwargs["truncation"] = True
+        try:
+            return list(tokenizer.encode(text, **kwargs))
+        except TypeError:
+            try:
+                ids = list(tokenizer.encode(text, add_special_tokens=False))
+            except TypeError:
+                ids = list(tokenizer.encode(text))
+            return ids[:max_length] if max_length is not None else ids
+    if callable(tokenizer):
+        try:
+            kwargs = {"add_special_tokens": False}
+            if max_length is not None:
+                kwargs["max_length"] = max_length
+                kwargs["truncation"] = True
+            out = tokenizer(text, **kwargs)
+        except TypeError:
+            out = tokenizer(text)
+        ids = list(out["input_ids"] if isinstance(out, dict) else out)
+        return ids[:max_length] if max_length is not None else ids
+    raise TypeError(f"Unsupported tokenizer type: {type(tokenizer)}")
+
+
+def get_bio_token_ids(tokenizer) -> Dict[str, Optional[int]]:
+    """Resolve single-token IDs for <stim>, </stim>, <act>, </act> if defined."""
+    tags = {
+        "stim": "<stim>",
+        "stim_end": "</stim>",
+        "act": "<act>",
+        "act_end": "</act>",
+    }
+    result: Dict[str, Optional[int]] = {k: None for k in tags}
+    if tokenizer is None or not hasattr(tokenizer, "encode"):
+        return result
+    unk_id = getattr(tokenizer, "unk_token_id", None)
+    for key, marker in tags.items():
+        try:
+            ids = encode_no_special(tokenizer, marker)
+        except Exception:
+            continue
+        if len(ids) == 1 and int(ids[0]) != unk_id:
+            result[key] = int(ids[0])
+    return result
 
 
 def tokenize_pair(tokenizer, prompt: str, answer: str, max_prompt_len: int,
                   max_answer_tokens: int) -> Tuple[List[int], List[int]]:
     """Tokenises one record using enclosed biological delimiters ('<stim> ... </stim>' / '<act> ... </act>'), appending EOS."""
     formatted_prompt = format_stimulus_prompt(prompt)
-    prompt_ids = tokenizer.encode(formatted_prompt, max_length=max_prompt_len, truncation=True)
-    
+    prompt_ids = encode_no_special(tokenizer, formatted_prompt, max_length=max_prompt_len)
+
     formatted_answer = format_motor_response(answer)
-    answer_ids = tokenizer.encode(formatted_answer, max_length=max_answer_tokens, truncation=True)
+    answer_ids = encode_no_special(tokenizer, formatted_answer, max_length=max_answer_tokens)
     if len(answer_ids) < max_answer_tokens:
         answer_ids = answer_ids + [tokenizer.eos_token_id]
     return prompt_ids, answer_ids
