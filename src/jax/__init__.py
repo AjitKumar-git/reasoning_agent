@@ -1,103 +1,62 @@
 """
-CerebroSpheroid JAX Package:
-Non-Autoregressive Volumetric Reasoning Architecture on JAX.
+CerebroSpheroid V5: Pure JAX Spheroid Engine Package.
 """
 
-# V4 Architecture
-from .v4_model import (
-    ModelConfigV4,
-    PRESETS_V4,
-    rms_norm as rms_norm_v4,
-    init_v4_params,
-    precompute_axonal_indices,
+from .v5_model import (
+    ModelConfigV5,
+    PRESETS_V5,
+    init_params_v5,
+    generate_small_world_indices,
     encode_sensory,
     deliberate_step,
     emit_step,
-    training_rollout as training_rollout_v4,
-    generate_v4,
+    training_rollout,
+    compute_manifold_diagnostics_jax,
+    generate_text_jax,
 )
 
-# SpheroidOptimizer (Newton-Schulz + Spectral Guard)
 from .spheroid_optimizer import (
     zeropower_via_newtonschulz5_jax,
     clamp_spectral_norm_jax,
-    is_manifold_operator,
     init_spheroid_opt_state,
     build_spheroid_train_engine,
     build_train_step_spheroid,
 )
 
-# Checkpointing & Synchronization
 from .checkpoint import (
     save_jax_to_torch_pt,
     load_torch_pt_to_jax,
+    adapt_and_load_checkpoint_weights,
+    adapt_jax_to_torch_state_dict,
     discover_latest_checkpoint,
     AsyncCheckpointManager,
 )
 
-# Elastic Sliding Context Window Engine
-from ..elastic_window import (
-    get_default_elastic_buckets,
-    select_best_bucket,
-    ElasticBucketBatcher,
-)
-
-# V3 Legacy Architecture (Optional / guarded)
-try:
-    from .model import (
-        ModelConfig,
-        CerebroSpheroidJAX,
-        rms_norm,
-        init_params,
-        init_brain_state,
-        training_rollout,
-        compute_loss,
-        generate_zero_feedback,
-    )
-    from .convert import (
-        torch_to_jax_params,
-        load_torch_checkpoint_to_jax,
-        save_jax_checkpoint,
-        load_jax_checkpoint,
-        detect_checkpoint_architecture,
-    )
-    from .inference import ReasoningAgentJAX
-    HAS_V3_LEGACY = True
-except (ImportError, SystemError, Exception):
-    HAS_V3_LEGACY = False
+from .data_streamer import LinguisticDataStreamer
+from .auto_tuner import run_auto_tuner
 
 __all__ = [
-    # V4
-    "ModelConfigV4",
-    "PRESETS_V4",
-    "init_v4_params",
-    "precompute_axonal_indices",
-    "training_rollout_v4",
-    # Optimizer
+    "ModelConfigV5",
+    "PRESETS_V5",
+    "init_params_v5",
+    "generate_small_world_indices",
+    "encode_sensory",
+    "deliberate_step",
+    "emit_step",
+    "training_rollout",
+    "compute_manifold_diagnostics_jax",
+    "generate_text_jax",
     "zeropower_via_newtonschulz5_jax",
     "clamp_spectral_norm_jax",
-    "is_manifold_operator",
     "init_spheroid_opt_state",
+    "build_spheroid_train_engine",
     "build_train_step_spheroid",
-    # Checkpoint & Elastic Window
     "save_jax_to_torch_pt",
     "load_torch_pt_to_jax",
+    "adapt_and_load_checkpoint_weights",
+    "adapt_jax_to_torch_state_dict",
     "discover_latest_checkpoint",
     "AsyncCheckpointManager",
-    "get_default_elastic_buckets",
-    "select_best_bucket",
-    "ElasticBucketBatcher",
-    # V3
-    "ModelConfig",
-    "CerebroSpheroidJAX",
-    "ReasoningAgentJAX",
-    "init_params",
-    "training_rollout",
-    "compute_loss",
-    "generate_zero_feedback",
-    "torch_to_jax_params",
-    "load_torch_checkpoint_to_jax",
-    "save_jax_checkpoint",
-    "load_jax_checkpoint",
-    "detect_checkpoint_architecture",
+    "LinguisticDataStreamer",
+    "run_auto_tuner",
 ]

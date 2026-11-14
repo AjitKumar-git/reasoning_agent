@@ -1,14 +1,15 @@
 """
-CerebroSpheroid JAX Checkpointing & Autonomous Synchronization Suite.
+CerebroSpheroid V5: JAX Checkpointing & Autonomous Synchronization Suite.
 
 Features:
 1. PyTorch (.pt) <-> JAX Parameter Converter:
    Bi-directional lossless conversion between PyTorch state_dict and JAX PyTrees.
+   Supports automatic 2D -> 3D tensor fusion for intra-shell SwiGLU weights and shortcuts.
 2. Autonomous Checkpoint Discovery (Zero Hardcoded Step Numbers):
    Automatically inspects local and Google Drive/cloud directories to identify the most advanced checkpoint.
 3. Asynchronous Background Checkpoint Manager (AsyncCheckpointManager):
-   Offloads parameter conversion, PyTorch disk serialization, and remote Google Drive upload
-   to an independent CPU thread pool, eliminating TPU latency stalls (0ms I/O pause).
+   Offloads parameter conversion, PyTorch disk serialization, and remote cloud upload
+   to an independent CPU thread pool, eliminating TPU latency stalls (0ms TPU pause).
 """
 
 import os
@@ -21,6 +22,7 @@ from typing import Dict, Tuple, Optional, Any, List
 import concurrent.futures
 
 import numpy as np
+
 try:
     import torch
     HAS_TORCH = True
@@ -33,7 +35,7 @@ except (ImportError, SystemError, Exception) as e:
 import jax
 import jax.numpy as jnp
 
-from .v4_model import ModelConfigV4, precompute_axonal_indices
+from .v5_model import ModelConfigV5, PRESETS_V5, init_params_v5, generate_small_world_indices
 
 
 def _safe_torch_tensor(arr):
@@ -49,21 +51,7 @@ def _safe_torch_tensor(arr):
         np_f32 = np.array(arr, dtype=np.float32)
         return torch.from_numpy(np_f32).to(torch.bfloat16)
     np_arr = np.array(arr)
-    if str(np_arr.dtype) == "bfloat16":
-        np_arr = np_arr.astype(np.float32)
-        return torch.from_numpy(np_arr).to(torch.bfloat16)
     return torch.from_numpy(np_arr)
-
-
-def normalize_torch_key_to_jax(k: str) -> str:
-    """Normalizes PyTorch checkpoint parameter keys to JAX parameter naming convention."""
-    k = k.replace("module.", "")
-    k = k.replace("sensory_dnn.", "sensory.")
-    k = k.replace("volumetric_core.", "core.")
-    k = k.replace("motor_dnn.", "motor.")
-    if k == "motor.motor_phase_embed.weight":
-        k = "motor.phase_embed.weight"
-    return k
 
 
 def save_jax_to_torch_pt(
@@ -72,34 +60,34 @@ def save_jax_to_torch_pt(
     save_path: str,
     meta: Optional[dict] = None,
 ) -> None:
-    """Converts JAX PyTree into dual-key PyTorch state_dict and saves to .pt format."""
+    """Converts JAX PyTree into PyTorch state_dict and saves to .pt format."""
     if not HAS_TORCH:
         raise RuntimeError(
-            f"PyTorch is required to save .pt checkpoints: {_TORCH_ERR}.\n"
-            "If on Google Colab, please do 'Runtime -> Restart session' after pip install."
+            f"PyTorch is required to save .pt checkpoints: {_TORCH_ERR}."
         )
     os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
     torch_state: Dict[str, torch.Tensor] = {}
     for k, v in params.items():
         t = _safe_torch_tensor(v)
         torch_state[k] = t
-        py_k = (
-            k.replace("sensory.", "sensory_dnn.")
-            .replace("core.", "volumetric_core.")
-            .replace("motor.", "motor_dnn.")
-        )
-        torch_state[py_k] = t
-        if "motor.phase_embed." in k:
-            torch_state["motor_dnn.phase_embed.weight"] = t
-            torch_state["motor_dnn.motor_phase_embed.weight"] = t
 
     torch_state["core.src_indices"] = _safe_torch_tensor(buffers[0])
     torch_state["core.dst_indices"] = _safe_torch_tensor(buffers[1])
-    torch_state["volumetric_core.src_indices"] = _safe_torch_tensor(buffers[0])
-    torch_state["volumetric_core.dst_indices"] = _safe_torch_tensor(buffers[1])
 
-    tmp_path = save_path + ".tmp"
-    torch.save(torch_state, tmp_path)
+    checkpoint = {
+        "model_state": torch_state,
+        "step": meta.get("step", 0) if meta else 0,
+        "loss": meta.get("loss", 0.0) if meta else 0.0,
+        "eval_loss": meta.get("eval_loss", 0.0) if meta else 0.0,
+        "timestamp": time.time(),
+    }
+    if meta:
+        for mk, mv in meta.items():
+            if mk not in checkpoint:
+                checkpoint[mk] = mv
+
+    tmp_path = f"{save_path}.tmp.{os.getpid()}.{time.time_ns()}"
+    torch.save(checkpoint, tmp_path)
     os.replace(tmp_path, save_path)
 
     if meta:
@@ -108,217 +96,307 @@ def save_jax_to_torch_pt(
             json.dump(meta, f, indent=2)
 
 
-def load_torch_pt_to_jax(
-    ckpt_path: str, config: Optional[ModelConfigV4] = None
-) -> Tuple[Dict[str, jnp.ndarray], Tuple[jnp.ndarray, jnp.ndarray]]:
-    """Loads a PyTorch .pt checkpoint directly into JAX parameter dictionary."""
+def _to_numpy(t):
+    """Safely converts a PyTorch tensor (including bfloat16) or array to NumPy float32/float64."""
+    if hasattr(t, "dtype") and str(t.dtype).endswith("bfloat16"):
+        return t.to(torch.float32).numpy()
+    if hasattr(t, "numpy"):
+        return t.numpy()
+    return np.asarray(t)
+
+
+def adapt_and_load_checkpoint_weights(
+    ckpt: Dict[str, Any],
+    target_params: Dict[str, jnp.ndarray],
+    target_dtype,
+    config: ModelConfigV5,
+) -> int:
+    """Adapts checkpoint weights from any previous run (PyTorch state_dict or JAX params, 2D or 3D SwiGLU)."""
+    raw_state = ckpt.get("model_state") or ckpt.get("params") or ckpt.get("state_dict") or ckpt
+    if not isinstance(raw_state, dict):
+        return 0
+
+    restored_keys = set()
+    K = config.num_shells
+    s_dim = config.surface_dim
+
+    # 1. Fuse 2D Intra-Shell SwiGLU weights into 3D tensors if not already 3D
+    if "core.intra_swiglu.w_gate" in target_params and "core.intra_swiglu.w_gate" not in raw_state:
+        gates, vals, downs, norms = [], [], [], []
+        for k in range(K):
+            for pfx in ["volumetric_core.intra_shell_swiglu", "core.intra_swiglu", "intra_swiglu"]:
+                g_key = f"{pfx}.{k}.fc_gate.weight"
+                if g_key in raw_state:
+                    g = _to_numpy(raw_state[g_key])
+                    gates.append(g.T if g.shape == (s_dim * 2, s_dim) else g)
+                    v = _to_numpy(raw_state[f"{pfx}.{k}.fc_val.weight"])
+                    vals.append(v.T if v.shape == (s_dim * 2, s_dim) else v)
+                    d = _to_numpy(raw_state[f"{pfx}.{k}.fc_down.weight"])
+                    downs.append(d.T if d.shape == (s_dim, s_dim * 2) else d)
+                    break
+            for n_pfx in ["volumetric_core.intra_norms", "core.intra_norms", "intra_norms"]:
+                n_key = f"{n_pfx}.{k}.weight"
+                if n_key in raw_state:
+                    norms.append(_to_numpy(raw_state[n_key]))
+                    break
+
+        if len(gates) == K:
+            target_params["core.intra_swiglu.w_gate"] = jnp.asarray(np.stack(gates, axis=0), dtype=target_dtype)
+            target_params["core.intra_swiglu.w_val"] = jnp.asarray(np.stack(vals, axis=0), dtype=target_dtype)
+            target_params["core.intra_swiglu.w_down"] = jnp.asarray(np.stack(downs, axis=0), dtype=target_dtype)
+            restored_keys.update(["core.intra_swiglu.w_gate", "core.intra_swiglu.w_val", "core.intra_swiglu.w_down"])
+        if len(norms) == K:
+            target_params["core.intra_norms.weight"] = jnp.asarray(np.stack(norms, axis=0), dtype=target_dtype)
+            restored_keys.add("core.intra_norms.weight")
+
+    # 2. General prefix and name translations (ordered from most specific to general)
+    key_translations = [
+        # Multimodal perceptual projector mappings (PyTorch -> JAX)
+        ("perceptual_projector.0.weight", "perceptual.norm_in.weight"),
+        ("perceptual_projector.1.weight", "perceptual.linear.weight"),
+        ("perceptual_projector.2.fc_gate.weight", "perceptual.swiglu.fc_gate.weight"),
+        ("perceptual_projector.2.fc_val.weight", "perceptual.swiglu.fc_val.weight"),
+        ("perceptual_projector.2.fc_down.weight", "perceptual.swiglu.fc_down.weight"),
+        ("perceptual_projector.3.weight", "perceptual.norm_out.weight"),
+        # Specific motor SwiGLU projections (PyTorch motor_decoder.motor_swiglu.* or motor.motor_swiglu.*)
+        ("motor_decoder.motor_swiglu.", "motor.swiglu."),
+        ("motor_decoder.swiglu.", "motor.swiglu."),
+        ("motor.motor_swiglu.", "motor.swiglu."),
+        ("motor_decoder.fc_gate.weight", "motor.swiglu.fc_gate.weight"),
+        ("motor_decoder.fc_val.weight", "motor.swiglu.fc_val.weight"),
+        ("motor_decoder.fc_down.weight", "motor.swiglu.fc_down.weight"),
+        ("motor.fc_gate.weight", "motor.swiglu.fc_gate.weight"),
+        ("motor.fc_val.weight", "motor.swiglu.fc_val.weight"),
+        ("motor.fc_down.weight", "motor.swiglu.fc_down.weight"),
+        # Tied embedding projections
+        ("motor_decoder.head.weight", "sensory.embedding.weight"),
+        ("motor.head.weight", "sensory.embedding.weight"),
+        # General module prefixes (evaluated after specific prefixes above)
+        ("sensory_dnn.", "sensory."),
+        ("volumetric_core.", "core."),
+        ("motor_decoder.", "motor."),
+    ]
+
+    for raw_k, raw_v in raw_state.items():
+        v = _to_numpy(raw_v)
+        target_k = raw_k
+        if target_k not in target_params:
+            for old_p, new_p in key_translations:
+                if target_k.startswith(old_p):
+                    target_k = target_k.replace(old_p, new_p, 1)
+                    break
+
+        if target_k in target_params and target_k not in restored_keys:
+            t_shape = target_params[target_k].shape
+            if t_shape == v.shape:
+                target_params[target_k] = jnp.asarray(v, dtype=target_dtype)
+                restored_keys.add(target_k)
+            elif t_shape == v.T.shape:
+                target_params[target_k] = jnp.asarray(v.T, dtype=target_dtype)
+                restored_keys.add(target_k)
+            elif (
+                target_k in ("sensory.pos_embed.weight", "motor.phase_embed.weight")
+                and v.ndim == 2
+                and t_shape[1] == v.shape[1]
+            ):
+                rows = min(t_shape[0], v.shape[0])
+                buf = np.array(target_params[target_k])
+                buf[:rows] = v[:rows]
+                target_params[target_k] = jnp.asarray(buf, dtype=target_dtype)
+                restored_keys.add(target_k)
+
+    # Weight transferability: legacy checkpoints share one radial_up across inward/outward waves
+    has_radial_up_out = isinstance(raw_state, dict) and any(
+        k.endswith("radial_up_out.weight") for k in raw_state.keys()
+    )
+    if (
+        not has_radial_up_out
+        and "core.radial_up_out.weight" in target_params
+        and "core.radial_up.weight" in target_params
+    ):
+        target_params["core.radial_up_out.weight"] = target_params["core.radial_up.weight"]
+
+    missing = [k for k in target_params.keys() if k not in restored_keys and k != "core.radial_up_out.weight"]
+    if missing:
+        print(f"ℹ️ [adapt_weights] Unmapped JAX parameter arrays ({len(missing)}/{len(target_params)}): {missing}")
+
+    return len(restored_keys)
+
+
+def adapt_jax_to_torch_state_dict(
+    jax_state: Dict[str, Any],
+    config: ModelConfigV5,
+) -> Dict[str, Any]:
+    """
+    Losslessly converts JAX parameter dictionary (fused 3D SwiGLU & norms)
+    into standard PyTorch CerebroSpheroidV5 state_dict (ModuleList keys).
+    """
     if not HAS_TORCH:
-        raise RuntimeError(
-            f"PyTorch is required to load .pt checkpoint '{ckpt_path}': {_TORCH_ERR}.\n"
-            "If on Google Colab, please do 'Runtime -> Restart session' after pip install."
-        )
+        raise RuntimeError(f"PyTorch is required for checkpoint conversion: {_TORCH_ERR}")
+
+    raw_state = jax_state.get("model_state", jax_state) if isinstance(jax_state, dict) else jax_state
+    new_state: Dict[str, Any] = {}
+    K = config.num_shells
+    s_dim = config.surface_dim
+
+    # 1. Unpack 3D intra-shell swiglu & norms into ModuleList keys
+    if "core.intra_swiglu.w_gate" in raw_state:
+        g = _safe_torch_tensor(raw_state["core.intra_swiglu.w_gate"])
+        v = _safe_torch_tensor(raw_state["core.intra_swiglu.w_val"])
+        d = _safe_torch_tensor(raw_state["core.intra_swiglu.w_down"])
+        for k in range(K):
+            g_k = g[k].t() if g[k].shape == (s_dim, s_dim * 2) else g[k]
+            v_k = v[k].t() if v[k].shape == (s_dim, s_dim * 2) else v[k]
+            d_k = d[k].t() if d[k].shape == (s_dim * 2, s_dim) else d[k]
+            new_state[f"volumetric_core.intra_shell_swiglu.{k}.fc_gate.weight"] = g_k
+            new_state[f"volumetric_core.intra_shell_swiglu.{k}.fc_val.weight"] = v_k
+            new_state[f"volumetric_core.intra_shell_swiglu.{k}.fc_down.weight"] = d_k
+
+    if "core.intra_norms.weight" in raw_state:
+        norms = _safe_torch_tensor(raw_state["core.intra_norms.weight"])
+        for k in range(K):
+            new_state[f"volumetric_core.intra_norms.{k}.weight"] = norms[k]
+
+    # 2. Module prefix & name translations
+    pfx_map = [
+        ("motor.swiglu.fc_gate.weight", "motor_decoder.motor_swiglu.fc_gate.weight"),
+        ("motor.swiglu.fc_val.weight", "motor_decoder.motor_swiglu.fc_val.weight"),
+        ("motor.swiglu.fc_down.weight", "motor_decoder.motor_swiglu.fc_down.weight"),
+        ("perceptual.norm_in.weight", "perceptual_projector.0.weight"),
+        ("perceptual.linear.weight", "perceptual_projector.1.weight"),
+        ("perceptual.swiglu.fc_gate.weight", "perceptual_projector.2.fc_gate.weight"),
+        ("perceptual.swiglu.fc_val.weight", "perceptual_projector.2.fc_val.weight"),
+        ("perceptual.swiglu.fc_down.weight", "perceptual_projector.2.fc_down.weight"),
+        ("perceptual.norm_out.weight", "perceptual_projector.3.weight"),
+        ("sensory.", "sensory_dnn."),
+        ("core.", "volumetric_core."),
+        ("motor.", "motor_decoder."),
+    ]
+
+    for k, val in raw_state.items():
+        if k in (
+            "core.intra_swiglu.w_gate",
+            "core.intra_swiglu.w_val",
+            "core.intra_swiglu.w_down",
+            "core.intra_norms.weight",
+            "core.src_indices",
+            "core.dst_indices",
+        ):
+            continue
+        mapped_k = k
+        for old_p, new_p in pfx_map:
+            if mapped_k.startswith(old_p):
+                mapped_k = mapped_k.replace(old_p, new_p, 1)
+                break
+        new_state[mapped_k] = _safe_torch_tensor(val)
+
+    return new_state
+
+
+def load_torch_pt_to_jax(
+    ckpt_path: str,
+    config: ModelConfigV5,
+    target_dtype=jnp.float32,
+    seed: int = 42,
+) -> Tuple[Dict[str, jnp.ndarray], Tuple[jnp.ndarray, jnp.ndarray], dict]:
+    """Loads a PyTorch .pt checkpoint directly into JAX V5 parameter dictionary."""
+    if not HAS_TORCH:
+        raise RuntimeError(f"PyTorch is required to load .pt checkpoint: {_TORCH_ERR}")
     if not os.path.exists(ckpt_path):
         raise FileNotFoundError(f"Checkpoint not found at: {ckpt_path}")
 
-    state_dict = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-    if isinstance(state_dict, dict) and "model" in state_dict:
-        state_dict = state_dict["model"]
-    elif isinstance(state_dict, dict) and "model_state_dict" in state_dict:
-        state_dict = state_dict["model_state_dict"]
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    params, buffers = init_params_v5(jax.random.PRNGKey(seed), config)
+    restored = adapt_and_load_checkpoint_weights(ckpt, params, target_dtype, config)
+    print(f"✓ Restored & adapted {restored}/{len(params)} parameter arrays into JAX V5 engine")
 
-    # Pre-initialize fallback reference parameters if config is provided
-    ref_params = None
-    if config is not None:
+    meta = {}
+    if isinstance(ckpt, dict):
+        for k in ["step", "loss", "eval_loss", "best_eval_loss", "timestamp", "config"]:
+            if k in ckpt:
+                meta[k] = ckpt[k]
+    json_path = ckpt_path.replace(".pt", ".json")
+    if os.path.exists(json_path):
         try:
-            ref_params, _ = init_v4_params(config, jax.random.PRNGKey(0))
+            with open(json_path) as f:
+                meta.update(json.load(f))
         except Exception:
-            ref_params = None
+            pass
 
-    params: Dict[str, jnp.ndarray] = {}
-    for k, v in state_dict.items():
-        if k in ("core.src_indices", "core.dst_indices", "volumetric_core.src_indices", "volumetric_core.dst_indices"):
-            continue
-
-        nk = normalize_torch_key_to_jax(k)
-        if hasattr(v, "dtype") and str(v.dtype).endswith("bfloat16"):
-            arr = jnp.array(v.detach().cpu().float().numpy(), dtype=jnp.bfloat16)
-        else:
-            arr = jnp.array(v.detach().cpu().numpy())
-
-        # Enforce contractive boundary on premotor plan decay
-        if nk == "motor.plan_decay":
-            arr = jnp.clip(arr, 0.0, 0.90)
-
-        # If ref_params is known, verify shape compatibility
-        if ref_params is not None and nk in ref_params:
-            if arr.shape == ref_params[nk].shape:
-                params[nk] = arr
-            else:
-                print(f"⚠️ [checkpoint] Shape mismatch for {nk}: file {arr.shape} vs expected {ref_params[nk].shape}. Using reference.")
-                params[nk] = ref_params[nk]
-        else:
-            params[nk] = arr
-
-    # If reference parameters were created, fill any missing keys
-    if ref_params is not None:
-        missing = set(ref_params.keys()) - set(params.keys())
-        if missing:
-            print(f"⚠️ [checkpoint] Initializing {len(missing)} missing key(s) from reference: {list(missing)[:5]}")
-            for m_key in missing:
-                params[m_key] = ref_params[m_key]
-
-    if config is None:
-        shells = 16
-        tracts = 40
-    else:
-        shells = config.num_shells
-        tracts = config.num_shortcut_tracts
-
-    default_src, default_dst = precompute_axonal_indices(shells, tracts)
-    src_idx = jnp.array(state_dict.get("core.src_indices", state_dict.get("volumetric_core.src_indices", default_src)))
-    dst_idx = jnp.array(state_dict.get("core.dst_indices", state_dict.get("volumetric_core.dst_indices", default_dst)))
-    buffers = (src_idx.astype(jnp.int32), dst_idx.astype(jnp.int32))
-
-    return params, buffers
+    return params, buffers, meta
 
 
 def discover_latest_checkpoint(
-    search_dirs: List[str],
-    preferred_pattern: str = r"step_(\d+)\.pt",
-    target_preference: str = "latest",
-) -> Tuple[Optional[str], int, Optional[dict]]:
-    """
-    Autonomously scans directories to locate the most advanced checkpoint.
-    Supports both step-numbered checkpoints and named milestones ('best', 'latest').
-    Returns: (checkpoint_path, latest_step, metadata_dict)
-    """
-    latest_path: Optional[str] = None
-    max_step: int = 0
-    latest_meta: Optional[dict] = None
+    ckpt_dir: str,
+    preset: Optional[str] = None,
+) -> Tuple[Optional[str], int, float]:
+    """Discovers the most advanced checkpoint in ckpt_dir."""
+    if not os.path.exists(ckpt_dir):
+        return None, 0, float("inf")
 
-    # If target_preference is "best", check named best milestones first
-    if target_preference == "best":
-        candidate_names = [
-            "cerebro_spheroid_v4_best.pt",
-            "cerebro_spheroid_v4_jax_best.pt",
-            "best.pt",
-        ]
-        for d in search_dirs:
-            if not os.path.exists(d):
-                continue
-            for fname in candidate_names:
-                candidate_file = os.path.join(d, fname)
-                if os.path.exists(candidate_file):
-                    step_val = 0
-                    meta = {}
-                    for meta_cand in [candidate_file.replace(".pt", ".meta.json"), candidate_file.replace(".pt", ".json")]:
-                        if os.path.exists(meta_cand):
-                            try:
-                                with open(meta_cand, "r") as f:
-                                    meta = json.load(f)
-                                    step_val = int(meta.get("step", 0))
-                                    if step_val > 0:
-                                        break
-                            except Exception:
-                                pass
-                    if step_val == 0 and HAS_TORCH:
-                        try:
-                            st = torch.load(candidate_file, map_location="cpu", weights_only=False)
-                            if isinstance(st, dict) and "step" in st:
-                                step_val = int(st["step"])
-                            elif isinstance(st, dict) and "meta" in st and "step" in st["meta"]:
-                                step_val = int(st["meta"]["step"])
-                        except Exception:
-                            pass
-                    if step_val > 0 or latest_path is None:
-                        latest_path = candidate_file
-                        max_step = step_val
-                        latest_meta = meta
-                        print(f"🎯 [checkpoint] Prioritizing champion 'best' milestone: {latest_path} (Step {max_step:,})")
-                        return latest_path, max_step, latest_meta
+    candidates = glob.glob(os.path.join(ckpt_dir, "*.pt"))
+    if not candidates:
+        return None, 0, float("inf")
 
-    for d in search_dirs:
-        if not os.path.exists(d):
+    best_path = None
+    max_step = -1
+    best_loss = float("inf")
+
+    # Priority 1: Checkpoint matching preset name
+    for c in candidates:
+        fname = os.path.basename(c)
+        if preset and preset not in fname and "latest" not in fname:
             continue
-        # Scan for step-numbered checkpoints
-        for pt_file in glob.glob(os.path.join(d, "*.pt")):
-            match = re.search(preferred_pattern, os.path.basename(pt_file))
-            if match:
-                step_num = int(match.group(1))
-                if step_num > max_step:
-                    max_step = step_num
-                    latest_path = pt_file
-
-    candidate_names = [
-        "cerebro_spheroid_v4_latest.pt",
-        "cerebro_spheroid_v4_jax_latest.pt",
-        "latest.pt",
-    ]
-
-    for d in search_dirs:
-        if not os.path.exists(d):
-            continue
-        for fname in candidate_names:
-            candidate_file = os.path.join(d, fname)
-            if os.path.exists(candidate_file):
-                step_val = 0
-                meta = {}
-                for meta_cand in [candidate_file.replace(".pt", ".meta.json"), candidate_file.replace(".pt", ".json")]:
-                    if os.path.exists(meta_cand):
-                        try:
-                            with open(meta_cand, "r") as f:
-                                meta = json.load(f)
-                                step_val = int(meta.get("step", 0))
-                                if step_val > 0:
-                                    break
-                        except Exception:
-                            pass
-                if step_val == 0 and HAS_TORCH:
-                    try:
-                        st = torch.load(candidate_file, map_location="cpu", weights_only=False)
-                        if isinstance(st, dict) and "step" in st:
-                            step_val = int(st["step"])
-                        elif isinstance(st, dict) and "meta" in st and "step" in st["meta"]:
-                            step_val = int(st["meta"]["step"])
-                    except Exception:
-                        pass
-                if step_val >= max_step and step_val > 0:
-                    max_step = step_val
-                    latest_path = candidate_file
-                    latest_meta = meta
-
-    if latest_path and latest_meta is None:
-        json_path = latest_path.replace(".pt", ".json")
-        if os.path.exists(json_path):
+        step = -1
+        loss = float("inf")
+        # Try sidecar json first
+        j_path = c.replace(".pt", ".json")
+        if os.path.exists(j_path):
             try:
-                with open(json_path, "r") as f:
-                    latest_meta = json.load(f)
+                with open(j_path) as jf:
+                    data = json.load(jf)
+                    step = int(data.get("step", -1))
+                    loss = float(data.get("eval_loss", data.get("loss", float("inf"))))
             except Exception:
                 pass
+        if step < 0:
+            match = re.search(r"step[_-]?(\d+)", fname)
+            if match:
+                step = int(match.group(1))
+        if "latest" in fname and step < 0:
+            step = 9000  # Default fallback step for latest
 
-    return latest_path, max_step, latest_meta
+        if step > max_step:
+            max_step = step
+            best_path = c
+            best_loss = loss
+
+    return best_path, max(0, max_step), best_loss
 
 
 class AsyncCheckpointManager:
-    """Manages asynchronous, non-blocking parameter serialization and cloud synchronization."""
+    """Non-blocking background thread worker for asynchronous checkpoint serialization and cloud upload."""
 
     def __init__(
         self,
+        local_dir: str,
         target_dir: str,
-        local_scratch_dir: str = "/tmp/cerebro_ckpts",
         cloud_sync: bool = False,
-        cloud_url: Optional[str] = None,
-        cloud_token: Optional[str] = None,
+        cloud_url: str = "https://bioflo.in/api/cerebro/sync.php",
+        cloud_token: str = "CerebroSpheroid_Sync_Secure_2026",
+        min_cloud_upload_interval_sec: float = 0.0,
     ):
+        self.local_dir = local_dir
         self.target_dir = target_dir
-        self.local_dir = local_scratch_dir
         self.cloud_sync = cloud_sync
         self.cloud_url = cloud_url
         self.cloud_token = cloud_token
-        os.makedirs(self.target_dir, exist_ok=True)
-        os.makedirs(self.local_dir, exist_ok=True)
-        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+        self.min_cloud_upload_interval_sec = max(0.0, float(min_cloud_upload_interval_sec))
+        self._last_cloud_upload_at: Dict[str, float] = {}
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="ckpt_async")
         self._last_future: Optional[concurrent.futures.Future] = None
+        os.makedirs(self.local_dir, exist_ok=True)
+        os.makedirs(self.target_dir, exist_ok=True)
 
     def _worker(
         self,
@@ -326,111 +404,64 @@ class AsyncCheckpointManager:
         buffers_cpu: Tuple[np.ndarray, np.ndarray],
         filename: str,
         meta_dict: Optional[dict],
+        force_cloud: bool = False,
     ):
         try:
             local_path = os.path.join(self.local_dir, filename)
+            save_jax_to_torch_pt(params_cpu, buffers_cpu, local_path, meta=meta_dict)
+
+            # Atomically mirror to target_dir if different
             target_path = os.path.join(self.target_dir, filename)
-
-            torch_state: Dict[str, torch.Tensor] = {}
-            for k, v in params_cpu.items():
-                t = _safe_torch_tensor(v)
-                torch_state[k] = t
-                py_k = (
-                    k.replace("sensory.", "sensory_dnn.")
-                    .replace("core.", "volumetric_core.")
-                    .replace("motor.", "motor_dnn.")
-                )
-                torch_state[py_k] = t
-                if "motor.phase_embed." in k:
-                    torch_state["motor_dnn.phase_embed.weight"] = t
-                    torch_state["motor_dnn.motor_phase_embed.weight"] = t
-
-            torch_state["core.src_indices"] = _safe_torch_tensor(buffers_cpu[0])
-            torch_state["core.dst_indices"] = _safe_torch_tensor(buffers_cpu[1])
-            torch_state["volumetric_core.src_indices"] = _safe_torch_tensor(buffers_cpu[0])
-            torch_state["volumetric_core.dst_indices"] = _safe_torch_tensor(buffers_cpu[1])
-
-            tmp_local = local_path + ".tmp"
-            torch.save(torch_state, tmp_local)
-            os.replace(tmp_local, local_path)
-
-            if meta_dict:
+            if os.path.abspath(local_path) != os.path.abspath(target_path):
+                tmp_target = f"{target_path}.tmp.{os.getpid()}.{time.time_ns()}"
+                shutil.copyfile(local_path, tmp_target)
+                os.replace(tmp_target, target_path)
                 local_json = local_path.replace(".pt", ".json")
-                with open(local_json, "w") as f:
-                    json.dump(meta_dict, f, indent=2)
-                target_json = os.path.join(self.target_dir, os.path.basename(local_json))
-                shutil.copyfile(local_json, target_json)
+                if os.path.exists(local_json):
+                    tmp_json = f"{target_path.replace('.pt', '.json')}.tmp.{os.getpid()}.{time.time_ns()}"
+                    shutil.copyfile(local_json, tmp_json)
+                    os.replace(tmp_json, target_path.replace(".pt", ".json"))
 
-            tmp_target = target_path + ".tmp"
-            shutil.copyfile(local_path, tmp_target)
-            os.replace(tmp_target, target_path)
-
-            # Ensure both naming conventions (jax and non-jax) exist in target_dir
-            if "latest" in filename:
-                alt_name = filename.replace("_jax_latest.pt", "_latest.pt") if "_jax_latest" in filename else filename.replace("_latest.pt", "_jax_latest.pt")
-                if alt_name != filename:
-                    alt_target = os.path.join(self.target_dir, alt_name)
-                    try:
-                        shutil.copyfile(target_path, alt_target + ".tmp")
-                        os.replace(alt_target + ".tmp", alt_target)
-                        if meta_dict:
-                            shutil.copyfile(target_json, alt_target.replace(".pt", ".json"))
-                    except Exception:
-                        pass
-            elif "best" in filename:
-                alt_name = filename.replace("_jax_best.pt", "_best.pt") if "_jax_best" in filename else filename.replace("_best.pt", "_jax_best.pt")
-                if alt_name != filename:
-                    alt_target = os.path.join(self.target_dir, alt_name)
-                    try:
-                        shutil.copyfile(target_path, alt_target + ".tmp")
-                        os.replace(alt_target + ".tmp", alt_target)
-                        if meta_dict:
-                            shutil.copyfile(target_json, alt_target.replace(".pt", ".json"))
-                    except Exception:
-                        pass
-
-            # Optional automatic mirror to Google Drive if mounted
-            drive_dir = "/content/drive/MyDrive/cerebro_checkpoints"
-            if os.path.exists("/content/drive/MyDrive") and os.path.isdir("/content/drive/MyDrive"):
-                try:
-                    os.makedirs(drive_dir, exist_ok=True)
-                    drive_target = os.path.join(drive_dir, filename)
-                    shutil.copyfile(target_path, drive_target + ".tmp")
-                    os.replace(drive_target + ".tmp", drive_target)
-                    if meta_dict:
-                        shutil.copyfile(target_json, drive_target.replace(".pt", ".json"))
-                except Exception:
-                    pass
-
-            # Prune scratch disk to prevent unbounded local disk growth
+            # Prune scratch disk
             self._prune_scratch()
 
-            # Mirror to bioflo.in if cloud sync is active
+            # Upload to cloud if active (rate-limit non-final uploads so high-step/s runs do not saturate network)
             if self.cloud_sync and ("latest" in filename or "best" in filename):
-                try:
-                    from src.cloud_sync import push_checkpoint_async
-                    step_val = int(meta_dict.get("step", 0)) if meta_dict else 0
-                    loss_val = float(meta_dict.get("eval_loss", meta_dict.get("loss", 0.0))) if meta_dict else 0.0
-                    target_type = "best" if "best" in filename else "latest"
-                    push_checkpoint_async(
-                        local_path,
-                        step=step_val,
-                        loss=loss_val,
-                        target_type=target_type,
-                        url=self.cloud_url,
-                        token=self.cloud_token,
-                    )
-                except Exception as sync_err:
-                    print(f"⚠️ [CloudSync Error]: {sync_err}")
+                target_type = "best" if "best" in filename else "latest"
+                now = time.time()
+                last_up = self._last_cloud_upload_at.get(target_type, 0.0)
+                if force_cloud or (self.min_cloud_upload_interval_sec <= 0.0) or ((now - last_up) >= self.min_cloud_upload_interval_sec):
+                    try:
+                        from src.cloud_sync import push_checkpoint_async
+                        step_val = int(meta_dict.get("step", 0)) if meta_dict else 0
+                        if target_type == "best":
+                            raw_loss = meta_dict.get("eval_loss", meta_dict.get("loss", 0.0)) if meta_dict else 0.0
+                        else:
+                            raw_loss = meta_dict.get("loss", meta_dict.get("eval_loss", 0.0)) if meta_dict else 0.0
+                        loss_f = float(raw_loss) if raw_loss is not None else 0.0
+                        loss_val = loss_f if (loss_f == loss_f and abs(loss_f) < 1e30) else 0.0
+                        sync_model = meta_dict.get("sync_model") if meta_dict else None
+                        push_checkpoint_async(
+                            local_path,
+                            step=step_val,
+                            loss=loss_val,
+                            target_type=target_type,
+                            model=sync_model,
+                            url=self.cloud_url,
+                            token=self.cloud_token,
+                        )
+                        self._last_cloud_upload_at[target_type] = now
+                    except Exception as sync_err:
+                        print(f"⚠️ [cloud_sync] Async upload notice: {sync_err}")
         except Exception as err:
             print(f"⚠️ [AsyncCheckpoint Error]: {err}")
 
     def _prune_scratch(self):
         try:
             pt_files = glob.glob(os.path.join(self.local_dir, "*_step_*.pt"))
-            if len(pt_files) > 2:
+            if len(pt_files) > 3:
                 pt_files.sort(key=os.path.getmtime)
-                for old_f in pt_files[:-2]:
+                for old_f in pt_files[:-3]:
                     try:
                         os.remove(old_f)
                         old_j = old_f.replace(".pt", ".json")
@@ -452,12 +483,11 @@ class AsyncCheckpointManager:
         """Dispatches an asynchronous save job. Returns True if job was queued."""
         is_critical = ("best" in filename) or ("step_" in filename) or block_if_busy
         if not is_critical and (self._last_future is not None and not self._last_future.done()):
-            return False  # Prior non-critical save is still writing; skip redundant intermediate queue
+            return False
 
-        # Rapid CPU memory hand-off (<15ms)
-        params_cpu = {k: np.array(v) for k, v in params.items()}
-        buffers_cpu = (np.array(buffers[0]), np.array(buffers[1]))
-        self._last_future = self.executor.submit(self._worker, params_cpu, buffers_cpu, filename, meta_dict)
+        params_cpu = jax.device_get(params)
+        buffers_cpu = jax.device_get(buffers)
+        self._last_future = self.executor.submit(self._worker, params_cpu, buffers_cpu, filename, meta_dict, False)
         return True
 
     def flush(
@@ -468,22 +498,21 @@ class AsyncCheckpointManager:
         meta_dict: Optional[dict] = None,
     ):
         """Synchronously flushes state (used on shutdown / emergency exit)."""
-        params_cpu = {k: np.array(v) for k, v in params.items()}
-        buffers_cpu = (np.array(buffers[0]), np.array(buffers[1]))
-        self._worker(params_cpu, buffers_cpu, filename, meta_dict)
+        params_cpu = jax.device_get(params)
+        buffers_cpu = jax.device_get(buffers)
+        self._worker(params_cpu, buffers_cpu, filename, meta_dict, True)
         if self.cloud_sync:
             try:
                 from src.cloud_sync import wait_for_in_flight_uploads
-                wait_for_in_flight_uploads(timeout=60.0)
+                wait_for_in_flight_uploads(timeout=30.0)
             except Exception:
                 pass
 
     def shutdown(self, wait: bool = True):
-        """Waits for all in-flight disk and cloud writes to complete."""
         self.executor.shutdown(wait=wait)
         if wait and self.cloud_sync:
             try:
                 from src.cloud_sync import wait_for_in_flight_uploads
-                wait_for_in_flight_uploads(timeout=60.0)
+                wait_for_in_flight_uploads(timeout=30.0)
             except Exception:
                 pass

@@ -1,0 +1,50 @@
+[
+  {
+    "step": 37200,
+    "loss": 3.3892,
+    "eval_loss": null,
+    "ema_loss": null,
+    "delta": null,
+    "status": "SMOOTH_DESCENT",
+    "timestamp": "2026-11-12T09:43:19+00:00",
+    "source": "tpu",
+    "md5": null,
+    "size_bytes": null
+  },
+  {
+    "step": 45000,
+    "loss": 2.9557,
+    "eval_loss": null,
+    "ema_loss": null,
+    "delta": null,
+    "status": "SMOOTH_DESCENT",
+    "timestamp": "2026-11-12T09:43:19+00:00",
+    "source": "colab",
+    "md5": null,
+    "size_bytes": null
+  },
+  {
+    "step": 45750,
+    "loss": 2.751503,
+    "eval_loss": null,
+    "ema_loss": null,
+    "delta": null,
+    "status": "SMOOTH_DESCENT",
+    "timestamp": "2026-11-12T09:43:12+00:00",
+    "source": "colab",
+    "md5": "8ba55f084b9aa8485b92ea526bb03c9d",
+    "size_bytes": 193878317
+  },
+  {
+    "step": 46000,
+    "loss": 2.719549,
+    "eval_loss": null,
+    "ema_loss": null,
+    "delta": null,
+    "status": "SMOOTH_DESCENT",
+    "timestamp": "2026-11-12T09:46:41+00:00",
+    "source": "colab",
+    "md5": "a2a0267ce70c276a31aa289fe28e0760",
+    "size_bytes": 193878317
+  }
+]

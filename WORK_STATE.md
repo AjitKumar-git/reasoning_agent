@@ -1,28 +1,51 @@
 # Agent Work State & Activity Tracker
 
-> **Status**: 🟡 `IN_PROGRESS` | **Last Updated**: `2026-11-10T00:41:34.695327+05:30` | **Session**: `f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2`
+> **Status**: 🟡 `IN_PROGRESS` | **Last Updated**: `2026-11-14T09:36:36.888973+05:30` | **Session**: `06bf9452-332e-4cd0-92a8-b233d6bd46ca`
 
 ## Current / Active Objective
-**Goal**: try finetuning the model locally first
+**Goal**: is starcoder still gold standard to rival anthropic or openai?
 
 - **Phase**: `executing`
-- **Current Task**: Executed manage_task: manage_task
+- **Current Task**: Executed run_command: Check archive in .gitignore
 
 ## Summary of Completed Work
-The 300-step Supervised Fine-Tuning (SFT) run on your local laptop GPU has completed. Here is the full breakdown of results:
+**No, StarCoder is no longer the gold standard.** It has been completely superseded by newer open-weights models and is multiple generations behind Anthropic and OpenAI.
 
 ## Modified Files
+- [`src/__init__.py`](src/__init__.py)
+- [`../../../../.gemini/antigravity/brain/d59f7c6a-8bf9-4b08-8476-c661733241be/cerebro_spheroid_v4_llama3_parity_plan.md`](../../../../.gemini/antigravity/brain/d59f7c6a-8bf9-4b08-8476-c661733241be/cerebro_spheroid_v4_llama3_parity_plan.md)
+- [`../../../../.gemini/antigravity/brain/d59f7c6a-8bf9-4b08-8476-c661733241be/phase1_biological_tags_plan.md`](../../../../.gemini/antigravity/brain/d59f7c6a-8bf9-4b08-8476-c661733241be/phase1_biological_tags_plan.md)
+- [`../../../../.gemini/antigravity/brain/d59f7c6a-8bf9-4b08-8476-c661733241be/thinking_head_architectural_plan.md`](../../../../.gemini/antigravity/brain/d59f7c6a-8bf9-4b08-8476-c661733241be/thinking_head_architectural_plan.md)
+- [`../../../../.gemini/antigravity/brain/d59f7c6a-8bf9-4b08-8476-c661733241be/thinking_head_mathematical_validation.md`](../../../../.gemini/antigravity/brain/d59f7c6a-8bf9-4b08-8476-c661733241be/thinking_head_mathematical_validation.md)
 - [`.agents/WORK_STATE.md`](.agents/WORK_STATE.md)
 - [`.gitignore`](.gitignore)
 - [`RESEARCH_NOTES.md`](RESEARCH_NOTES.md)
 - [`TRC_APPLICATION.md`](TRC_APPLICATION.md)
+- [`colab/CerebroSpheroid_V4_Colab_TPU_JAX.ipynb`](colab/CerebroSpheroid_V4_Colab_TPU_JAX.ipynb)
+- [`colab/cerebro_spheroid_colab.ipynb`](colab/cerebro_spheroid_colab.ipynb)
+- [`colab/train_v4_colab.ipynb`](colab/train_v4_colab.ipynb)
 - [`deploy/bioflo/sync.php`](deploy/bioflo/sync.php)
+- [`plan.md`](plan.md)
 - [`scripts/benchmark_models.py`](scripts/benchmark_models.py)
+- [`scripts/benchmark_v4_vs_upgraded.py`](scripts/benchmark_v4_vs_upgraded.py)
 - [`scripts/check_kaggle_run.py`](scripts/check_kaggle_run.py)
 - [`scripts/clean_gdrive.py`](scripts/clean_gdrive.py)
+- [`scripts/clean_patch_corrupted_chunks.py`](scripts/clean_patch_corrupted_chunks.py)
+- [`scripts/download_latest_robust.py`](scripts/download_latest_robust.py)
+- [`scripts/eval_checkpoint_outputs.py`](scripts/eval_checkpoint_outputs.py)
+- [`scripts/eval_transferred_loss.py`](scripts/eval_transferred_loss.py)
+- [`scripts/generate_1000_steps_notebook.py`](scripts/generate_1000_steps_notebook.py)
 - [`scripts/generate_tpu_notebook.py`](scripts/generate_tpu_notebook.py)
+- [`scripts/inspect_step_33700.py`](scripts/inspect_step_33700.py)
+- [`scripts/inspect_step_48300.py`](scripts/inspect_step_48300.py)
+- [`scripts/probe_natural_conversation.py`](scripts/probe_natural_conversation.py)
+- [`scripts/sync_download_robust.py`](scripts/sync_download_robust.py)
 - [`scripts/test_generation.py`](scripts/test_generation.py)
-- [`src/__init__.py`](src/__init__.py)
+- [`scripts/test_latest_checkpoint.py`](scripts/test_latest_checkpoint.py)
+- [`scripts/test_step_4300_model.py`](scripts/test_step_4300_model.py)
+- [`scripts/transformer_to_centroid_transfer.py`](scripts/transformer_to_centroid_transfer.py)
+- [`scripts/update_colab_notebook.py`](scripts/update_colab_notebook.py)
+- [`scripts/wait_and_test.py`](scripts/wait_and_test.py)
 - [`src/cloud_sync.py`](src/cloud_sync.py)
 - [`src/corpus.py`](src/corpus.py)
 - [`src/deepseek_layers.py`](src/deepseek_layers.py)
@@ -37,75 +60,159 @@ The 300-step Supervised Fine-Tuning (SFT) run on your local laptop GPU has compl
 - [`src/spheroid_v4.py`](src/spheroid_v4.py)
 - [`training/benchmark_optimizer_comparison.py`](training/benchmark_optimizer_comparison.py)
 - [`training/probe_elastic_context_v4.py`](training/probe_elastic_context_v4.py)
+- [`training/probe_internal_deliberation_architecture.py`](training/probe_internal_deliberation_architecture.py)
 - [`training/probe_learning_verification.py`](training/probe_learning_verification.py)
 - [`training/probe_mla_verification.py`](training/probe_mla_verification.py)
 - [`training/probe_mtp_verification.py`](training/probe_mtp_verification.py)
+- [`training/remote/CerebroSpheroid_V4_Colab_TPU_JAX.ipynb`](training/remote/CerebroSpheroid_V4_Colab_TPU_JAX.ipynb)
 - [`training/remote/CerebroSpheroid_V4_Kaggle.ipynb`](training/remote/CerebroSpheroid_V4_Kaggle.ipynb)
+- [`training/remote/CerebroSpheroid_V4_TPU_Kaggle.ipynb`](training/remote/CerebroSpheroid_V4_TPU_Kaggle.ipynb)
+- [`training/remote/reasoning-agent.ipynb`](training/remote/reasoning-agent.ipynb)
 - [`training/test_core_noise_corruption.py`](training/test_core_noise_corruption.py)
 - [`training/test_feedback_channel.py`](training/test_feedback_channel.py)
+- [`training/test_online_loss_parity.py`](training/test_online_loss_parity.py)
 - [`training/test_spheroid_optimizer.py`](training/test_spheroid_optimizer.py)
 - [`training/test_v3full_best.py`](training/test_v3full_best.py)
 - [`training/test_v4_architecture.py`](training/test_v4_architecture.py)
+- [`training/test_v4_scratch_training.py`](training/test_v4_scratch_training.py)
 - [`training/test_v4_small_kaggle.py`](training/test_v4_small_kaggle.py)
 - [`training/test_v4_state_best.py`](training/test_v4_state_best.py)
 - [`training/train_v4_full.py`](training/train_v4_full.py)
 - [`training/train_v4_jax.py`](training/train_v4_jax.py)
 - [`../../../../../../tmp/kaggle_tpu_pull/kernel-metadata.json`](../../../../../../tmp/kaggle_tpu_pull/kernel-metadata.json)
-- [`scripts/update_colab_notebook.py`](scripts/update_colab_notebook.py)
-- [`../../../../.gemini/antigravity/brain/f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2/scratch/test_refined_deliberation.py`](../../../../.gemini/antigravity/brain/f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2/scratch/test_refined_deliberation.py)
-- [`training/test_internal_deliberation.py`](training/test_internal_deliberation.py)
-- [`archive/v3_legacy_experiments/README.md`](archive/v3_legacy_experiments/README.md)
-- [`scripts/compare_v4_old_vs_new.py`](scripts/compare_v4_old_vs_new.py)
-- [`training/probe_internal_deliberation_architecture.py`](training/probe_internal_deliberation_architecture.py)
-- [`scripts/eval_latest_checkpoint_loss.py`](scripts/eval_latest_checkpoint_loss.py)
-- [`training/remote/CerebroSpheroid_V4_Colab_TPU_JAX.ipynb`](training/remote/CerebroSpheroid_V4_Colab_TPU_JAX.ipynb)
-- [`training/remote/CerebroSpheroid_V4_TPU_Kaggle.ipynb`](training/remote/CerebroSpheroid_V4_TPU_Kaggle.ipynb)
-- [`scripts/test_step_4300_model.py`](scripts/test_step_4300_model.py)
-- [`training/remote/reasoning-agent.ipynb`](training/remote/reasoning-agent.ipynb)
-- [`colab/train_v4_colab.ipynb`](colab/train_v4_colab.ipynb)
-- [`../../../../.gemini/antigravity/brain/d59f7c6a-8bf9-4b08-8476-c661733241be/cerebro_spheroid_v4_llama3_parity_plan.md`](../../../../.gemini/antigravity/brain/d59f7c6a-8bf9-4b08-8476-c661733241be/cerebro_spheroid_v4_llama3_parity_plan.md)
-- [`../../../../.gemini/antigravity/brain/d59f7c6a-8bf9-4b08-8476-c661733241be/phase1_biological_tags_plan.md`](../../../../.gemini/antigravity/brain/d59f7c6a-8bf9-4b08-8476-c661733241be/phase1_biological_tags_plan.md)
-- [`scripts/inspect_step_33700.py`](scripts/inspect_step_33700.py)
-- [`scripts/sync_download_robust.py`](scripts/sync_download_robust.py)
-- [`scripts/clean_patch_corrupted_chunks.py`](scripts/clean_patch_corrupted_chunks.py)
-- [`colab/cerebro_spheroid_colab.ipynb`](colab/cerebro_spheroid_colab.ipynb)
-- [`scripts/download_latest_robust.py`](scripts/download_latest_robust.py)
-- [`scripts/inspect_step_48300.py`](scripts/inspect_step_48300.py)
-- [`../../../../.gemini/antigravity/brain/d59f7c6a-8bf9-4b08-8476-c661733241be/thinking_head_architectural_plan.md`](../../../../.gemini/antigravity/brain/d59f7c6a-8bf9-4b08-8476-c661733241be/thinking_head_architectural_plan.md)
-- [`../../../../.gemini/antigravity/brain/d59f7c6a-8bf9-4b08-8476-c661733241be/thinking_head_mathematical_validation.md`](../../../../.gemini/antigravity/brain/d59f7c6a-8bf9-4b08-8476-c661733241be/thinking_head_mathematical_validation.md)
-- [`plan.md`](plan.md)
-- [`scripts/fast_download.py`](scripts/fast_download.py)
-- [`training/remote/reasoning-agent-tpu.py`](training/remote/reasoning-agent-tpu.py)
-- [`training/remote/kaggle_tpu/kernel-metadata.json`](training/remote/kaggle_tpu/kernel-metadata.json)
-- [`../../../../.gemini/antigravity/brain/f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2/fast_pretraining_acceleration_plan.md`](../../../../.gemini/antigravity/brain/f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2/fast_pretraining_acceleration_plan.md)
-- [`../../../../.gemini/antigravity/brain/f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2/weight_manifold_acceleration_plan.md`](../../../../.gemini/antigravity/brain/f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2/weight_manifold_acceleration_plan.md)
-- [`scripts/align_manifold_warmstart.py`](scripts/align_manifold_warmstart.py)
-- [`scripts/test_manifold_model.py`](scripts/test_manifold_model.py)
-- [`scripts/train_local_experiment.py`](scripts/train_local_experiment.py)
-- [`training/test_online_loss_parity.py`](training/test_online_loss_parity.py)
-- [`scripts/test_latest_checkpoint.py`](scripts/test_latest_checkpoint.py)
-- [`scripts/wait_and_test.py`](scripts/wait_and_test.py)
-- [`scripts/probe_natural_conversation.py`](scripts/probe_natural_conversation.py)
+- [`../cerebro_spheroid_v5/pytest.ini`](../cerebro_spheroid_v5/pytest.ini)
 - [`../../../../.gemini/antigravity/brain/f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2/asynchronous_independent_model_merging_plan.md`](../../../../.gemini/antigravity/brain/f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2/asynchronous_independent_model_merging_plan.md)
-- [`scripts/gcp_tpu_manager.sh`](scripts/gcp_tpu_manager.sh)
+- [`../../../../.gemini/antigravity/brain/f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2/cerebro_spheroid_v5_architecture_plan.md`](../../../../.gemini/antigravity/brain/f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2/cerebro_spheroid_v5_architecture_plan.md)
+- [`../../../../.gemini/antigravity/brain/f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2/fast_pretraining_acceleration_plan.md`](../../../../.gemini/antigravity/brain/f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2/fast_pretraining_acceleration_plan.md)
+- [`../../../../.gemini/antigravity/brain/f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2/scratch/test_refined_deliberation.py`](../../../../.gemini/antigravity/brain/f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2/scratch/test_refined_deliberation.py)
+- [`../../../../.gemini/antigravity/brain/f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2/weight_manifold_acceleration_plan.md`](../../../../.gemini/antigravity/brain/f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2/weight_manifold_acceleration_plan.md)
+- [`../cerebro_spheroid_v5/colab/CerebroSpheroid_V5_Colab_TPU_JAX.ipynb`](../cerebro_spheroid_v5/colab/CerebroSpheroid_V5_Colab_TPU_JAX.ipynb)
+- [`../cerebro_spheroid_v5/colab/CerebroSpheroid_V5_Colab_Training.ipynb`](../cerebro_spheroid_v5/colab/CerebroSpheroid_V5_Colab_Training.ipynb)
+- [`../cerebro_spheroid_v5/colab/generate_colab_nb.py`](../cerebro_spheroid_v5/colab/generate_colab_nb.py)
+- [`../cerebro_spheroid_v5/colab/generate_tpu_nb.py`](../cerebro_spheroid_v5/colab/generate_tpu_nb.py)
+- [`../cerebro_spheroid_v5/deploy/bioflo/sync.php`](../cerebro_spheroid_v5/deploy/bioflo/sync.php)
+- [`../cerebro_spheroid_v5/docs/RESEARCH_NOTES.md`](../cerebro_spheroid_v5/docs/RESEARCH_NOTES.md)
+- [`../cerebro_spheroid_v5/docs/SMOLLM_CURRICULUM_ROADMAP.md`](../cerebro_spheroid_v5/docs/SMOLLM_CURRICULUM_ROADMAP.md)
+- [`../cerebro_spheroid_v5/eval/build_benchmark_1000.py`](../cerebro_spheroid_v5/eval/build_benchmark_1000.py)
+- [`../cerebro_spheroid_v5/eval/run_benchmark.py`](../cerebro_spheroid_v5/eval/run_benchmark.py)
+- [`../cerebro_spheroid_v5/fix_nb.py`](../cerebro_spheroid_v5/fix_nb.py)
+- [`../cerebro_spheroid_v5/scripts/adapt_v4_to_v5_weights.py`](../cerebro_spheroid_v5/scripts/adapt_v4_to_v5_weights.py)
+- [`../cerebro_spheroid_v5/scripts/auto_tune_tpu.py`](../cerebro_spheroid_v5/scripts/auto_tune_tpu.py)
+- [`../cerebro_spheroid_v5/scripts/salvage_v4_to_v5.py`](../cerebro_spheroid_v5/scripts/salvage_v4_to_v5.py)
+- [`../cerebro_spheroid_v5/scripts/test_frozen_core_transfer.py`](../cerebro_spheroid_v5/scripts/test_frozen_core_transfer.py)
+- [`../cerebro_spheroid_v5/scripts/test_openhermes_cosmopedia_coadaptation.py`](../cerebro_spheroid_v5/scripts/test_openhermes_cosmopedia_coadaptation.py)
+- [`../cerebro_spheroid_v5/scripts/test_unfrozen_core_training.py`](../cerebro_spheroid_v5/scripts/test_unfrozen_core_training.py)
+- [`../cerebro_spheroid_v5/scripts/test_v5_openhermes_near_3.py`](../cerebro_spheroid_v5/scripts/test_v5_openhermes_near_3.py)
+- [`../cerebro_spheroid_v5/scripts/test_v5_two_stage_full_adaptation.py`](../cerebro_spheroid_v5/scripts/test_v5_two_stage_full_adaptation.py)
+- [`../cerebro_spheroid_v5/scripts/test_v5_warmup_with_frozen_v4_core.py`](../cerebro_spheroid_v5/scripts/test_v5_warmup_with_frozen_v4_core.py)
+- [`../cerebro_spheroid_v5/scripts/train_test_all_parts_multimodal.py`](../cerebro_spheroid_v5/scripts/train_test_all_parts_multimodal.py)
+- [`../cerebro_spheroid_v5/scripts/train_v5_graded_curriculum.py`](../cerebro_spheroid_v5/scripts/train_v5_graded_curriculum.py)
+- [`../cerebro_spheroid_v5/scripts/train_v5_offline.py`](../cerebro_spheroid_v5/scripts/train_v5_offline.py)
+- [`../cerebro_spheroid_v5/scripts/train_v5_scratch_local.py`](../cerebro_spheroid_v5/scripts/train_v5_scratch_local.py)
+- [`../cerebro_spheroid_v5/scripts/train_v5_tpu_jax.py`](../cerebro_spheroid_v5/scripts/train_v5_tpu_jax.py)
+- [`../cerebro_spheroid_v5/src/agentic_harness.py`](../cerebro_spheroid_v5/src/agentic_harness.py)
+- [`../cerebro_spheroid_v5/src/cloud_sync.py`](../cerebro_spheroid_v5/src/cloud_sync.py)
+- [`../cerebro_spheroid_v5/src/elastic_window.py`](../cerebro_spheroid_v5/src/elastic_window.py)
+- [`../cerebro_spheroid_v5/src/graded_curriculum.py`](../cerebro_spheroid_v5/src/graded_curriculum.py)
+- [`../cerebro_spheroid_v5/src/jax/auto_tuner.py`](../cerebro_spheroid_v5/src/jax/auto_tuner.py)
+- [`../cerebro_spheroid_v5/src/jax/data_streamer.py`](../cerebro_spheroid_v5/src/jax/data_streamer.py)
+- [`../cerebro_spheroid_v5/src/jax/spheroid_optimizer.py`](../cerebro_spheroid_v5/src/jax/spheroid_optimizer.py)
+- [`../cerebro_spheroid_v5/src/jax/v5_model.py`](../cerebro_spheroid_v5/src/jax/v5_model.py)
+- [`../cerebro_spheroid_v5/src/spheroid_optimizer.py`](../cerebro_spheroid_v5/src/spheroid_optimizer.py)
+- [`../cerebro_spheroid_v5/src/spheroid_v5.py`](../cerebro_spheroid_v5/src/spheroid_v5.py)
+- [`../cerebro_spheroid_v5/tests/conftest.py`](../cerebro_spheroid_v5/tests/conftest.py)
+- [`../cerebro_spheroid_v5/tests/test_agentic_harness.py`](../cerebro_spheroid_v5/tests/test_agentic_harness.py)
+- [`../cerebro_spheroid_v5/tests/test_graded_curriculum.py`](../cerebro_spheroid_v5/tests/test_graded_curriculum.py)
+- [`../cerebro_spheroid_v5/tests/test_jax_v5_pipeline.py`](../cerebro_spheroid_v5/tests/test_jax_v5_pipeline.py)
+- [`../cerebro_spheroid_v5/training/test_v5_architecture.py`](../cerebro_spheroid_v5/training/test_v5_architecture.py)
+- [`../cerebro_spheroid_v5/training/train_v5_tpu_jax.py`](../cerebro_spheroid_v5/training/train_v5_tpu_jax.py)
+- [`WORK_STATE.md`](WORK_STATE.md)
+- [`archive/v3_legacy_experiments/README.md`](archive/v3_legacy_experiments/README.md)
+- [`data/benchmark_100_questions.json`](data/benchmark_100_questions.json)
+- [`data/kaggle_upload/README.md`](data/kaggle_upload/README.md)
+- [`data/kaggle_upload/dataset-metadata.json`](data/kaggle_upload/dataset-metadata.json)
+- [`scripts/align_manifold_warmstart.py`](scripts/align_manifold_warmstart.py)
+- [`scripts/benchmark_100_eval.py`](scripts/benchmark_100_eval.py)
+- [`scripts/compare_smollm_vs_cerebro.py`](scripts/compare_smollm_vs_cerebro.py)
+- [`scripts/compare_v4_old_vs_new.py`](scripts/compare_v4_old_vs_new.py)
 - [`scripts/create_colab_sft_notebook.py`](scripts/create_colab_sft_notebook.py)
+- [`scripts/eval_latest_checkpoint_loss.py`](scripts/eval_latest_checkpoint_loss.py)
+- [`scripts/fast_download.py`](scripts/fast_download.py)
+- [`scripts/gcp_tpu_manager.sh`](scripts/gcp_tpu_manager.sh)
+- [`scripts/generate_cerebro_cognitive_dataset.py`](scripts/generate_cerebro_cognitive_dataset.py)
+- [`scripts/probe_specific_pitfalls.py`](scripts/probe_specific_pitfalls.py)
+- [`scripts/test_manifold_model.py`](scripts/test_manifold_model.py)
+- [`scripts/test_remedies_on_checkpoint.py`](scripts/test_remedies_on_checkpoint.py)
 - [`scripts/test_trained_checkpoint.py`](scripts/test_trained_checkpoint.py)
-- [`training/remote/kaggle_tpu/reasoning-agent-tpu.py`](training/remote/kaggle_tpu/reasoning-agent-tpu.py)
+- [`scripts/train_local_experiment.py`](scripts/train_local_experiment.py)
 - [`scripts/train_local_sft.py`](scripts/train_local_sft.py)
+- [`training/remote/kaggle_tpu/kernel-metadata.json`](training/remote/kaggle_tpu/kernel-metadata.json)
+- [`training/remote/kaggle_tpu/reasoning-agent-tpu.py`](training/remote/kaggle_tpu/reasoning-agent-tpu.py)
+- [`training/remote/reasoning-agent-tpu.py`](training/remote/reasoning-agent-tpu.py)
+- [`training/test_internal_deliberation.py`](training/test_internal_deliberation.py)
+- [`../../../../.gemini/antigravity/brain/d59f7c6a-8bf9-4b08-8476-c661733241be/v5_feature_porting_roadmap.md`](../../../../.gemini/antigravity/brain/d59f7c6a-8bf9-4b08-8476-c661733241be/v5_feature_porting_roadmap.md)
+- [`../cerebro_spheroid_v5/src/jax/checkpoint.py`](../cerebro_spheroid_v5/src/jax/checkpoint.py)
+- [`../cerebro_spheroid_v5/src/jax/__init__.py`](../cerebro_spheroid_v5/src/jax/__init__.py)
+- [`../cerebro_spheroid_v5/src/corpus.py`](../cerebro_spheroid_v5/src/corpus.py)
+- [`../cerebro_spheroid_v5/docs/V5_SYSTEM_SPECIFICATION.md`](../cerebro_spheroid_v5/docs/V5_SYSTEM_SPECIFICATION.md)
+- [`../cerebro_spheroid_v5/tests/test_vram_tuner_and_sync.py`](../cerebro_spheroid_v5/tests/test_vram_tuner_and_sync.py)
+- [`../cerebro_spheroid_v5/eval/test_model_and_project.py`](../cerebro_spheroid_v5/eval/test_model_and_project.py)
+- [`../cerebro_spheroid_v5/eval/project_loss.py`](../cerebro_spheroid_v5/eval/project_loss.py)
+- [`../../../../.gemini/antigravity/brain/f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2/architectural_pitfalls_audit.md`](../../../../.gemini/antigravity/brain/f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2/architectural_pitfalls_audit.md)
+- [`../cerebro_spheroid_v5/training/auto_tune_tpu.py`](../cerebro_spheroid_v5/training/auto_tune_tpu.py)
+- [`../cerebro_spheroid_v5/tests/test_gpu_pipeline.py`](../cerebro_spheroid_v5/tests/test_gpu_pipeline.py)
+- [`../cerebro_spheroid_v5/kaggle/kernel-metadata.json`](../cerebro_spheroid_v5/kaggle/kernel-metadata.json)
+- [`../cerebro_spheroid_v5/kaggle/cerebro_spheroid_v5_kaggle_2xt4.ipynb`](../cerebro_spheroid_v5/kaggle/cerebro_spheroid_v5_kaggle_2xt4.ipynb)
+- [`../cerebro_spheroid_v5/kaggle/tpu/kernel-metadata.json`](../cerebro_spheroid_v5/kaggle/tpu/kernel-metadata.json)
+- [`../cerebro_spheroid_v5/kaggle/tpu/cerebro_spheroid_v5_kaggle_tpu.py`](../cerebro_spheroid_v5/kaggle/tpu/cerebro_spheroid_v5_kaggle_tpu.py)
+- [`../cerebro_spheroid_v5/docs/NEXT_FEATURES.md`](../cerebro_spheroid_v5/docs/NEXT_FEATURES.md)
+- [`../cerebro_spheroid_v5/tests/test_loss_tracker.py`](../cerebro_spheroid_v5/tests/test_loss_tracker.py)
+- [`../cerebro_spheroid_v5/scripts/track_loss_regression.py`](../cerebro_spheroid_v5/scripts/track_loss_regression.py)
+- [`../cerebro_spheroid_v5/scripts/launch_kaggle_tpu.py`](../cerebro_spheroid_v5/scripts/launch_kaggle_tpu.py)
+- [`../cerebro_spheroid_v5/colab/CerebroSpheroid_V5_Loss_Tracker.ipynb`](../cerebro_spheroid_v5/colab/CerebroSpheroid_V5_Loss_Tracker.ipynb)
+- [`../cerebro_spheroid_v5/tests/test_deliberation_and_seq_transition.py`](../cerebro_spheroid_v5/tests/test_deliberation_and_seq_transition.py)
+- [`training/train_v3_full.py`](training/train_v3_full.py)
+- [`../cerebro_spheroid_v5/tests/test_resume_smoothness.py`](../cerebro_spheroid_v5/tests/test_resume_smoothness.py)
+- [`../../../../../../tmp/run_cerebro_comparison.py`](../../../../../../tmp/run_cerebro_comparison.py)
+- [`../cerebro_spheroid_v5/scripts/benchmark_deliberation_modes.py`](../cerebro_spheroid_v5/scripts/benchmark_deliberation_modes.py)
+- [`../cerebro_spheroid_v5/scripts/generate_sample_live.py`](../cerebro_spheroid_v5/scripts/generate_sample_live.py)
+- [`../cerebro_spheroid_v5/scripts/compare_cerebro_vs_smollm.py`](../cerebro_spheroid_v5/scripts/compare_cerebro_vs_smollm.py)
+- [`../cerebro_spheroid_v5/src/emergence_detector.py`](../cerebro_spheroid_v5/src/emergence_detector.py)
+- [`../cerebro_spheroid_v5/scripts/audit_agi_emergence.py`](../cerebro_spheroid_v5/scripts/audit_agi_emergence.py)
+- [`../cerebro_spheroid_v5/tests/test_agi_emergence.py`](../cerebro_spheroid_v5/tests/test_agi_emergence.py)
+- [`src/emergence_detector.py`](src/emergence_detector.py)
+- [`scripts/audit_agi_emergence.py`](scripts/audit_agi_emergence.py)
+- [`tests/test_agi_emergence.py`](tests/test_agi_emergence.py)
+- [`../../../../.gemini/antigravity/brain/f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2/cerebro_spheroid_v5_multimodal_plan.md`](../../../../.gemini/antigravity/brain/f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2/cerebro_spheroid_v5_multimodal_plan.md)
+- [`../../../../../../tmp/audit_smollm_grounding.py`](../../../../../../tmp/audit_smollm_grounding.py)
+- [`../cerebro_spheroid_v5/tests/test_multimodal_parity.py`](../cerebro_spheroid_v5/tests/test_multimodal_parity.py)
+
+## Key Findings & Decisions
+- Checkpoint resumption was starting with cold zero-momentum buffers and full learning rate, causing immediate parameter manifold disruptions.
+- Resetting ema_loss to None caused the Loss Window Governor to violently slash learning rate by 40% on step 2.
+- Kaggle GPU checkpoint (105k steps) learned the GSM8K scratchpad reasoning template <<8*4=20>>.
+- Colab TPU checkpoint (216k steps) generates structured grammatical sentences with domain terminology (physics, biology, neural networks).
+- Trained V5 checkpoint exhibits dominant white-matter highways from Shell 0 -> Shell 15 (Norm 9.28) and high corollary discharge ratio (0.82).
+- Audit tool successfully gates scale-up permission based on contractive spectral norms and Lyapunov stability.
+- Current model has zero reasoning, factual knowledge, or agentic goals (failing 2+2=4 and name recall).
+- Calibrated AGI Emergence Score is 3.08/100, correctly confirming the model is safe to scale up without emergence hazard.
+
+## Next Steps / Pending Hand-off
+- [ ] Resume Colab TPU or Kaggle runs with commit a9d0ed3 to verify zero-spike smooth resumption.
 
 ## Recent Actions (Last 10)
 | Time | Tool | Details |
 | :--- | :--- | :--- |
-| `00:41:34` | `manage_task` | manage_task |
-| `00:41:17` | `manage_task` | manage_task |
-| `00:41:16` | `run_command` | Test 3 steps of UltraChat SFT |
-| `00:41:11` | `manage_task` | manage_task |
-| `00:41:05` | `manage_task` | manage_task |
-| `00:40:59` | `manage_task` | manage_task |
-| `00:40:36` | `edit_file` | edit_file |
-| `00:40:22` | `edit_file` | edit_file |
-| `00:40:12` | `read_file` | read_file |
-| `00:40:04` | `read_file` | read_file |
+| `09:36:36` | `run_command` | Check archive in .gitignore |
+| `09:36:31` | `run_command` | Check git status in reasoning_agent |
+| `09:36:26` | `run_command` | Check V4 in cerebro_spheroid_v5 |
+| `09:36:22` | `run_command` | Verify zero unarchived V4 files in reasoning_agent |
+| `09:36:17` | `run_command` | Clean pycache and move old backup |
+| `09:36:11` | `run_command` | Check for remaining unarchived V4 files |
+| `09:36:07` | `run_command` | Verify reasoning_agent src imports |
+| `09:36:01` | `write_file` | write_file |
+| `09:35:43` | `run_command` | Sync modern V5 src files into reasoning_agent |
+| `09:35:37` | `run_command` | Check files in cerebro_spheroid_v5/src/jax |
 
 ---
 *This file is automatically maintained by `auto-work-tracker`. Other agents can parse `.agents/work_state.json` or inspect this file directly to resume or review progress.*

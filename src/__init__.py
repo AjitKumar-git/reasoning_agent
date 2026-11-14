@@ -1,5 +1,5 @@
 """
-CerebroSpheroid Reasoning Agent Package (V4 Architecture)
+CerebroSpheroid Reasoning Agent Package (V5 Architecture)
 """
 
 # Kaggle / Python 3.12 compatibility shim: Newer pyarrow (>=19) removed pa.PyExtensionType,
@@ -46,49 +46,37 @@ __all__ = [
     "auto_sync_checkpoints",
 ]
 
-# PyTorch V4 Architecture (Guarded to prevent import failure if torch has issues or in pure JAX)
+# PyTorch V5 Architecture
 try:
-    from .spheroid_v4 import (
-        PremotorMotorDecoderV4,
-        CerebroSpheroidV4,
-        build_spheroid_v4,
-        build_v4_model,
+    from .spheroid_v5 import (
+        CerebroSpheroidV5,
+        ModelConfigV5,
+        PRESETS_V5,
+        build_spheroid_v5,
         compute_manifold_diagnostics,
-        get_shell_zones,
-        lift_checkpoint_v3_to_v4,
     )
     from .spheroid_optimizer import (
         SpheroidOptimizer,
         build_spheroid_optimizer,
         create_spheroid_param_groups,
     )
-    from .sensory_nodes import (
-        VisionSensoryEncoder,
-        AudioSensoryEncoder,
-        ThalamicSensoryGater,
+    from .emergence_detector import (
+        AGIEmergenceAuditor,
+        EmergenceReport,
     )
 
     __all__ += [
-        "PremotorMotorDecoderV4",
-        "CerebroSpheroidV4",
-        "build_spheroid_v4",
-        "build_v4_model",
+        "CerebroSpheroidV5",
+        "ModelConfigV5",
+        "PRESETS_V5",
+        "build_spheroid_v5",
         "compute_manifold_diagnostics",
-        "get_shell_zones",
-        "lift_checkpoint_v3_to_v4",
-        "VisionSensoryEncoder",
-        "AudioSensoryEncoder",
-        "ThalamicSensoryGater",
         "SpheroidOptimizer",
         "build_spheroid_optimizer",
         "create_spheroid_param_groups",
+        "AGIEmergenceAuditor",
+        "EmergenceReport",
     ]
-
-    try:
-        from .spheroid_v5 import CerebroSpheroidV5, ModelConfigV5
-        __all__ += ["CerebroSpheroidV5", "ModelConfigV5"]
-    except ImportError:
-        pass
 
     HAS_TORCH = True
 except (ImportError, SystemError, Exception) as _torch_err:
@@ -97,9 +85,15 @@ except (ImportError, SystemError, Exception) as _torch_err:
 
 # Lazy-load JAX submodule to prevent expensive TPU/GPU device initialization on import
 _JAX_ATTRS = {
-    "ModelConfigV4": "ModelConfigV4",
-    "PRESETS_V4": "PRESETS_V4",
-    "init_v4_params": "init_v4_params",
+    "ModelConfigV5": "ModelConfigV5",
+    "PRESETS_V5": "PRESETS_V5",
+    "init_params_v5": "init_params_v5",
+    "generate_small_world_indices": "generate_small_world_indices",
+    "encode_sensory": "encode_sensory",
+    "deliberate_step": "deliberate_step",
+    "emit_step": "emit_step",
+    "training_rollout": "training_rollout",
+    "generate_text_jax": "generate_text_jax",
     "init_spheroid_opt_state": "init_spheroid_opt_state",
     "build_spheroid_train_engine": "build_spheroid_train_engine",
     "build_train_step_spheroid": "build_train_step_spheroid",
@@ -107,8 +101,8 @@ _JAX_ATTRS = {
     "save_jax_to_torch_pt": "save_jax_to_torch_pt",
     "discover_latest_checkpoint": "discover_latest_checkpoint",
     "AsyncCheckpointManager": "AsyncCheckpointManager",
-    "training_rollout_v4": "training_rollout_v4",
-    "generate_v4": "generate_v4",
+    "LinguisticDataStreamer": "LinguisticDataStreamer",
+    "run_auto_tuner": "run_auto_tuner",
 }
 
 __all__ += list(_JAX_ATTRS.keys())
