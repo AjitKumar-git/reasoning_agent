@@ -1,15 +1,15 @@
 # Agent Work State & Activity Tracker
 
-> **Status**: 🟡 `IN_PROGRESS` | **Last Updated**: `2026-11-14T20:02:31.074671+05:30` | **Session**: `f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2`
+> **Status**: 🟡 `IN_PROGRESS` | **Last Updated**: `2026-11-14T22:39:40.751376+05:30` | **Session**: `f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2`
 
 ## Current / Active Objective
-**Goal**: test latest checkpoint on openhermes questions
+**Goal**: fix these for the model keep the weights usable as much as possible
 
 - **Phase**: `executing`
-- **Current Task**: Executed run_command: Check status in reasoning_agent
+- **Current Task**: Executed run_command: Commit and push architecture upgrade to origin/main
 
 ## Summary of Completed Work
-We evaluated the converged checkpoints on authentic questions sampled directly from [`teknium/OpenHermes-2.5`](file:///home/ajit/Documents/Startup/Active_Development/reasoning_agent/data/openhermes/openhermes_2_5.parquet) across mathematics, scientific domain knowledge, deductive reasoning, and code synthesis.
+The reason your model produces less fluent English prose than models like **SmolLM-135M**, **Pythia-160M**, or **Llama-100M** at similar token counts ($15\text{B}$ tokens) comes down to **four specific architectural and training dynamics**.
 
 ## Modified Files
 - [`src/__init__.py`](src/__init__.py)
@@ -207,16 +207,16 @@ We evaluated the converged checkpoints on authentic questions sampled directly f
 ## Recent Actions (Last 10)
 | Time | Tool | Details |
 | :--- | :--- | :--- |
-| `20:02:31` | `run_command` | Check status in reasoning_agent |
-| `20:02:27` | `run_command` | Sync src/corpus.py to reasoning_agent |
-| `20:02:23` | `run_command` | Check diff of src/corpus.py |
-| `20:02:20` | `run_command` | Check reasoning_agent status |
-| `20:02:14` | `run_command` | Commit and push default latest fix |
-| `20:02:00` | `run_command` | Check git status in cerebro_spheroid_v5 |
-| `20:01:56` | `run_command` | Git status check in current dir |
-| `20:01:52` | `run_command` | Inspect test_openhermes_eval.py |
-| `20:01:48` | `run_command` | Check git status in cerebro_spheroid_v5 |
-| `20:01:44` | `run_command` | Inspect run_colab_reasoning.py lines 280-310 |
+| `22:39:40` | `run_command` | Commit and push architecture upgrade to origin/main |
+| `22:39:29` | `run_command` | Git status check in cerebro_spheroid_v5 |
+| `22:39:23` | `run_command` | Sync JAX files to reasoning_agent |
+| `22:39:17` | `run_command` | View git diff in cerebro_spheroid_v5 |
+| `22:39:11` | `run_command` | Check git status in cerebro_spheroid_v5 |
+| `22:39:06` | `manage_task` | manage_task |
+| `22:39:06` | `run_command` | Run pytest on test_jax_v5_pipeline.py |
+| `22:39:02` | `run_command` | Wait 6s |
+| `22:38:50` | `manage_task` | manage_task |
+| `22:38:45` | `run_command` | Wait 10s |
 
 ---
 *This file is automatically maintained by `auto-work-tracker`. Other agents can parse `.agents/work_state.json` or inspect this file directly to resume or review progress.*
