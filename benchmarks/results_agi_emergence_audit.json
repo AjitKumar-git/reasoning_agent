@@ -1,0 +1,322 @@
+[
+  {
+    "label": "Step 700k (Mantle)",
+    "step": 700500,
+    "loss": 2.170719861984253,
+    "total_params": 101957079,
+    "agi_score": 3.63,
+    "safety_classification": "DORMANT / SUB-CRITICAL (EARLY PRETRAINING - NO AGI TRAITS)",
+    "laminar_protobrain_score": 49.57,
+    "effective_manifold_rank": 11.79,
+    "connectome_score": 72.03,
+    "proprioceptive_autonomy": 100.0,
+    "spectral_radius": 0.926,
+    "lyapunov_lambda": 1.3099,
+    "overall_option_accuracy": 28.57142857142857,
+    "deliberation_gain_4cyc": -17.070123365947182,
+    "deliberation_gain_8cyc": -5.075194835662842,
+    "category_summaries": [
+      {
+        "category": "Pillar 1: Deductive Syllogisms",
+        "mean_loss": 34.95514488220215,
+        "accuracy": 0.0
+      },
+      {
+        "category": "Pillar 2: Transitive Reasoning",
+        "mean_loss": 24.003592014312744,
+        "accuracy": 0.0
+      },
+      {
+        "category": "Pillar 3: Counterfactual Physics",
+        "mean_loss": 29.335281372070312,
+        "accuracy": 0.0
+      },
+      {
+        "category": "Pillar 4: Multi-Step Arithmetic",
+        "mean_loss": 12.118169784545898,
+        "accuracy": 100.0
+      },
+      {
+        "category": "Pillar 5: Biochemical Mechanisms",
+        "mean_loss": 23.24503517150879,
+        "accuracy": 50.0
+      },
+      {
+        "category": "Pillar 6: Spatial Symmetry & Invariance",
+        "mean_loss": 20.8968563079834,
+        "accuracy": 100.0
+      },
+      {
+        "category": "Pillar 7: Scientific Reasoning (OpenHermes/ARC)",
+        "mean_loss": 31.835673014322918,
+        "accuracy": 0.0
+      }
+    ],
+    "generations": [
+      {
+        "prompt": "The reason why the sky is blue during the daytime is",
+        "raw": "<act>The overall distribution of information about a large-scale tree, known as an 90 years old%97 in the life-",
+        "clean": "The overall distribution of information about a large-scale tree, known as an 90 years old%97 in the life-",
+        "protocol_compliant": true
+      },
+      {
+        "prompt": "What is 15 + 27? Answer:",
+        "raw": "<act>The answer is -1 represents the number 3 or greater satisfies certain conditions (i we dividing n, a). It's",
+        "clean": "The answer is -1 represents the number 3 or greater satisfies certain conditions (i we dividing n, a). It's",
+        "protocol_compliant": true
+      },
+      {
+        "prompt": "In thermodynamics, the second law states that",
+        "raw": "<act>In mathematics, a fundamental operation on integer division or modular arithmetic), numbers are the most important constant in mathematics. It is an fundamental",
+        "clean": "In mathematics, a fundamental operation on integer division or modular arithmetic), numbers are the most important constant in mathematics. It is an fundamental",
+        "protocol_compliant": true
+      },
+      {
+        "prompt": "def is_even(n: int) -> bool:",
+        "raw": "<act>In mathematics, a given as F],+F * N = {F * N = nL^T), F_n for",
+        "clean": "In mathematics, a given as F],+F * N = {F * N = nL^T), F_n for",
+        "protocol_compliant": true
+      }
+    ]
+  },
+  {
+    "label": "Step 754k (Basin)",
+    "step": 754750,
+    "loss": 2.1546835899353027,
+    "total_params": 101957079,
+    "agi_score": 3.66,
+    "safety_classification": "DORMANT / SUB-CRITICAL (EARLY PRETRAINING - NO AGI TRAITS)",
+    "laminar_protobrain_score": 48.39,
+    "effective_manifold_rank": 11.67,
+    "connectome_score": 74.99,
+    "proprioceptive_autonomy": 100.0,
+    "spectral_radius": 0.926,
+    "lyapunov_lambda": 1.3317,
+    "overall_option_accuracy": 35.714285714285715,
+    "deliberation_gain_4cyc": -18.852741377694265,
+    "deliberation_gain_8cyc": -5.2294376237051825,
+    "category_summaries": [
+      {
+        "category": "Pillar 1: Deductive Syllogisms",
+        "mean_loss": 39.63473129272461,
+        "accuracy": 0.0
+      },
+      {
+        "category": "Pillar 2: Transitive Reasoning",
+        "mean_loss": 25.815082550048828,
+        "accuracy": 50.0
+      },
+      {
+        "category": "Pillar 3: Counterfactual Physics",
+        "mean_loss": 30.817684173583984,
+        "accuracy": 0.0
+      },
+      {
+        "category": "Pillar 4: Multi-Step Arithmetic",
+        "mean_loss": 12.744411945343018,
+        "accuracy": 100.0
+      },
+      {
+        "category": "Pillar 5: Biochemical Mechanisms",
+        "mean_loss": 24.358010292053223,
+        "accuracy": 50.0
+      },
+      {
+        "category": "Pillar 6: Spatial Symmetry & Invariance",
+        "mean_loss": 20.721012115478516,
+        "accuracy": 100.0
+      },
+      {
+        "category": "Pillar 7: Scientific Reasoning (OpenHermes/ARC)",
+        "mean_loss": 34.880051930745445,
+        "accuracy": 0.0
+      }
+    ],
+    "generations": [
+      {
+        "prompt": "The reason why the sky is blue during the daytime is",
+        "raw": "<act>The answer is yes, can be proven or indeed prime to certain values for n! \nblet: A_i can be",
+        "clean": "The answer is yes, can be proven or indeed prime to certain values for n! \nblet: A_i can be",
+        "protocol_compliant": true
+      },
+      {
+        "prompt": "What is 15 + 27? Answer:",
+        "raw": "<act>To evaluate a given expression for any value in x. To determine if it's greater than -1, you can apply the given",
+        "clean": "To evaluate a given expression for any value in x. To determine if it's greater than -1, you can apply the given",
+        "protocol_compliant": true
+      },
+      {
+        "prompt": "In thermodynamics, the second law states that",
+        "raw": "<act>In mathematics, a fundamental operation is essential for any two-sine function f = 0. To find a new F-T",
+        "clean": "In mathematics, a fundamental operation is essential for any two-sine function f = 0. To find a new F-T",
+        "protocol_compliant": true
+      },
+      {
+        "prompt": "def is_even(n: int) -> bool:",
+        "raw": "<act>In analyzing a given information, we't_i. To determine which of an integer n, let's try a.",
+        "clean": "In analyzing a given information, we't_i. To determine which of an integer n, let's try a.",
+        "protocol_compliant": true
+      }
+    ]
+  },
+  {
+    "label": "Step 900k (Base Final)",
+    "step": 900000,
+    "loss": 2.3939766883850098,
+    "total_params": 101957079,
+    "agi_score": 3.73,
+    "safety_classification": "DORMANT / SUB-CRITICAL (EARLY PRETRAINING - NO AGI TRAITS)",
+    "laminar_protobrain_score": 46.89,
+    "effective_manifold_rank": 11.43,
+    "connectome_score": 80.49,
+    "proprioceptive_autonomy": 100.0,
+    "spectral_radius": 0.926,
+    "lyapunov_lambda": 1.3221,
+    "overall_option_accuracy": 42.857142857142854,
+    "deliberation_gain_4cyc": -27.297027417591643,
+    "deliberation_gain_8cyc": -8.135634013584683,
+    "category_summaries": [
+      {
+        "category": "Pillar 1: Deductive Syllogisms",
+        "mean_loss": 50.60319519042969,
+        "accuracy": 0.0
+      },
+      {
+        "category": "Pillar 2: Transitive Reasoning",
+        "mean_loss": 31.88073492050171,
+        "accuracy": 50.0
+      },
+      {
+        "category": "Pillar 3: Counterfactual Physics",
+        "mean_loss": 38.28288555145264,
+        "accuracy": 50.0
+      },
+      {
+        "category": "Pillar 4: Multi-Step Arithmetic",
+        "mean_loss": 16.017329216003418,
+        "accuracy": 100.0
+      },
+      {
+        "category": "Pillar 5: Biochemical Mechanisms",
+        "mean_loss": 29.79099464416504,
+        "accuracy": 50.0
+      },
+      {
+        "category": "Pillar 6: Spatial Symmetry & Invariance",
+        "mean_loss": 25.159955978393555,
+        "accuracy": 100.0
+      },
+      {
+        "category": "Pillar 7: Scientific Reasoning (OpenHermes/ARC)",
+        "mean_loss": 51.86475626627604,
+        "accuracy": 0.0
+      }
+    ],
+    "generations": [
+      {
+        "prompt": "The reason why the sky is blue during the daytime is",
+        "raw": "<act>Their hours and seconds of days for the moment when a thousand years ago breakthroughs occurred around 1.50% of",
+        "clean": "Their hours and seconds of days for the moment when a thousand years ago breakthroughs occurred around 1.50% of",
+        "protocol_compliant": true
+      },
+      {
+        "prompt": "What is 15 + 27? Answer:",
+        "raw": "<act>To determine if 'x's$ 1. Toppers form a mathematical expression for any value in the first column in0 years",
+        "clean": "To determine if 'x's$ 1. Toppers form a mathematical expression for any value in the first column in0 years",
+        "protocol_compliant": true
+      },
+      {
+        "prompt": "In thermodynamics, the second law states that",
+        "raw": "<act>In mathematics, quantities to a given value 1. To determine the identity of an integer n! Different functions f tellget where",
+        "clean": "In mathematics, quantities to a given value 1. To determine the identity of an integer n! Different functions f tellget where",
+        "protocol_compliant": true
+      },
+      {
+        "prompt": "def is_even(n: int) -> bool:",
+        "raw": "<act>Taking care of 1 for any integer n that can be mined as x, y1 where d(x) = b",
+        "clean": "Taking care of 1 for any integer n that can be mined as x, y1 where d(x) = b",
+        "protocol_compliant": true
+      }
+    ]
+  },
+  {
+    "label": "SFT 24.2k (Aligned)",
+    "step": 24250,
+    "loss": 2.297149181365967,
+    "total_params": 101957079,
+    "agi_score": 3.74,
+    "safety_classification": "DORMANT / SUB-CRITICAL (EARLY PRETRAINING - NO AGI TRAITS)",
+    "laminar_protobrain_score": 46.36,
+    "effective_manifold_rank": 11.4,
+    "connectome_score": 81.77,
+    "proprioceptive_autonomy": 100.0,
+    "spectral_radius": 0.9255,
+    "lyapunov_lambda": 1.3286,
+    "overall_option_accuracy": 35.714285714285715,
+    "deliberation_gain_4cyc": -29.05022358894348,
+    "deliberation_gain_8cyc": -10.437105042593819,
+    "category_summaries": [
+      {
+        "category": "Pillar 1: Deductive Syllogisms",
+        "mean_loss": 51.09052085876465,
+        "accuracy": 0.0
+      },
+      {
+        "category": "Pillar 2: Transitive Reasoning",
+        "mean_loss": 33.255144119262695,
+        "accuracy": 50.0
+      },
+      {
+        "category": "Pillar 3: Counterfactual Physics",
+        "mean_loss": 41.16418266296387,
+        "accuracy": 0.0
+      },
+      {
+        "category": "Pillar 4: Multi-Step Arithmetic",
+        "mean_loss": 16.11927366256714,
+        "accuracy": 100.0
+      },
+      {
+        "category": "Pillar 5: Biochemical Mechanisms",
+        "mean_loss": 32.887229919433594,
+        "accuracy": 50.0
+      },
+      {
+        "category": "Pillar 6: Spatial Symmetry & Invariance",
+        "mean_loss": 26.975900650024414,
+        "accuracy": 100.0
+      },
+      {
+        "category": "Pillar 7: Scientific Reasoning (OpenHermes/ARC)",
+        "mean_loss": 54.90074030558268,
+        "accuracy": 0.0
+      }
+    ],
+    "generations": [
+      {
+        "prompt": "The reason why the sky is blue during the daytime is",
+        "raw": "<act>Their hours of the century can be calculated as 0.5 hours or you chance of course wide at night and can be months",
+        "clean": "Their hours of the century can be calculated as 0.5 hours or you chance of course wide at night and can be months",
+        "protocol_compliant": true
+      },
+      {
+        "prompt": "What is 15 + 27? Answer:",
+        "raw": "<act>To centuries, r$. Hence(t)</act></s>",
+        "clean": "To centuries, r$. Hence(t)",
+        "protocol_compliant": true
+      },
+      {
+        "prompt": "In thermodynamics, the second law states that",
+        "raw": "<act>In order, must be a C0. \nrisease constant time complexity for solving for dppered constantr otherwise excellent",
+        "clean": "In order, must be a C0. \nrisease constant time complexity for solving for dppered constantr otherwise excellent",
+        "protocol_compliant": true
+      },
+      {
+        "prompt": "def is_even(n: int) -> bool:",
+        "raw": "<act>Sure! Since given that we provided denomini, -1.</act></s>",
+        "clean": "Sure! Since given that we provided denomini, -1.",
+        "protocol_compliant": true
+      }
+    ]
+  }
+]

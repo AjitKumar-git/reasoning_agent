@@ -32,6 +32,20 @@ import torch
 from torch.optim.optimizer import Optimizer
 
 
+def _has_native_bf16(device: Optional[torch.device] = None) -> bool:
+    """Return True only for hardware Tensor Core BF16 (Ampere sm_80+ or newer)."""
+    if not torch.cuda.is_available():
+        return False
+    try:
+        idx = device.index if (device is not None and device.index is not None) else torch.cuda.current_device()
+        major, _ = torch.cuda.get_device_capability(idx)
+        if major < 8:
+            return False
+        return bool(torch.cuda.is_bf16_supported(including_emulation=False))
+    except Exception:
+        return False
+
+
 def _zeropower_via_newtonschulz5(
     G: torch.Tensor,
     steps: int = 3,
@@ -107,9 +121,11 @@ def _clamp_spectral_norm(
 
     B, M, N = W_mat.shape
 
-    # Fast persistent power iteration
+    # Fast persistent power iteration (deterministic init keeps DDP ranks bitwise synced)
     if v is None or v.shape != (B, N, 1) or v.device != W.device or v.dtype != W.dtype:
-        v = torch.randn(B, N, 1, device=W.device, dtype=W.dtype)
+        idx = torch.arange(N, device=W.device, dtype=torch.float32).view(1, N, 1)
+        v_base = torch.cos(idx * 1.6180339887 + 0.37) + 0.5 * torch.sin(idx * 2.718281828)
+        v = v_base.expand(B, N, 1).to(dtype=W.dtype).contiguous()
         v = v / v.norm(dim=1, keepdim=True).clamp_min(eps)
         num_steps = max(5, power_steps)  # Cold start: 5 iterations
     else:
@@ -230,80 +246,98 @@ class SpheroidOptimizer(Optimizer):
                 # Case 1: AdamW (Embeddings, Projection Heads, Scalars, Pacemakers)
                 # -----------------------------------------------------------------
                 if is_adamw:
+                    need_master = p.dtype in (torch.float16, torch.bfloat16)
                     if len(state) == 0:
                         state["step"] = 0
-                        state["exp_avg"] = torch.zeros_like(p)
-                        state["exp_avg_sq"] = torch.zeros_like(p)
+                        buf_dtype = torch.float32 if need_master else p.dtype
+                        state["exp_avg"] = torch.zeros_like(p, dtype=buf_dtype)
+                        state["exp_avg_sq"] = torch.zeros_like(p, dtype=buf_dtype)
+                        if need_master:
+                            state["master_p"] = p.float().clone()
 
                     state["step"] += 1
                     exp_avg = state["exp_avg"]
                     exp_avg_sq = state["exp_avg_sq"]
                     step = state["step"]
+                    work_p = state["master_p"] if need_master else p
+                    work_g = grad.float() if (need_master or grad.dtype != work_p.dtype) else grad
 
                     # Decoupled AdamW weight decay
                     if wd > 0.0:
-                        p.mul_(1.0 - lr * wd)
+                        work_p.mul_(1.0 - lr * wd)
 
                     beta1, beta2 = 0.9, 0.95
                     eps = 1e-8
 
-                    exp_avg.mul_(beta1).add_(grad, alpha=1.0 - beta1)
-                    exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1.0 - beta2)
+                    exp_avg.mul_(beta1).add_(work_g, alpha=1.0 - beta1)
+                    exp_avg_sq.mul_(beta2).addcmul_(work_g, work_g, value=1.0 - beta2)
 
                     bias_correction1 = 1.0 - beta1 ** step
                     bias_correction2 = 1.0 - beta2 ** step
                     step_size = lr / bias_correction1
                     denom = (exp_avg_sq.sqrt() / math.sqrt(bias_correction2)).add_(eps)
-                    p.addcdiv_(exp_avg, denom, value=-step_size)
+                    work_p.addcdiv_(exp_avg, denom, value=-step_size)
+                    if need_master:
+                        p.copy_(work_p.to(p.dtype))
 
                 # -----------------------------------------------------------------
                 # Case 2: Manifold Matrix Operators (rank >= 2) via Polar Newton-Schulz
                 # -----------------------------------------------------------------
                 else:
+                    need_master = p.dtype in (torch.float16, torch.bfloat16)
                     if len(state) == 0:
                         state["step"] = 0
-                        m_dtype = (torch.bfloat16 if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) else torch.float16) if (use_half and p.is_cuda) else p.dtype
+                        m_dtype = (torch.bfloat16 if _has_native_bf16(p.device) else torch.float16) if (use_half and p.is_cuda) else torch.float32
+                        if p.dtype == torch.float32 and not use_half:
+                            m_dtype = torch.float32
                         state["momentum"] = torch.zeros_like(p, dtype=m_dtype)
+                        if need_master:
+                            state["master_p"] = p.float().clone()
 
                     state["step"] += 1
                     buf = state["momentum"]
+                    work_p = state["master_p"] if need_master else p
+                    work_g = grad.float() if (need_master or grad.dtype != torch.float32) else grad
 
-                    # Update first moment: M_t = beta * M_{t-1} + (1 - beta) * G_t
-                    if buf.dtype != p.dtype:
-                        buf_f = buf.to(p.dtype)
-                        buf_f.mul_(beta).add_(grad, alpha=1.0 - beta)
-                        buf.copy_(buf_f)
-                        m = buf_f
+                    # Update first moment in float32, then store back to buf (handles half/bf16 safely)
+                    if buf.dtype != work_g.dtype:
+                        m = buf.to(work_g.dtype)
+                        m.mul_(beta).add_(work_g, alpha=1.0 - beta)
+                        buf.copy_(m.to(buf.dtype))
                     else:
-                        buf.mul_(beta).add_(grad, alpha=1.0 - beta)
+                        buf.mul_(beta).add_(work_g, alpha=1.0 - beta)
                         m = buf
 
                     # Decoupled Riemannian-style weight decay
                     if wd > 0.0:
-                        p.mul_(1.0 - lr * wd)
+                        work_p.mul_(1.0 - lr * wd)
 
-                    # Compute orthogonal polar direction via fused Newton-Schulz
-                    O = _zeropower_via_newtonschulz5(m, steps=ns_steps)
+                    # Compute orthogonal polar direction via fused Newton-Schulz in float32 when half/bf16
+                    ns_in = m.float() if m.dtype in (torch.float16, torch.bfloat16) else m
+                    O = _zeropower_via_newtonschulz5(ns_in, steps=ns_steps)
 
                     # Scale by natural operator aspect ratio: max(1.0, sqrt(M / N))
                     rows = p.shape[-2]
                     cols = p.shape[-1]
                     aspect_scale = max(1.0, math.sqrt(rows / cols))
-                    
+
                     # Update parameters along orthogonal manifold
-                    p.add_(O.to(p.dtype), alpha=-(lr * aspect_scale))
+                    work_p.add_(O.to(work_p.dtype), alpha=-(lr * aspect_scale))
 
                     # Recurrent manifold contractive spectral guard via persistent power iteration
                     if is_recurrent and (spectral_clamp is not None) and (spectral_clamp > 0.0):
                         clamped, v_next = _clamp_spectral_norm(
-                            p,
+                            work_p,
                             max_spec_norm=spectral_clamp,
                             power_steps=power_steps,
                             v=state.get("power_v", None),
                             return_vector=True,
                         )
                         state["power_v"] = v_next
-                        p.copy_(clamped)
+                        work_p.copy_(clamped)
+
+                    if need_master:
+                        p.copy_(work_p.to(p.dtype))
 
         return loss
 
@@ -337,14 +371,22 @@ def create_spheroid_param_groups(
     wavelet_params = []
     scalar_params = []
 
-    # Recurrent keywords known in CerebroSpheroid models
-    recurrent_names = {"intra_shell", "reentrant_field", "shortcut_tracts"}
+    # Recurrent keywords known in CerebroSpheroid models (V4 and V5)
+    recurrent_names = {"intra_shell", "reentrant_field", "shortcut_tracts", "w_radial_in", "w_radial_out", "shortcut_weight"}
+    lookup_embed_names = ("pos_embed", "phase_embed", "persona_embeddings")
 
     for name, p in model.named_parameters():
         if not p.requires_grad:
             continue
 
-        if any(rec in name for rec in recurrent_names):
+        is_norm = (".norm" in name or "_norm" in name or "norms" in name)
+        if is_norm or p.ndim < 2:
+            # Normalization weights (even 2D [K, D] stacked norms) & 1D scalars/gates/biases use AdamW with 0 wd
+            scalar_params.append(p)
+        elif any(emb_kw in name for emb_kw in lookup_embed_names):
+            # Positional/phase/persona lookup tables are indexed per-row, never orthogonalized
+            vocab_params.append(p)
+        elif any(rec in name for rec in recurrent_names):
             recurrent_params.append(p)
         elif not orthogonal_embeddings and (
             "embedding" in name or "head" in name or (p.ndim == 2 and p.shape[0] >= 1024 and p.shape[0] > 4 * p.shape[1])
@@ -356,7 +398,6 @@ def create_spheroid_param_groups(
             else:
                 matrix_params.append(p)
         else:
-            # 1D scalars, pacemakers, gates, biases, rmsnorm weights
             scalar_params.append(p)
 
     groups = []

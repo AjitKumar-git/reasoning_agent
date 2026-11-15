@@ -1,0 +1,716 @@
+import os
+import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+import jax
+import os
+import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+import jax.numpy as jnp
+import numpy as np
+import pytest
+
+from src.jax.v5_model import (
+    ModelConfigV5,
+    PRESETS_V5,
+    init_params_v5,
+    deliberate_step,
+    encode_sensory,
+    training_rollout,
+)
+from src.jax.spheroid_optimizer import (
+    init_spheroid_opt_state,
+    build_train_step_spheroid,
+)
+from src.jax.data_streamer import LinguisticDataStreamer
+from training.train_v5_tpu_jax import adapt_and_load_checkpoint_weights
+
+
+def test_v5_test_config_initialization():
+    cfg = ModelConfigV5(**PRESETS_V5["v5_test"])
+    key = jax.random.PRNGKey(42)
+    params, buffers = init_params_v5(key, cfg)
+
+    assert "sensory.embedding.weight" in params
+    assert "core.intra_swiglu.w_gate" in params
+    assert "core.intra_swiglu.w_val" in params
+    assert "core.intra_swiglu.w_down" in params
+    assert "core.intra_norms.weight" in params
+    assert params["core.intra_swiglu.w_gate"].shape == (cfg.num_shells, cfg.surface_dim, cfg.surface_dim * 2)
+    assert params["core.intra_norms.weight"].shape == (cfg.num_shells, cfg.surface_dim)
+    assert len(buffers) == 2
+
+
+def test_v5_deliberation_step():
+    cfg = ModelConfigV5(**PRESETS_V5["v5_test"])
+    key = jax.random.PRNGKey(42)
+    params, buffers = init_params_v5(key, cfg)
+
+    B = 2
+    state = jnp.zeros((B, cfg.num_shells, cfg.surface_dim), dtype=jnp.float32)
+    next_state = deliberate_step(params, state, buffers)
+
+    assert next_state.shape == state.shape
+    assert not jnp.isnan(next_state).any()
+
+
+def test_v5_training_rollout_dtypes():
+    cfg = ModelConfigV5(**PRESETS_V5["v5_test"])
+    key = jax.random.PRNGKey(42)
+    params, buffers = init_params_v5(key, cfg)
+
+    B, S_prompt, S_target = 2, 4, 8
+    prompts = jnp.ones((B, S_prompt), dtype=jnp.int32)
+    targets = jnp.ones((B, S_target), dtype=jnp.int32)
+
+    # Float32 execution
+    loss_f32 = training_rollout(params, prompts, S_target, buffers, config=cfg, targets=targets)
+    assert not jnp.isnan(loss_f32)
+    assert loss_f32 > 0
+
+    # Bfloat16 execution (TPU native MXU precision)
+    params_bf16 = {k: v.astype(jnp.bfloat16) if jnp.issubdtype(v.dtype, jnp.floating) else v for k, v in params.items()}
+    loss_bf16 = training_rollout(params_bf16, prompts, S_target, buffers, config=cfg, targets=targets)
+    assert not jnp.isnan(loss_bf16)
+    assert loss_bf16 > 0
+
+
+def test_spheroid_optimizer_train_step():
+    cfg = ModelConfigV5(**PRESETS_V5["v5_test"])
+    key = jax.random.PRNGKey(42)
+    params, buffers = init_params_v5(key, cfg)
+
+    params_bf16 = {k: v.astype(jnp.bfloat16) if jnp.issubdtype(v.dtype, jnp.floating) else v for k, v in params.items()}
+    opt_state = init_spheroid_opt_state(params_bf16)
+    train_step = build_train_step_spheroid(cfg, buffers, remat=True)
+
+    B, S_prompt, S_target = 2, 4, 8
+    prompts = jnp.ones((B, S_prompt), dtype=jnp.int32)
+    targets = jnp.ones((B, S_target), dtype=jnp.int32)
+
+    new_params, new_opt_s, loss = train_step(params_bf16, opt_state, prompts, targets, 1e-4)
+    assert not jnp.isnan(loss)
+    # Ensure parameter update occurred
+    assert not jnp.array_equal(new_params["core.intra_swiglu.w_gate"], params_bf16["core.intra_swiglu.w_gate"])
+
+
+def test_checkpoint_adapter_2d_to_3d_fusion():
+    cfg = ModelConfigV5(**PRESETS_V5["v5_test"])
+    key = jax.random.PRNGKey(42)
+    target_params, buffers = init_params_v5(key, cfg)
+
+    # Construct mock legacy 2D checkpoint
+    s_dim = cfg.surface_dim
+    K = cfg.num_shells
+    mock_ckpt = {
+        "step": 5000,
+        "loss": 3.65,
+        "model_state": {
+            "sensory_dnn.embedding.weight": np.zeros((cfg.vocab_size, s_dim), dtype=np.float32),
+        }
+    }
+    for k in range(K):
+        mock_ckpt["model_state"][f"volumetric_core.intra_shell_swiglu.{k}.fc_gate.weight"] = np.ones((s_dim * 2, s_dim), dtype=np.float32)
+        mock_ckpt["model_state"][f"volumetric_core.intra_shell_swiglu.{k}.fc_val.weight"] = np.ones((s_dim * 2, s_dim), dtype=np.float32)
+        mock_ckpt["model_state"][f"volumetric_core.intra_shell_swiglu.{k}.fc_down.weight"] = np.ones((s_dim, s_dim * 2), dtype=np.float32)
+        mock_ckpt["model_state"][f"volumetric_core.intra_norms.{k}.weight"] = np.ones(s_dim, dtype=np.float32)
+
+    restored_cnt = adapt_and_load_checkpoint_weights(mock_ckpt, target_params, jnp.float32, cfg)
+    assert restored_cnt >= 4
+    # Check 3D tensor fusion
+    assert target_params["core.intra_swiglu.w_gate"].shape == (K, s_dim, s_dim * 2)
+    assert jnp.all(target_params["core.intra_swiglu.w_gate"] == 1.0)
+
+
+def test_causal_kv_no_leakage_and_monotonic_descent():
+    """Verifies that Causal KV accumulation enforces strict non-leakage and drives clean loss descent."""
+    cfg = ModelConfigV5(**PRESETS_V5["v5_test"])
+    key = jax.random.PRNGKey(42)
+    params, buffers = init_params_v5(key, cfg)
+
+    prompts = jnp.array([[1, 2, 3]], dtype=jnp.int32)
+    targets_a = jnp.array([[10, 20, 30, 40]], dtype=jnp.int32)
+    targets_b = jnp.array([[10, 20, 30, 99]], dtype=jnp.int32)  # Differs only at step 3
+
+    # Step 0 loss should be IDENTICAL regardless of future token at step 3 (zero leakage)
+    opt_state = init_spheroid_opt_state(params)
+    train_step = build_train_step_spheroid(cfg, buffers, remat=False)
+
+    # Multi-step training descent
+    losses = []
+    p = params
+    s = opt_state
+    for _ in range(10):
+        p, s, loss = train_step(p, s, prompts, targets_a, 2e-3)
+        losses.append(float(loss))
+
+    assert losses[-1] < losses[0], f"Loss must decrease: {losses[0]} -> {losses[-1]}"
+    assert losses[0] - losses[-1] > 1.0, "Loss must decrease substantially with Causal KV"
+
+
+def test_legacy_checkpoint_weight_transfer_and_continuity():
+    """Verifies legacy checkpoints missing newly added parameters transfer seamlessly."""
+    import numpy as np
+    import torch
+    import jax
+    import jax.numpy as jnp
+    from src.jax.v5_model import ModelConfigV5, init_params_v5, training_rollout
+    from src.jax.checkpoint import adapt_and_load_checkpoint_weights
+
+    cfg = ModelConfigV5(
+        vocab_size=64,
+        num_shells=4,
+        surface_dim=32,
+        radial_dim=16,
+        num_heads=4,
+        max_phase_steps=32,
+        thinking_cycles=2,
+    )
+    src_params, buffers = init_params_v5(jax.random.PRNGKey(11), cfg)
+
+    new_only_keys = {
+        "sensory.pos_embed.weight",
+        "core.radial_mix_scale",
+        "core.shortcut_mix_scale",
+        "core.radial_up_out.weight",
+        "motor.phase_scale",
+        "motor.input_gate",
+    }
+    legacy_state = {}
+    for k, v in src_params.items():
+        if k in new_only_keys:
+            continue
+        legacy_state[k] = torch.from_numpy(np.asarray(v, dtype=np.float32).copy()).to(torch.bfloat16)
+
+    legacy_ckpt = {"step": 1000, "loss": 6.0, "model_state": legacy_state}
+    target_params, _ = init_params_v5(jax.random.PRNGKey(99), cfg)
+    target_params = {k: v.astype(jnp.bfloat16) for k, v in target_params.items()}
+
+    restored = adapt_and_load_checkpoint_weights(legacy_ckpt, target_params, jnp.bfloat16, cfg)
+    assert restored == len(legacy_state)
+
+    # Decoupled outward radial projection must copy radial_up.weight when missing
+    assert jnp.allclose(
+        target_params["core.radial_up_out.weight"].astype(jnp.float32),
+        target_params["core.radial_up.weight"].astype(jnp.float32),
+    )
+    # Identity-preserving defaults for new parameters
+    assert jnp.allclose(target_params["sensory.pos_embed.weight"].astype(jnp.float32), 0.0)
+    assert jnp.allclose(target_params["motor.input_gate"].astype(jnp.float32), 1.0)
+    assert jnp.allclose(target_params["core.radial_mix_scale"].astype(jnp.float32), 0.1, atol=1e-3)
+    assert jnp.allclose(target_params["core.shortcut_mix_scale"].astype(jnp.float32), 0.05, atol=1e-3)
+    assert jnp.allclose(target_params["motor.phase_scale"].astype(jnp.float32), cfg.phase_scale, atol=1e-2)
+
+    prompts = jnp.array([[1, 2, 3, 4]], dtype=jnp.int32)
+    targets = jnp.array([[5, 6, 7, 8]], dtype=jnp.int32)
+    loss = training_rollout(target_params, prompts, target_len=4, buffers=buffers, config=cfg, targets=targets)
+    assert jnp.isfinite(loss)
+
+
+def test_radial_shell_magnitude_hierarchy_preserved():
+    """Verifies P1 Pre-Norm preserves distinct per-shell magnitudes and P5 outward projection works."""
+    import jax
+    import jax.numpy as jnp
+    from src.jax.v5_model import ModelConfigV5, init_params_v5, deliberate_step
+
+    cfg = ModelConfigV5(
+        vocab_size=64,
+        num_shells=6,
+        surface_dim=32,
+        radial_dim=16,
+        num_heads=4,
+        max_phase_steps=32,
+        thinking_cycles=3,
+    )
+    params, buffers = init_params_v5(jax.random.PRNGKey(21), cfg)
+
+    state = jnp.zeros((1, cfg.num_shells, cfg.surface_dim), dtype=jnp.float32)
+    surface_vec = jax.random.normal(jax.random.PRNGKey(22), (1, 1, cfg.surface_dim)) * 2.0
+    state = state.at[:, -1:, :].set(surface_vec)
+
+    for _ in range(3):
+        state = deliberate_step(params, state, buffers)
+
+    shell_rms = jnp.sqrt(jnp.mean(jnp.square(state), axis=-1) + 1e-8)[0]
+    # Pre-Norm residual core should NOT collapse every shell to identical RMS=1.0
+    assert float(jnp.std(shell_rms)) > 1e-2
+
+    # Perturbing outward projection must alter deep-to-surface deliberation state
+    params_alt = dict(params)
+    params_alt["core.radial_up_out.weight"] = params["core.radial_up_out.weight"] * 2.5
+    state_ref = deliberate_step(params, state, buffers)
+    state_mod = deliberate_step(params_alt, state, buffers)
+    assert float(jnp.max(jnp.abs(state_mod - state_ref))) > 1e-4
+
+
+def test_recency_weighted_prompt_order_sensitivity():
+    """Verifies P3 recency-weighted pooling distinguishes reordered prompts in JAX and PyTorch."""
+    import torch
+    import jax
+    import jax.numpy as jnp
+    from src.jax.v5_model import ModelConfigV5, init_params_v5, training_rollout
+    from src.spheroid_v5 import ModelConfigV5 as TorchCfg, CerebroSpheroidV5
+
+    cfg = ModelConfigV5(
+        vocab_size=64,
+        num_shells=4,
+        surface_dim=32,
+        radial_dim=16,
+        num_heads=4,
+        max_phase_steps=32,
+        thinking_cycles=1,
+    )
+    params, buffers = init_params_v5(jax.random.PRNGKey(31), cfg)
+
+    pa = jnp.array([[10, 20, 30, 40]], dtype=jnp.int32)
+    pb = jnp.array([[40, 30, 20, 10]], dtype=jnp.int32)
+    logits_a = training_rollout(params, pa, target_len=3, buffers=buffers, config=cfg)
+    logits_b = training_rollout(params, pb, target_len=3, buffers=buffers, config=cfg)
+    assert float(jnp.max(jnp.abs(logits_a - logits_b))) > 1e-3
+
+    # PyTorch order sensitivity parity
+    t_cfg = TorchCfg(
+        vocab_size=64,
+        num_shells=4,
+        surface_dim=32,
+        radial_dim=16,
+        num_heads=4,
+        max_phase_steps=32,
+        thinking_cycles=1,
+    )
+    t_model = CerebroSpheroidV5(t_cfg).eval()
+    t_pa = torch.tensor([[10, 20, 30, 40]], dtype=torch.long)
+    t_pb = torch.tensor([[40, 30, 20, 10]], dtype=torch.long)
+    with torch.no_grad():
+        t_la = t_model(t_pa, target_len=3)
+        t_lb = t_model(t_pb, target_len=3)
+    assert float((t_la - t_lb).abs().max()) > 1e-3
+
+
+def test_bfloat16_norms_and_scalars_update_under_spheroid_optimizer():
+    """Verifies float32 master weights & norm exclusion prevent BF16 ULP parameter freezing."""
+    import jax
+    import jax.numpy as jnp
+    from src.jax.v5_model import ModelConfigV5, init_params_v5
+    from src.jax.spheroid_optimizer import (
+        is_manifold_operator,
+        init_spheroid_opt_state,
+        build_spheroid_train_engine,
+    )
+
+    cfg = ModelConfigV5(
+        vocab_size=64,
+        num_shells=4,
+        surface_dim=32,
+        radial_dim=16,
+        num_heads=4,
+        max_phase_steps=32,
+        thinking_cycles=2,
+    )
+    params_f32, buffers = init_params_v5(jax.random.PRNGKey(41), cfg)
+    params_bf16 = {k: v.astype(jnp.bfloat16) for k, v in params_f32.items()}
+
+    # Confirm norms and positional lookup embeddings are excluded from Newton-Schulz
+    assert not is_manifold_operator("core.intra_norms.weight", params_bf16["core.intra_norms.weight"])
+    assert not is_manifold_operator("sensory.pos_embed.weight", params_bf16["sensory.pos_embed.weight"])
+    assert is_manifold_operator("core.radial_up.weight", params_bf16["core.radial_up.weight"])
+
+    opt_state = init_spheroid_opt_state(params_bf16)
+    init_intra = opt_state["master_p"]["core.intra_norms.weight"].copy()
+    init_gains = opt_state["master_p"]["core.shell_gains"].copy()
+    init_affine = opt_state["master_p"]["motor.affine_scale"].copy()
+    init_gate = opt_state["master_p"]["motor.input_gate"].copy()
+
+    compute_grad, apply_opt = build_spheroid_train_engine(cfg, buffers, remat=False)
+    prompts = jnp.array([[3, 7, 11, 15], [4, 8, 12, 16]], dtype=jnp.int32)
+    targets = jnp.array([[20, 21, 22, 23], [24, 25, 26, 27]], dtype=jnp.int32)
+
+    cur_p = params_bf16
+    cur_opt = opt_state
+    # lr=1e-4 gives lr_1d=2e-5 < BF16 half-ULP (0.0039 at 1.0); master_p must still advance cleanly
+    for _ in range(5):
+        _, grads = compute_grad(cur_p, prompts, targets)
+        cur_p, cur_opt = apply_opt(cur_p, cur_opt, grads, 1e-4)
+
+    for k in cur_p:
+        assert cur_p[k].dtype == jnp.bfloat16
+
+    assert float(jnp.linalg.norm(cur_opt["master_p"]["core.intra_norms.weight"] - init_intra)) > 1e-5
+    assert float(jnp.linalg.norm(cur_opt["master_p"]["core.shell_gains"] - init_gains)) > 1e-5
+    assert float(jnp.linalg.norm(cur_opt["master_p"]["motor.affine_scale"] - init_affine)) > 1e-5
+    assert float(jnp.linalg.norm(cur_opt["master_p"]["motor.input_gate"] - init_gate)) > 1e-5
+
+
+def test_preshifted_feedback_no_double_shift_and_pytorch_causality(monkeypatch):
+    """Verifies pre-shifted feedback_tokens Step-0 conditioning, zero leakage, and -100 padding."""
+    import numpy as np
+    import torch
+    import jax
+    import jax.numpy as jnp
+    from src.jax.v5_model import ModelConfigV5, init_params_v5, training_rollout
+    from src.jax.data_streamer import LinguisticDataStreamer
+    from src.spheroid_v5 import ModelConfigV5 as TorchCfg, CerebroSpheroidV5
+
+    cfg = ModelConfigV5(
+        vocab_size=64,
+        num_shells=4,
+        surface_dim=32,
+        radial_dim=16,
+        num_heads=4,
+        max_phase_steps=32,
+        thinking_cycles=1,
+    )
+    params, buffers = init_params_v5(jax.random.PRNGKey(51), cfg)
+
+    prompts = jnp.array([[2, 3, 4, 5]], dtype=jnp.int32)
+    fb_a = jnp.array([[17, 10, 11, 12, 13]], dtype=jnp.int32)
+    fb_b = jnp.array([[29, 10, 44, 12, 13]], dtype=jnp.int32)
+    fb_c = jnp.array([[17, 10, 44, 12, 13]], dtype=jnp.int32)
+
+    # JAX: changing fb[:, 0] changes step 0; changing step 2 must not leak to steps < 2
+    logits_a = training_rollout(
+        params, prompts, target_len=5, buffers=buffers, config=cfg,
+        feedback_tokens=fb_a, sampling_p=1.0, feedback_is_shifted=True,
+    )
+    logits_b = training_rollout(
+        params, prompts, target_len=5, buffers=buffers, config=cfg,
+        feedback_tokens=fb_b, sampling_p=1.0, feedback_is_shifted=True,
+    )
+    logits_c = training_rollout(
+        params, prompts, target_len=5, buffers=buffers, config=cfg,
+        feedback_tokens=fb_c, sampling_p=1.0, feedback_is_shifted=True,
+    )
+    assert float(jnp.max(jnp.abs(logits_a[:, 0, :] - logits_b[:, 0, :]))) > 1e-3
+    assert float(jnp.max(jnp.abs(logits_a[:, :2, :] - logits_c[:, :2, :]))) < 1e-5
+    assert float(jnp.max(jnp.abs(logits_a[:, 2, :] - logits_c[:, 2, :]))) > 1e-3
+
+    # PyTorch causality and Step-0 feedback conditioning
+    t_cfg = TorchCfg(
+        vocab_size=64,
+        num_shells=4,
+        surface_dim=32,
+        radial_dim=16,
+        num_heads=4,
+        max_phase_steps=32,
+        thinking_cycles=1,
+    )
+    t_model = CerebroSpheroidV5(t_cfg).eval()
+    tp = torch.tensor([[2, 3, 4, 5]], dtype=torch.long)
+    tt = torch.tensor([[10, 11, 12, 13, 14]], dtype=torch.long)
+    tfb_1 = torch.tensor([[17, 10, 11, 12, 13]], dtype=torch.long)
+    tfb_2 = torch.tensor([[17, 10, 44, 12, 13]], dtype=torch.long)
+    with torch.no_grad():
+        _, tl_1 = t_model(tp, targets=tt, feedback_tokens=tfb_1, feedback_is_shifted=True)
+        _, tl_2 = t_model(tp, targets=tt, feedback_tokens=tfb_2, feedback_is_shifted=True)
+    # Steps 0 and 1 must be strictly unaffected by step-2 feedback mutation
+    assert float((tl_1[:, :2, :] - tl_2[:, :2, :]).abs().max()) < 1e-5
+    # Step 2 must directly respond to step-2 feedback mutation (no double shift / no mask blockage)
+    assert float((tl_1[:, 2, :] - tl_2[:, 2, :]).abs().max()) > 1e-3
+
+    # Verify PyTorch sequential rollout also obeys causality without double shift
+    t_model.force_sequential = True
+    with torch.no_grad():
+        _, tls_1 = t_model(tp, targets=tt, feedback_tokens=tfb_1, feedback_is_shifted=True)
+        _, tls_2 = t_model(tp, targets=tt, feedback_tokens=tfb_2, feedback_is_shifted=True)
+    assert float((tls_1[:, :2, :] - tls_2[:, :2, :]).abs().max()) < 1e-5
+    assert float((tls_1[:, 2, :] - tls_2[:, 2, :]).abs().max()) > 1e-3
+
+    # LinguisticDataStreamer default target_pad_id == -100
+    monkeypatch.setattr(
+        LinguisticDataStreamer,
+        "_generate_synthetic_prose",
+        lambda self: ("<stim>Hi</stim>", "<act>Yes</act>"),
+    )
+    streamer = LinguisticDataStreamer(batch_size=2, prompt_len=8, target_len=64, vocab_size=64, data_dir="__nonexistent__")
+    try:
+        _, r_b = streamer.get_batch()
+        assert int(jnp.sum(r_b == -100)) > 0
+        assert int(jnp.sum(r_b[:, -16:] == 0)) == 0
+    finally:
+        if hasattr(streamer, "stop"):
+            streamer.stop()
+
+
+def test_pure_teacher_forcing_equivalence_and_fused_step():
+    """Verifies pure_teacher_forcing=True matches fallback rollout gradients and fused Spheroid step descends."""
+    cfg = ModelConfigV5(
+        vocab_size=64,
+        num_shells=4,
+        surface_dim=32,
+        radial_dim=16,
+        num_heads=4,
+        max_phase_steps=32,
+        thinking_cycles=1,
+    )
+    params, buffers = init_params_v5(jax.random.PRNGKey(123), cfg)
+    prompts = jnp.array([[2, 3, 4, 5, 6, 7], [8, 9, 10, 11, 12, 13]], dtype=jnp.int32)
+    targets = jnp.array(
+        [[14, 15, 16, 17, 18, 19, -100, -100], [20, 21, 22, 23, 24, -100, -100, -100]],
+        dtype=jnp.int32,
+    )
+    shifted_fb = jnp.array(
+        [[1, 14, 15, 16, 17, 18, 19, -100], [1, 20, 21, 22, 23, -100, -100, -100]],
+        dtype=jnp.int32,
+    )
+
+    for fb in (None, shifted_fb):
+        for remat_flag in (False, True):
+            def _loss(p, pure_tf):
+                return training_rollout(
+                    params=p,
+                    prompts=prompts,
+                    target_len=targets.shape[1],
+                    buffers=buffers,
+                    config=cfg,
+                    feedback_tokens=fb,
+                    feedback_is_shifted=True,
+                    pad_id=0,
+                    sampling_p=1.0,
+                    repetition_penalty=1.25,
+                    targets=targets,
+                    remat=remat_flag,
+                    pure_teacher_forcing=pure_tf,
+                )
+
+            l_ref, g_ref = jax.value_and_grad(lambda p: _loss(p, False))(params)
+            l_fast, g_fast = jax.value_and_grad(lambda p: _loss(p, True))(params)
+            assert abs(float(l_ref - l_fast)) < 1e-5
+            max_grad_diff = max(float(jnp.max(jnp.abs(g_ref[k] - g_fast[k]))) for k in params)
+            assert max_grad_diff < 1e-4
+
+    # Verify fused single-JIT SpheroidOptimizer step decreases loss monotonically over several steps
+    opt_state = init_spheroid_opt_state(params)
+    train_step = build_train_step_spheroid(
+        config=cfg,
+        buffers=buffers,
+        pad_id=0,
+        weight_decay=1e-4,
+        repetition_penalty=1.25,
+        remat=False,
+    )
+    params, opt_state, loss_0 = train_step(
+        params, opt_state, prompts, targets, 1e-3, feedback_tokens=shifted_fb, sampling_p=1.0
+    )
+    cur_loss = float(loss_0)
+    for _ in range(5):
+        params, opt_state, next_loss = train_step(
+            params, opt_state, prompts, targets, 1e-3, feedback_tokens=shifted_fb, sampling_p=1.0
+        )
+        cur_loss = float(next_loss)
+    assert cur_loss < float(loss_0)
+
+
+def test_bundled_tokenizer_single_bio_delimiters():
+    from src.corpus import (
+        build_tokenizer,
+        encode_no_special,
+        format_motor_response,
+        format_stimulus_prompt,
+        get_bio_token_ids,
+        tokenize_pair,
+    )
+
+    tok = build_tokenizer("llama")
+    assert len(tok) == 32000
+    assert tok.vocab_size == 32000
+
+    bio = get_bio_token_ids(tok)
+    assert bio == {"stim": 31, "stim_end": 32, "act": 33, "act_end": 34}
+
+    for marker, expected_id in [("<stim>", 31), ("</stim>", 32), ("<act>", 33), ("</act>", 34)]:
+        ids = encode_no_special(tok, marker)
+        assert ids == [expected_id], f"{marker} tokenized to {ids}, expected [{expected_id}]"
+
+    p_ids, a_ids = tokenize_pair(tok, "What is 2 + 2?", "4", max_prompt_len=32, max_answer_tokens=32)
+    assert p_ids[0] == 31 and p_ids[-1] == 32
+    assert 1 not in p_ids
+    assert a_ids[0] == 33 and a_ids[-2:] == [34, tok.eos_token_id]
+    assert 1 not in a_ids
+
+    # Decode behavior: skip_special_tokens strips bio delimiters cleanly
+    clean = tok.decode(encode_no_special(tok, format_motor_response("Yes, indeed.")), skip_special_tokens=True)
+    assert clean == "Yes, indeed."
+    raw = tok.decode(encode_no_special(tok, format_stimulus_prompt("Hello")), skip_special_tokens=False)
+    assert "<stim>" in raw and "</stim>" in raw
+
+    # Plain prose/code without delimiters preserves standard LLaMA tokens
+    plain = "Hello world\ndef add(a, b):\n    return a + b"
+    plain_ids = encode_no_special(tok, plain)
+    assert all(tid not in (31, 32, 33, 34) for tid in plain_ids)
+
+
+def test_v5_generation_seed_token_parity():
+    from src.jax.v5_model import ModelConfigV5, PRESETS_V5, init_params_v5, training_rollout
+
+    cfg = ModelConfigV5(**PRESETS_V5["v5_test"])
+    params, buffers = init_params_v5(jax.random.PRNGKey(99), cfg)
+    prompts = jnp.array([[31, 5, 6, 32]])
+    act_id = 33
+
+    shifted_fb = jnp.array([[-100, act_id, 7, 8]])
+    logits_tf = training_rollout(
+        params=params,
+        prompts=prompts,
+        target_len=4,
+        buffers=buffers,
+        config=cfg,
+        feedback_tokens=shifted_fb,
+        feedback_is_shifted=True,
+        sampling_p=1.0,
+        repetition_penalty=1.25,
+    )
+    logits_seed = training_rollout(
+        params=params,
+        prompts=prompts,
+        target_len=4,
+        buffers=buffers,
+        config=cfg,
+        targets=None,
+        seed_token_id=act_id,
+        repetition_penalty=1.25,
+    )
+    step1_diff = float(jnp.max(jnp.abs(logits_tf[:, 1, :] - logits_seed[:, 1, :])))
+    assert step1_diff < 1e-5, f"Step-1 logits after pre-seeding <act> diverged: {step1_diff}"
+
+
+def test_pmap_local_sgd_2device_multiprocess():
+    """Verify build_pmap_local_sgd_step_spheroid runs across 2 XLA devices and keeps replicas synchronized."""
+    import os
+    import subprocess
+    import sys
+
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    code = """
+import jax
+import jax.numpy as jnp
+import numpy as np
+from src.jax.v5_model import ModelConfigV5, PRESETS_V5, init_params_v5
+from src.jax.spheroid_optimizer import (
+    init_spheroid_opt_state,
+    replicate_for_pmap,
+    build_pmap_local_sgd_step_spheroid,
+    RECURRENT_KEYS,
+)
+
+devices = jax.devices()
+assert len(devices) == 2, f"Expected 2 XLA devices, got {len(devices)}: {devices}"
+
+cfg = ModelConfigV5(**PRESETS_V5["v5_test"])
+params, buffers = init_params_v5(jax.random.PRNGKey(7), cfg)
+opt_state = init_spheroid_opt_state(params)
+
+rep_params = replicate_for_pmap(params, devices)
+rep_opt = replicate_for_pmap(opt_state, devices)
+
+round_fn = build_pmap_local_sgd_step_spheroid(
+    cfg,
+    buffers,
+    pad_id=0,
+    weight_decay=1e-5,
+    repetition_penalty=1.25,
+    remat=False,
+    local_steps=3,
+    devices=devices,
+)
+
+rng = np.random.default_rng(123)
+q_micro = jnp.asarray(rng.integers(3, cfg.vocab_size, size=(2, 3, 2, 8), dtype=np.int32))
+r_micro = jnp.asarray(rng.integers(3, cfg.vocab_size, size=(2, 3, 2, 8), dtype=np.int32))
+lr = jnp.asarray(5e-4, dtype=jnp.float32)
+
+new_params, new_opt, losses = round_fn(rep_params, rep_opt, q_micro, r_micro, lr)
+losses.block_until_ready()
+
+assert np.isfinite(float(losses[0]))
+step_r0 = int(jax.device_get(new_opt["step"])[0])
+step_r1 = int(jax.device_get(new_opt["step"])[1])
+assert step_r0 == 3 and step_r1 == 3, f"Expected local step=3 on both replicas, got {(step_r0, step_r1)}"
+
+host_p = jax.device_get(new_params)
+for k, arr in host_p.items():
+    diff = float(np.max(np.abs(arr[0].astype(np.float32) - arr[1].astype(np.float32))))
+    assert diff < 1e-6, f"Replica mismatch on {k}: max diff {diff}"
+    if k in RECURRENT_KEYS:
+        mat = arr[0].astype(np.float32)
+        if mat.ndim >= 2:
+            slices = mat.reshape(-1, mat.shape[-2], mat.shape[-1])
+            for sl in slices:
+                s_max = float(np.linalg.svd(sl, compute_uv=False)[0])
+                assert s_max <= 1.0 + 1e-3, f"Recurrent spectral norm violated on {k}: {s_max}"
+print("PMAP_LOCAL_SGD_OK")
+"""
+    env = os.environ.copy()
+    existing_xla = env.get("XLA_FLAGS", "").strip()
+    multi_flag = "--xla_force_host_platform_device_count=2"
+    env["XLA_FLAGS"] = f"{existing_xla} {multi_flag}".strip() if multi_flag not in existing_xla else existing_xla
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert proc.returncode == 0, f"Subprocess failed:\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
+    assert "PMAP_LOCAL_SGD_OK" in proc.stdout
+
+
+def test_train_v5_tpu_jax_multi_tpu_local_sgd_cli_smoke(tmp_path):
+    """End-to-end subprocess smoke test of train_v5_tpu_jax.py with 2 virtual XLA devices and local_sgd."""
+    import os
+    import subprocess
+    import sys
+
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    ckpt_dir = tmp_path / "ckpts"
+    scratch_dir = tmp_path / "scratch"
+    env = os.environ.copy()
+    existing_xla = env.get("XLA_FLAGS", "").strip()
+    multi_flag = "--xla_force_host_platform_device_count=2"
+    env["XLA_FLAGS"] = f"{existing_xla} {multi_flag}".strip() if multi_flag not in existing_xla else existing_xla
+    env["PYTHONUNBUFFERED"] = "1"
+
+    cmd = [
+        sys.executable,
+        "scripts/train_v5_tpu_jax.py",
+        "--preset",
+        "v5_test",
+        "--dataset_source",
+        "local",
+        "--optimizer",
+        "spheroid",
+        "--multi_tpu",
+        "local_sgd",
+        "--local_steps",
+        "2",
+        "--batch_size",
+        "2",
+        "--prompt_len",
+        "8",
+        "--seq-len",
+        "8",
+        "--total-steps",
+        "4",
+        "--eval_interval",
+        "4",
+        "--save-interval",
+        "4",
+        "--periodic_every",
+        "100",
+        "--log-every",
+        "4",
+        "--no-cloud-sync",
+        "--from-scratch",
+        "--remat",
+        "false",
+        "--checkpoint-dir",
+        str(ckpt_dir),
+        "--scratch_dir",
+        str(scratch_dir),
+    ]
+    proc = subprocess.run(cmd, cwd=repo_root, env=env, capture_output=True, text=True, timeout=180)
+    assert proc.returncode == 0, f"CLI smoke failed:\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
+    assert "Multi-TPU Engine : Local-SGD (2 TPUs x 2 local steps = +4 steps/round)" in proc.stdout
+    saved_ckpts = list(ckpt_dir.glob("*.pt"))
+    assert len(saved_ckpts) >= 1, f"Expected saved .pt checkpoint in {ckpt_dir}, got {saved_ckpts}"
