@@ -1,18 +1,15 @@
 # Agent Work State & Activity Tracker
 
-> **Status**: 🟡 `IN_PROGRESS` | **Last Updated**: `2026-11-15T13:53:03.186376+05:30` | **Session**: `06bf9452-332e-4cd0-92a8-b233d6bd46ca`
+> **Status**: 🟢 `COMPLETED` | **Last Updated**: `2026-11-15T13:59:08.699162+05:30` | **Session**: `06bf9452-332e-4cd0-92a8-b233d6bd46ca`
 
 ## Current / Active Objective
-**Goal**: 🔄 Resumption mode active: will automatically pull and adapt checkpoint for tpu_v5e_1 (latest)!
-🔄 Pulling latest updates from origin/main...
-✅ Repository synchronized at commit [e6e7be4]!
-🔤 Offline LLa...
+**Goal**: why eval losses are above 10 when same were below 3 earlier
 
-- **Phase**: `executing`
-- **Current Task**: Executed run_command: Check remote manifest on bioflo.in
+- **Phase**: `completed`
+- **Current Task**: Idle / Awaiting next request
 
 ## Summary of Completed Work
-Your Colab TPU run is performing at peak efficiency, and our architectural zero-init updates synchronized seamlessly (`commit [e6e7be4]`) with **100% parameter parity (69/69 arrays restored)**.
+The sudden spike in held-out evaluation loss from **`< 3`** (e.g. `1.58 – 2.45` at Step 586k) to **`13.7 – 18.3`** in recent logs was caused by **two factors: a feedback-alignment and pad-masking bug** introduced in commit `e6e7be4`, combined with a **transition from in-distribution pretraining snippets to out-of-distribution reasoning benchmarks**.
 
 ## Modified Files
 - [`src/__init__.py`](src/__init__.py)
@@ -201,6 +198,7 @@ Your Colab TPU run is performing at peak efficiency, and our architectural zero-
 - [`../cerebro_spheroid_v5/scripts/run_autonomous_training.py`](../cerebro_spheroid_v5/scripts/run_autonomous_training.py)
 - [`../cerebro_spheroid_v5/training/train_v5_sft.py`](../cerebro_spheroid_v5/training/train_v5_sft.py)
 - [`../cerebro_spheroid_v5/scripts/run_sft_training.py`](../cerebro_spheroid_v5/scripts/run_sft_training.py)
+- [`../cerebro_spheroid_v5/colab/CerebroSpheroid_V5_Colab_SFT.ipynb`](../cerebro_spheroid_v5/colab/CerebroSpheroid_V5_Colab_SFT.ipynb)
 
 ## Key Findings & Decisions
 - Checkpoint resumption was starting with cold zero-momentum buffers and full learning rate, causing immediate parameter manifold disruptions.
@@ -218,16 +216,16 @@ Your Colab TPU run is performing at peak efficiency, and our architectural zero-
 ## Recent Actions (Last 10)
 | Time | Tool | Details |
 | :--- | :--- | :--- |
-| `13:53:03` | `run_command` | Check remote manifest on bioflo.in |
-| `13:52:57` | `manage_task` | manage_task |
-| `13:52:54` | `run_command` | Check signature of check_remote_manifest |
-| `13:52:53` | `run_command` | Commit and push SFT notebook update in cerebro_spheroid_v5 |
-| `13:52:52` | `manage_task` | manage_task |
-| `13:52:50` | `run_command` | Check remote manifest for v5_small |
-| `13:52:44` | `run_command` | Check cloud_sync.py for sync parameters |
-| `13:52:39` | `run_command` | Check cloud sync status on bioflo.in |
-| `13:52:32` | `manage_task` | manage_task |
-| `13:52:31` | `run_command` | Verify badge in Cell 0 |
+| `13:59:00` | `manage_task` | manage_task |
+| `13:58:55` | `run_command` | Check origin/main log |
+| `13:58:41` | `manage_task` | manage_task |
+| `13:58:39` | `run_command` | Rebase and push cerebro_spheroid_v5 |
+| `13:58:39` | `run_command` | Push pending commit in cerebro_spheroid_v5 |
+| `13:58:26` | `run_command` | Check git log in cerebro_spheroid_v5 |
+| `13:58:25` | `run_command` | Show f1b6bfd commit stat |
+| `13:58:18` | `run_command` | Check git status in cerebro_spheroid_v5 |
+| `13:58:18` | `manage_task` | manage_task |
+| `13:58:12` | `run_command` | Fetch origin in cerebro_spheroid_v5 |
 
 ---
 *This file is automatically maintained by `auto-work-tracker`. Other agents can parse `.agents/work_state.json` or inspect this file directly to resume or review progress.*
