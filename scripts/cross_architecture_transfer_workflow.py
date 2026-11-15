@@ -159,9 +159,33 @@ class CrossArchitectureTransferWorkflow:
         mapped_multi = 0
         preserved_control = 0
 
+        # Pillar 3: Deliberate Control Token Calibration from source delimiters
+        control_token_candidates = {
+            31: ["<|im_start|>user\n", "[INST]", "<|start_header_id|>user<|end_header_id|>\n\n", "User: "],       # <stim>
+            32: ["<|im_end|>\n", "[/INST]", "<|eot_id|>\n", "\n\nAssistant: ", "\n\n"],                          # </stim>
+            33: ["<|im_start|>assistant\n", "<|start_header_id|>assistant<|end_header_id|>\n\n", "Assistant: "], # <act>
+            34: ["<|im_end|>", "<|eot_id|>", "</s>"],                                                             # </act>
+        }
+        calibrated_controls = 0
+        for ctrl_id, candidates in control_token_candidates.items():
+            for cand in candidates:
+                encoded = self.source_tok.encode(cand, add_special_tokens=False)
+                valid_ids = [idx for idx in encoded if idx < src_emb.shape[0]]
+                if valid_ids:
+                    pooled = src_emb[valid_ids, :transfer_dim].mean(dim=0)
+                    new_v5_emb[ctrl_id, :transfer_dim] = pooled
+                    calibrated_controls += 1
+                    break
+
         for i in range(self.v5_tok.vocab_size):
+            # Tokens 31-34 already calibrated above; preserve special 1, 2 (<unk>, <s>, </s>)
+            if i in (1, 2):
+                preserved_control += 1
+                continue
+            if i in (31, 32, 33, 34):
+                continue
             tok_str = self.v5_tok.decode([i])
-            if tok_str.strip() in bio_tokens or i in [1, 2, 31, 32, 33, 34]:
+            if tok_str.strip() in bio_tokens:
                 preserved_control += 1
                 continue
 
@@ -178,11 +202,12 @@ class CrossArchitectureTransferWorkflow:
                     new_v5_emb[i, :transfer_dim] = pooled
                     mapped_multi += 1
 
-        total_mapped = mapped_single + mapped_multi
+        total_mapped = mapped_single + mapped_multi + calibrated_controls
         coverage_pct = (total_mapped / (self.v5_tok.vocab_size - preserved_control)) * 100.0
         print(f"   ✓ Vocabulary Mapping Results:")
         print(f"     - Exact Single-Token Match:  {mapped_single:5d} tokens")
         print(f"     - Multi-Subword Pooled:      {mapped_multi:5d} tokens")
+        print(f"     - Calibrated Control Tokens: {calibrated_controls:5d} tokens (Pillar 3)")
         print(f"     - Preserved Control/Bio:     {preserved_control:5d} tokens")
         print(f"     - Semantic Coverage:         {coverage_pct:.2f}% of target vocabulary")
 
@@ -306,31 +331,61 @@ class CrossArchitectureTransferWorkflow:
         self.v5_model = self.v5_model.half().to(self.device)
         self.v5_model.train()
 
-        # Load Cognitive Trajectory Corpus
+        # Load Tri-Modal Cognitive Trajectory Corpus (Pillar 1)
         tok = AutoTokenizer.from_pretrained(os.path.join(WORKSPACE_ROOT, "data", "tokenizer"))
-        dataset_path = os.path.join(WORKSPACE_ROOT, "data", "cerebro_cognitive_8k", "cerebro_cognitive_10k.jsonl")
-        
-        print("Loading calibration QA trajectories...")
-        data_samples = []
-        with open(dataset_path, "r", encoding="utf-8") as f:
-            for idx, line in enumerate(f):
-                if idx >= 6000:
-                    break
-                entry = json.loads(line)
-                data_samples.append((entry["question"], entry["answer"]))
+        candidate_paths = [
+            os.path.join(WORKSPACE_ROOT, "data", "cerebro_cognitive_8k", "cerebro_tri_modal_sft_10k.jsonl"),
+            os.path.join(WORKSPACE_ROOT, "data", "cerebro_cognitive_8k", "cerebro_tri_modal_sft_10k.parquet"),
+            os.path.join(WORKSPACE_ROOT, "data", "cerebro_cognitive_8k", "cerebro_cognitive_10k.jsonl"),
+            os.path.join(WORKSPACE_ROOT, "data", "cerebro_cognitive_8k", "cerebro_cognitive_10k.parquet"),
+        ]
+        dataset_path = next((p for p in candidate_paths if os.path.exists(p)), candidate_paths[0])
+        print(f"Loading calibration QA trajectories from: {os.path.basename(dataset_path)}...")
 
+        data_samples = []
+        if dataset_path.endswith(".parquet"):
+            import pyarrow.parquet as pq
+            table = pq.read_table(dataset_path)
+            q_col = table["question"].to_pylist()
+            a_col = table["answer"].to_pylist()
+            for q, a in zip(q_col[:8000], a_col[:8000]):
+                data_samples.append((q, a))
+        else:
+            with open(dataset_path, "r", encoding="utf-8") as f:
+                for idx, line in enumerate(f):
+                    if idx >= 8000:
+                        break
+                    entry = json.loads(line)
+                    data_samples.append((entry["question"], entry["answer"]))
+
+        # Pillar 4: Truncation Trap Elimination - Expand horizon from [:80] to [:256] tokens
         tokenized_data = []
         for q, a in data_samples:
             prompt_str = format_stimulus_prompt(q)
             answer_str = format_motor_response(a)
-            p_ids = [t % self.target_cfg.vocab_size for t in encode_no_special(tok, prompt_str)][:80]
-            a_ids = [t % self.target_cfg.vocab_size for t in encode_no_special(tok, answer_str)][:80]
+            p_ids = [t % self.target_cfg.vocab_size for t in encode_no_special(tok, prompt_str)][:256]
+            a_ids = [t % self.target_cfg.vocab_size for t in encode_no_special(tok, answer_str)][:256]
             if len(p_ids) > 2 and len(a_ids) > 2:
                 tokenized_data.append((p_ids, a_ids))
 
-        print(f"   ✓ Ready with {len(tokenized_data)} tokenized QA pairs.")
+        print(f"   ✓ Ready with {len(tokenized_data)} full-horizon (256-tok) QA pairs.")
 
-        optimizer = torch.optim.AdamW(self.v5_model.parameters(), lr=initial_lr, weight_decay=0.01)
+        # Pillar 4: SCMOptimizer with Rank-Adaptive Gating Acceleration and Stiefel Manifold updates
+        try:
+            from src.scm_optimizer import SCMOptimizer
+            optimizer = SCMOptimizer(
+                self.v5_model.parameters(),
+                lr=initial_lr,
+                momentum=0.95,
+                weight_decay=0.01,
+                ns_steps=5,
+                rank_boost=4.0,
+                radial_gamma=0.5,
+            )
+            print("   ✓ Active Optimizer: SCMOptimizer (Stiefel Newton-Schulz 5 + Rank-Adaptive Gating Acceleration)")
+        except Exception as e:
+            print(f"   ⚠️ SCMOptimizer notice ({e}), defaulting to AdamW.")
+            optimizer = torch.optim.AdamW(self.v5_model.parameters(), lr=initial_lr, weight_decay=0.01)
 
         def get_lr(step_i):
             prog = min(1.0, step_i / max_steps)
@@ -366,11 +421,14 @@ class CrossArchitectureTransferWorkflow:
                 targets_tensor[b_idx, :len(a)] = torch.tensor(a, dtype=torch.long, device=self.device)
 
             with torch.amp.autocast("cuda", dtype=torch.float16):
+                # Pillar 2: Dynamic Answer-Anchor Loss Weighting (3.5x penalty on answer tokens)
                 loss, _ = self.v5_model(
                     prompts=prompts_tensor,
                     targets=targets_tensor,
                     sampling_p=1.0,
                     deliberation_mode="teacher_forcing",
+                    use_anchor_loss=True,
+                    anchor_weight=3.5,
                 )
                 loss_scaled = loss / accum_steps
 
