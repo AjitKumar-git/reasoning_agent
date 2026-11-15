@@ -1,15 +1,15 @@
 # Agent Work State & Activity Tracker
 
-> **Status**: 🟡 `IN_PROGRESS` | **Last Updated**: `2026-11-15T12:57:52.687708+05:30` | **Session**: `f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2`
+> **Status**: 🟡 `IN_PROGRESS` | **Last Updated**: `2026-11-15T13:44:14.285234+05:30` | **Session**: `06bf9452-332e-4cd0-92a8-b233d6bd46ca`
 
 ## Current / Active Objective
-**Goal**: why loss increased to 2.9
+**Goal**: refine whole script for autonomous training, refine the curiculum for v5 base with learning from this run.
 
 - **Phase**: `executing`
-- **Current Task**: Executed manage_task: manage_task
+- **Current Task**: Executed run_command: Check latest step uploaded to bioflo.in
 
 ## Summary of Completed Work
-The increase in loss from **~2.10 to ~2.94** around Step 836.7k is **not model degradation or instability**—it is the direct and mathematically expected result of switching to the **Tri-Pillar Curriculum** (Math + Code + Science).
+Our deep diagnostic and benchmarking run revealed four fundamental principles for training Spheroid architectures:
 
 ## Modified Files
 - [`src/__init__.py`](src/__init__.py)
@@ -196,6 +196,8 @@ The increase in loss from **~2.10 to ~2.94** around Step 836.7k is **not model d
 - [`../cerebro_spheroid_v5/scripts/benchmark_industry_standard.py`](../cerebro_spheroid_v5/scripts/benchmark_industry_standard.py)
 - [`../cerebro_spheroid_v5/eval/results/BENCHMARK_REPORT.md`](../cerebro_spheroid_v5/eval/results/BENCHMARK_REPORT.md)
 - [`../cerebro_spheroid_v5/scripts/run_autonomous_training.py`](../cerebro_spheroid_v5/scripts/run_autonomous_training.py)
+- [`../cerebro_spheroid_v5/training/train_v5_sft.py`](../cerebro_spheroid_v5/training/train_v5_sft.py)
+- [`../cerebro_spheroid_v5/scripts/run_sft_training.py`](../cerebro_spheroid_v5/scripts/run_sft_training.py)
 
 ## Key Findings & Decisions
 - Checkpoint resumption was starting with cold zero-momentum buffers and full learning rate, causing immediate parameter manifold disruptions.
@@ -213,16 +215,16 @@ The increase in loss from **~2.10 to ~2.94** around Step 836.7k is **not model d
 ## Recent Actions (Last 10)
 | Time | Tool | Details |
 | :--- | :--- | :--- |
-| `12:57:52` | `manage_task` | manage_task |
-| `12:57:48` | `run_command` | Commit and push cerebro_spheroid_v5 |
-| `12:57:27` | `run_command` | Check git status in reasoning_agent |
-| `12:57:20` | `run_command` | Check diff stat in cerebro_spheroid_v5 |
-| `12:57:14` | `run_command` | Sync files to reasoning_agent |
-| `12:57:06` | `run_command` | Check reasoning_agent files |
-| `12:56:58` | `run_command` | Verify no README.md created |
-| `12:56:51` | `run_command` | Check git status in cerebro_spheroid_v5 |
-| `12:56:44` | `run_command` | Verify Cell 7 text |
-| `12:56:37` | `run_command` | Update Colab notebooks cleanly |
+| `13:44:14` | `run_command` | Check latest step uploaded to bioflo.in |
+| `13:44:14` | `manage_task` | manage_task |
+| `13:44:11` | `run_command` | Commit and push cerebro_spheroid_v5 SFT |
+| `13:43:59` | `read_file` | read_file |
+| `13:43:54` | `run_command` | Check for README.md |
+| `13:43:54` | `read_file` | read_file |
+| `13:43:51` | `run_command` | Find return statement in training_rollout |
+| `13:43:50` | `run_command` | Check git status in cerebro_spheroid_v5 |
+| `13:43:45` | `run_command` | Find cross entropy computation in v5_model.py |
+| `13:43:45` | `run_command` | Sync SFT files to reasoning_agent |
 
 ---
 *This file is automatically maintained by `auto-work-tracker`. Other agents can parse `.agents/work_state.json` or inspect this file directly to resume or review progress.*
