@@ -45,8 +45,8 @@ def parse_args():
         dest="dataset_source",
         type=str,
         default="reasoning_anneal",
-        choices=["reasoning_anneal", "reasoning", "dense_edu", "consolidation"],
-        help="Dataset stream (default: reasoning_anneal for GSM8K + OpenHermes-2.5)",
+        choices=["reasoning_anneal", "reasoning", "frontier_mix", "beat_smollm", "dense_edu", "consolidation"],
+        help="Dataset stream (default: reasoning_anneal for 6-way Frontier Curriculum: SmolTalk + GSM8K + FineWeb-Edu)",
     )
     parser.add_argument(
         "--total-steps",
@@ -164,9 +164,9 @@ def parse_args():
         "--resume_target",
         dest="resume_target",
         type=str,
-        default="best",
+        default="latest",
         choices=["latest", "best"],
-        help="Checkpoint resumption target ('best' or 'latest', default: best)",
+        help="Checkpoint resumption target ('latest' or 'best', default: latest)",
     )
     parser.add_argument(
         "--auto-tune",
