@@ -1,22 +1,31 @@
 """
-CerebroSpheroid Cloud Synchronization Client.
-Enables transparent, continuous checkpoint resumption across Google Colab, Kaggle, and Local Workstations.
+CerebroSpheroid V5 Cloud Synchronization Client.
+================================================
+Enables transparent, continuous checkpoint and metrics synchronization between
+Google Colab, Local Workstations, and the centralized dashboard endpoint:
+https://bioflo.in/api/cerebro/sync.php
 
-Endpoints:
-- Default Sync URL: https://bioflo.in/api/cerebro/sync.php
-- Storage Policy: Strictly bounded to latest.pt and best.pt (capped at ~900 MB total server space).
-- Chunked Upload: Bypasses Cloudflare 100 MB limits by streaming 10 MB chunks.
+Key Features:
+1. Two-way live sync: Resumes checkpoints seamlessly across Colab and Local.
+2. Chunked Streaming: Bypasses Cloudflare 100 MB limits by streaming 10 MB chunks.
+3. Strict storage safety: Mirrored slots strictly bounded to latest.pt and best.pt.
+4. Auto-resumption: Downloads with HTTP Range chunk verification and zip integrity validation.
 """
 
-import os
-import sys
-import time
+from __future__ import annotations
+
 import json
+import os
 import socket
+import sys
 import threading
-import urllib.request
+import time
 import urllib.error
-from typing import Optional, Dict, Any, Tuple
+import urllib.parse
+import urllib.request
+import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Dict, Optional, Tuple
 
 # Prefer IPv4 to avoid hangs on misconfigured DNS64/NAT64 transitions
 _orig_getaddrinfo = socket.getaddrinfo
@@ -33,6 +42,7 @@ socket.getaddrinfo = _preferred_getaddrinfo
 
 DEFAULT_URL = os.environ.get("BIOFLO_SYNC_URL", "https://bioflo.in/api/cerebro/sync.php")
 DEFAULT_TOKEN = os.environ.get("BIOFLO_SYNC_TOKEN", "CerebroSpheroid_Sync_Secure_2026")
+TPU_PRESET_ALIASES = ("tpu_v5e_1", "tpu_v6e_1", "tpu_v6e", "tpu", "v5_tpu")
 
 _IN_FLIGHT_UPLOADS: Dict[str, int] = {}
 _IN_FLIGHT_UPLOAD_TIMES: Dict[str, float] = {}
@@ -40,6 +50,15 @@ _LAST_BEST_UPLOAD_TIME: float = 0.0
 _BEST_COOLDOWN_SECONDS: float = 300.0  # 5 minutes minimum between best.pt uploads
 _UPLOAD_LOCK = threading.Lock()
 _ACTIVE_UPLOAD_THREADS: list = []
+
+
+def detect_source_environment() -> str:
+    """Detects whether current execution is in Google Colab, Kaggle, or Local."""
+    if "COLAB_GPU" in os.environ or "COLAB_TPU_ADDR" in os.environ or os.path.exists("/content"):
+        return "colab"
+    if "KAGGLE_KERNEL_RUN_TYPE" in os.environ or os.path.exists("/kaggle"):
+        return "kaggle"
+    return "local"
 
 
 def wait_for_in_flight_uploads(timeout: float = 60.0):
@@ -54,23 +73,26 @@ def wait_for_in_flight_uploads(timeout: float = 60.0):
         _ACTIVE_UPLOAD_THREADS = [t for t in _ACTIVE_UPLOAD_THREADS if t.is_alive()]
 
 
-def detect_source_environment() -> str:
-    """Detects whether current execution is in Google Colab, Kaggle, or Local."""
-    if "COLAB_GPU" in os.environ or "COLAB_TPU_ADDR" in os.environ or os.path.exists("/content"):
-        return "colab"
-    if "KAGGLE_KERNEL_RUN_TYPE" in os.environ or os.path.exists("/kaggle"):
-        return "kaggle"
-    return "local"
-
-
-def check_remote_manifest(url: Optional[str] = None, token: Optional[str] = None) -> Dict[str, Any]:
-    """Queries bioflo.in to retrieve checkpoint status, step numbers, and loss metrics."""
+def check_remote_manifest(
+    model: Optional[str] = None,
+    url: Optional[str] = None,
+    token: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Queries bioflo.in to retrieve checkpoint status, step numbers, and loss metrics for model tier."""
+    if model in TPU_PRESET_ALIASES:
+        model = "v5_small"
     sync_url = url or DEFAULT_URL
     sync_token = token or DEFAULT_TOKEN
+    if model in TPU_PRESET_ALIASES:
+        model = "v5_small"
+
+    req_url = f"{sync_url}?action=status"
+    if model:
+        req_url += f"&model={model}"
 
     req = urllib.request.Request(
-        f"{sync_url}?action=status",
-        headers={"Authorization": f"Bearer {sync_token}", "User-Agent": "CerebroCloudSync/1.0"}
+        req_url,
+        headers={"Authorization": f"Bearer {sync_token}", "User-Agent": "CerebroV5CloudSync/1.0"}
     )
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
@@ -80,11 +102,42 @@ def check_remote_manifest(url: Optional[str] = None, token: Optional[str] = None
         return {"status": "offline", "has_latest": False, "has_best": False, "manifest": {}}
 
 
+def select_highest_step_slot(
+    manifest_resp: Dict[str, Any],
+    model: Optional[str],
+    target_type: str = "latest",
+) -> Tuple[Optional[str], int, float]:
+    """
+    Pick whichever bioflo.in slot (named model vs root fallback) holds the highest step.
+    Returns (slot_model_arg, step, loss).
+    """
+    norm_model = "v5_small" if model in TPU_PRESET_ALIASES else model
+    manifest = (manifest_resp or {}).get("manifest") or {}
+    models_block = (manifest_resp or {}).get("models") or {}
+
+    candidates = []
+    if norm_model:
+        named_entry = manifest.get(f"{norm_model}_{target_type}")
+        if not named_entry and norm_model in models_block:
+            named_entry = models_block[norm_model].get(f"{target_type}_manifest")
+        if isinstance(named_entry, dict):
+            candidates.append((norm_model, int(named_entry.get("step", 0)), float(named_entry.get("loss", float("inf")))))
+
+    root_entry = manifest.get(target_type)
+    if isinstance(root_entry, dict):
+        root_model = root_entry.get("model") or None
+        candidates.append((root_model, int(root_entry.get("step", 0)), float(root_entry.get("loss", float("inf")))))
+
+    if not candidates:
+        return norm_model, 0, float("inf")
+    return max(candidates, key=lambda item: item[1])
+
+
 def _download_range_chunk(url: str, token: str, start: int, end: int, filepath: str, chunk_idx: int) -> int:
     headers = {
         "Authorization": f"Bearer {token}",
         "Range": f"bytes={start}-{end}",
-        "User-Agent": "CerebroCloudSync/1.0",
+        "User-Agent": "CerebroV5CloudSync/1.0",
     }
     req = urllib.request.Request(url, headers=headers)
     for attempt in range(5):
@@ -108,33 +161,38 @@ def _download_range_chunk(url: str, token: str, start: int, end: int, filepath: 
 def pull_checkpoint(
     local_dest: str,
     target_type: str = "latest",
+    model: Optional[str] = None,
     url: Optional[str] = None,
     token: Optional[str] = None,
     show_progress: bool = True,
     num_workers: int = 8,
 ) -> bool:
     """
-    Downloads latest.pt or best.pt from bioflo.in with high-speed multi-threaded
-    HTTP Range streaming and automatic chunk integrity checks.
-    Returns True if successfully downloaded and verified.
+    Downloads latest.pt or best.pt for the specified model tier from bioflo.in.
+    Returns True if successfully downloaded and integrity verified.
     """
     sync_url = url or DEFAULT_URL
     sync_token = token or DEFAULT_TOKEN
+    if model in TPU_PRESET_ALIASES:
+        model = "v5_small"
 
     os.makedirs(os.path.dirname(os.path.abspath(local_dest)), exist_ok=True)
     download_url = f"{sync_url}?action=download&type={target_type}"
-
+    if model:
+        download_url += f"&model={model}"
     tmp_dest = local_dest + ".part"
+
     try:
-        print(f"🔄 [cloud_sync] Downloading {target_type}.pt from {sync_url}...")
+        model_str = f"[{model}] " if model else ""
+        print(f"🔄 [cloud_sync] Downloading {model_str}{target_type}.pt from {sync_url}...")
         t0 = time.time()
 
-        # 1. Probe total size using HTTP Range
+        # Probe total size
         total_bytes = 0
         try:
             probe_req = urllib.request.Request(
                 download_url,
-                headers={"Authorization": f"Bearer {sync_token}", "User-Agent": "CerebroCloudSync/1.0", "Range": "bytes=0-0"}
+                headers={"Authorization": f"Bearer {sync_token}", "User-Agent": "CerebroV5CloudSync/1.0", "Range": "bytes=0-0"}
             )
             with urllib.request.urlopen(probe_req, timeout=15) as p_resp:
                 cr = p_resp.headers.get("Content-Range", "")
@@ -143,10 +201,8 @@ def pull_checkpoint(
         except Exception:
             pass
 
-        # Fast parallel download if server supports Range probing
-        if total_bytes > 10 * 1024 * 1024:
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-            chunk_size = 2 * 1024 * 1024  # 2 MB chunks (reliable over varying network latencies)
+        if total_bytes > 5 * 1024 * 1024:
+            chunk_size = 2 * 1024 * 1024  # 2 MB chunks
             ranges = []
             start = 0
             while start < total_bytes:
@@ -170,11 +226,9 @@ def pull_checkpoint(
                         speed = (completed_bytes / 1e6) / max(time.time() - t0, 0.1)
                         print(f"\r  Downloading ({num_workers} threads): {completed_bytes / 1e6:.1f} / {total_bytes / 1e6:.1f} MB "
                               f"({pct:.1f}%) | {speed:.1f} MB/s", end="", flush=True)
-
         else:
-            # Fallback sequential streaming for small files or non-range endpoints
             downloaded = 0
-            req = urllib.request.Request(download_url, headers={"Authorization": f"Bearer {sync_token}", "User-Agent": "CerebroCloudSync/1.0"})
+            req = urllib.request.Request(download_url, headers={"Authorization": f"Bearer {sync_token}", "User-Agent": "CerebroV5CloudSync/1.0"})
             with urllib.request.urlopen(req, timeout=120) as resp, open(tmp_dest, "wb") as f:
                 if total_bytes == 0:
                     total_bytes = int(resp.headers.get("Content-Length", 0))
@@ -193,12 +247,11 @@ def pull_checkpoint(
         if os.path.exists(tmp_dest):
             actual_sz = os.path.getsize(tmp_dest)
             if total_bytes > 0 and actual_sz < total_bytes:
-                print(f"\n❌ [cloud_sync] Incomplete download ({actual_sz:,} of {total_bytes:,} bytes). Keeping .part for future resumption.")
+                print(f"\n❌ [cloud_sync] Incomplete download ({actual_sz:,} of {total_bytes:,} bytes).")
                 return False
 
-            import zipfile
             if not zipfile.is_zipfile(tmp_dest):
-                print(f"\n⚠️ [cloud_sync] Checkpoint failed zip archive integrity check. Discarding corrupt download.")
+                print(f"\n⚠️ [cloud_sync] Checkpoint failed zip archive check. Discarding.")
                 os.remove(tmp_dest)
                 return False
 
@@ -207,12 +260,72 @@ def pull_checkpoint(
             sz_mb = os.path.getsize(local_dest) / 1e6
             print(f"\n✅ [cloud_sync] Restored {target_type}.pt ({sz_mb:.1f} MB) in {dt:.1f}s -> {local_dest}")
             return True
-        else:
-            print(f"\n⚠️ [cloud_sync] Downloaded file not found.")
-            return False
+        return False
     except Exception as e:
         print(f"\n⚠️ [cloud_sync] Failed to pull {target_type} checkpoint: {e}")
         return False
+
+
+def _ensure_bfloat16_checkpoint(file_path: str) -> None:
+    """Ensures any PyTorch .pt checkpoint has all floating-point tensors converted to bfloat16 before cloud upload."""
+    if not file_path.endswith(".pt") or not os.path.exists(file_path):
+        return
+    try:
+        import torch
+    except ImportError:
+        return
+
+    try:
+        ckpt = torch.load(file_path, map_location="cpu", weights_only=False)
+        if not isinstance(ckpt, dict):
+            return
+
+        def _has_fp32(d: dict) -> bool:
+            for v in d.values():
+                if isinstance(v, torch.Tensor) and v.is_floating_point() and v.dtype in (torch.float32, torch.float64):
+                    return True
+            return False
+
+        def _convert_dict_to_bf16(d: dict) -> int:
+            count = 0
+            for k, v in d.items():
+                if isinstance(v, torch.Tensor) and v.is_floating_point() and v.dtype in (torch.float32, torch.float64):
+                    d[k] = v.to(torch.bfloat16)
+                    count += 1
+            return count
+
+        has_fp = False
+        target_keys = ["model_state", "state_dict", "action_head_state", "action_head_state_dict"]
+        is_nested = any(k in ckpt for k in target_keys)
+
+        if is_nested:
+            for tk in target_keys:
+                sub = ckpt.get(tk)
+                if isinstance(sub, dict) and _has_fp32(sub):
+                    has_fp = True
+                    break
+        else:
+            has_fp = _has_fp32(ckpt)
+
+        if not has_fp:
+            return
+
+        converted_count = 0
+        if is_nested:
+            for tk in target_keys:
+                sub = ckpt.get(tk)
+                if isinstance(sub, dict):
+                    converted_count += _convert_dict_to_bf16(sub)
+        else:
+            converted_count += _convert_dict_to_bf16(ckpt)
+
+        tmp_out = f"{file_path}.bf16.{os.getpid()}"
+        torch.save(ckpt, tmp_out)
+        os.replace(tmp_out, file_path)
+        new_mb = os.path.getsize(file_path) / 1e6
+        print(f"✅ [cloud_sync] Converted {converted_count} float32 tensors to bfloat16 ({new_mb:.1f} MB) in {os.path.basename(file_path)}")
+    except Exception as e:
+        print(f"⚠️ [cloud_sync] Warning during bfloat16 check: {e}")
 
 
 def push_checkpoint(
@@ -220,53 +333,55 @@ def push_checkpoint(
     step: int,
     loss: float,
     target_type: str = "latest",
+    model: Optional[str] = None,
     source_node: Optional[str] = None,
     url: Optional[str] = None,
     token: Optional[str] = None,
-    chunk_size_mb: int = 10
+    chunk_size_mb: int = 10,
 ) -> bool:
     """
-    Uploads a checkpoint to bioflo.in using chunked streaming.
-    Bypasses Cloudflare 100 MB limits and shared hosting PHP upload ceilings.
-    Enforces a 5-minute wait between successive 'best.pt' uploads to minimize traffic.
+    Uploads a checkpoint to bioflo.in using chunked streaming for a specific model tier.
+    Bypasses Cloudflare limits and ensures zero timeouts.
     """
     if not os.path.exists(file_path):
         print(f"⚠️ [cloud_sync] Cannot push: {file_path} not found.")
         return False
+
+    # Ensure any float32 tensors are converted to bfloat16 before chunking and uploading
+    _ensure_bfloat16_checkpoint(file_path)
+
+    slot_key = f"{model}_{target_type}" if model else target_type
 
     global _IN_FLIGHT_UPLOADS, _IN_FLIGHT_UPLOAD_TIMES, _LAST_BEST_UPLOAD_TIME
     with _UPLOAD_LOCK:
         now = time.time()
         if target_type == "best":
             elapsed = now - _LAST_BEST_UPLOAD_TIME
-            if elapsed < _BEST_COOLDOWN_SECONDS and _IN_FLIGHT_UPLOADS.get(target_type) != step:
-                remaining = int(_BEST_COOLDOWN_SECONDS - elapsed)
-                print(f"⏳ [cloud_sync] Best model cooldown active: skipping best.pt upload ({remaining}s remaining until next 5-min window).")
+            if elapsed < _BEST_COOLDOWN_SECONDS and _IN_FLIGHT_UPLOADS.get(slot_key) != step:
                 return False
 
-        if target_type in _IN_FLIGHT_UPLOADS and _IN_FLIGHT_UPLOADS[target_type] != step:
-            prev_step = _IN_FLIGHT_UPLOADS[target_type]
-            start_t = _IN_FLIGHT_UPLOAD_TIMES.get(target_type, now)
+        if slot_key in _IN_FLIGHT_UPLOADS and _IN_FLIGHT_UPLOADS[slot_key] != step:
+            start_t = _IN_FLIGHT_UPLOAD_TIMES.get(slot_key, now)
             if now - start_t < 180.0:
-                print(f"⏳ [cloud_sync] Upload in flight for {target_type}.pt (step {prev_step}): skipping duplicate step {step}.")
                 return False
-            else:
-                print(f"⚠️ [cloud_sync] In-flight upload lock expired for {target_type}.pt. Resetting and proceeding with step {step}.")
 
-        _IN_FLIGHT_UPLOADS[target_type] = step
-        _IN_FLIGHT_UPLOAD_TIMES[target_type] = now
+        _IN_FLIGHT_UPLOADS[slot_key] = step
+        _IN_FLIGHT_UPLOAD_TIMES[slot_key] = now
         if target_type == "best":
             _LAST_BEST_UPLOAD_TIME = now
 
     sync_url = url or DEFAULT_URL
     sync_token = token or DEFAULT_TOKEN
+    if model in TPU_PRESET_ALIASES:
+        model = "v5_small"
     node_name = source_node or detect_source_environment()
 
     file_size = os.path.getsize(file_path)
     chunk_size = chunk_size_mb * 1024 * 1024
     total_chunks = max(1, (file_size + chunk_size - 1) // chunk_size)
 
-    print(f"\n🌐 [cloud_sync] Mirroring {target_type}.pt (Step {step:,}, Loss {loss:.4f}) "
+    model_label = f"[{model}] " if model else ""
+    print(f"\n🌐 [cloud_sync] Mirroring {model_label}{target_type}.pt (Step {step:,}, Loss {loss:.4f}) "
           f"to {sync_url} across {total_chunks} chunk(s)...")
 
     t0 = time.time()
@@ -277,12 +392,10 @@ def push_checkpoint(
                 if not chunk_data:
                     break
 
-                # Multipart boundary assembly
                 boundary = f"----WebKitFormBoundary{os.urandom(8).hex()}"
                 body = []
 
-                # Metadata fields
-                for k, v in [
+                form_fields = [
                     ("action", "upload_chunk"),
                     ("type", target_type),
                     ("chunk_index", str(idx)),
@@ -290,10 +403,13 @@ def push_checkpoint(
                     ("step", str(step)),
                     ("loss", f"{loss:.6f}"),
                     ("source", node_name),
-                ]:
+                ]
+                if model:
+                    form_fields.append(("model", str(model)))
+
+                for k, v in form_fields:
                     body.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n".encode("utf-8"))
 
-                # Chunk payload
                 body.append(
                     f"--{boundary}\r\nContent-Disposition: form-data; name=\"chunk\"; filename=\"chunk_{idx}.bin\"\r\n"
                     f"Content-Type: application/octet-stream\r\n\r\n".encode("utf-8")
@@ -302,52 +418,41 @@ def push_checkpoint(
                 body.append(f"\r\n--{boundary}--\r\n".encode("utf-8"))
 
                 payload = b"".join(body)
-
                 req = urllib.request.Request(
                     sync_url,
                     data=payload,
                     headers={
                         "Authorization": f"Bearer {sync_token}",
                         "Content-Type": f"multipart/form-data; boundary={boundary}",
-                        "Content-Length": str(len(payload)),
-                        "User-Agent": "CerebroCloudSync/1.0"
-                    }
+                        "User-Agent": "CerebroV5CloudSync/1.0",
+                    },
+                    method="POST",
                 )
 
-                success = False
-                for attempt in range(1, 6):
+                for attempt in range(3):
                     try:
-                        with urllib.request.urlopen(req, timeout=240) as resp:
-                            resp_json = json.loads(resp.read().decode("utf-8"))
-                            if resp_json.get("success"):
-                                success = True
-                                break
-                            else:
-                                print(f"\n⚠️ [cloud_sync] Chunk {idx + 1}/{total_chunks} rejected (attempt {attempt}): {resp_json}")
+                        with urllib.request.urlopen(req, timeout=90) as resp:
+                            res_data = json.loads(resp.read().decode("utf-8"))
+                            status = res_data.get("status")
+                            if status not in ("chunk_saved", "complete", "completed", "in_progress"):
+                                raise RuntimeError(f"Server rejected chunk: {res_data}")
+                            break
                     except Exception as e:
-                        print(f"\n⚠️ [cloud_sync] Chunk {idx + 1}/{total_chunks} failed (attempt {attempt}): {e}")
-                    time.sleep(attempt * 2.0)
+                        if attempt == 2:
+                            raise e
+                        time.sleep(2.0)
 
-                # Explicit memory release
-                del payload, body, chunk_data
-                if not success:
-                    print(f"\n❌ [cloud_sync] Aborted upload at chunk {idx + 1}/{total_chunks} after 3 attempts.")
-                    return False
-                pct = ((idx + 1) / total_chunks) * 100
-                print(f"\r  Uploaded chunk {idx + 1}/{total_chunks} ({pct:.0f}%)", end="", flush=True)
-
-        print()
         dt = time.time() - t0
         sz_mb = file_size / 1e6
-        print(f"✅ [cloud_sync] Successfully uploaded {target_type}.pt ({sz_mb:.1f} MB) in {dt:.1f}s to bioflo.in!")
-        if target_type == "best":
-            _LAST_BEST_UPLOAD_TIME = time.time()
+        print(f"✅ [cloud_sync] Successfully mirrored {model_label}{target_type}.pt ({sz_mb:.1f} MB in {dt:.1f}s) to bioflo.in")
         return True
+    except Exception as e:
+        print(f"⚠️ [cloud_sync] Upload failed for {model_label}{target_type}.pt: {e}")
+        return False
     finally:
         with _UPLOAD_LOCK:
-            if _IN_FLIGHT_UPLOADS.get(target_type) == step:
-                _IN_FLIGHT_UPLOADS.pop(target_type, None)
-                _IN_FLIGHT_UPLOAD_TIMES.pop(target_type, None)
+            _IN_FLIGHT_UPLOADS.pop(slot_key, None)
+            _IN_FLIGHT_UPLOAD_TIMES.pop(slot_key, None)
 
 
 def push_checkpoint_async(
@@ -355,194 +460,70 @@ def push_checkpoint_async(
     step: int,
     loss: float,
     target_type: str = "latest",
+    model: Optional[str] = None,
     source_node: Optional[str] = None,
     url: Optional[str] = None,
     token: Optional[str] = None,
-    chunk_size_mb: int = 10
-):
-    """Asynchronous background upload. 0 ms interruption to training loops."""
-    global _LAST_BEST_UPLOAD_TIME, _ACTIVE_UPLOAD_THREADS, _IN_FLIGHT_UPLOADS, _IN_FLIGHT_UPLOAD_TIMES
+) -> threading.Thread:
+    """Non-blocking background thread upload so training compute never stalls."""
+    thread = threading.Thread(
+        target=push_checkpoint,
+        kwargs={
+            "file_path": file_path,
+            "step": step,
+            "loss": loss,
+            "target_type": target_type,
+            "model": model,
+            "source_node": source_node,
+            "url": url,
+            "token": token,
+        },
+        daemon=True,
+        name=f"cloud_sync_upload_{model or 'default'}_{target_type}_{step}",
+    )
     with _UPLOAD_LOCK:
-        now = time.time()
-        if target_type == "best":
-            elapsed = now - _LAST_BEST_UPLOAD_TIME
-            if elapsed < _BEST_COOLDOWN_SECONDS:
-                remaining = int(_BEST_COOLDOWN_SECONDS - elapsed)
-                print(f"⏳ [cloud_sync] Best model cooldown active: skipping best.pt upload ({remaining}s remaining until next 5-min window).")
-                return None
-
-        if target_type in _IN_FLIGHT_UPLOADS:
-            prev_step = _IN_FLIGHT_UPLOADS[target_type]
-            start_t = _IN_FLIGHT_UPLOAD_TIMES.get(target_type, now)
-            if now - start_t < 180.0:  # 3 minutes timeout guard
-                print(f"⏳ [cloud_sync] Upload in flight for {target_type}.pt (step {prev_step}): skipping duplicate dispatch for step {step}.")
-                return None
-            else:
-                print(f"⚠️ [cloud_sync] Previous upload for {target_type}.pt (step {prev_step}) timed out after {now - start_t:.0f}s. Resetting lock.")
-
-        _IN_FLIGHT_UPLOADS[target_type] = step
-        _IN_FLIGHT_UPLOAD_TIMES[target_type] = now
-        if target_type == "best":
-            _LAST_BEST_UPLOAD_TIME = now
-
-    try:
-        thread = threading.Thread(
-            target=push_checkpoint,
-            args=(file_path, step, loss, target_type, source_node, url, token, chunk_size_mb),
-            daemon=True,
-            name=f"CloudSync_{target_type}_{step}"
-        )
-        with _UPLOAD_LOCK:
-            _ACTIVE_UPLOAD_THREADS.append(thread)
-            _ACTIVE_UPLOAD_THREADS = [t for t in _ACTIVE_UPLOAD_THREADS if t.is_alive()]
-        thread.start()
-        return thread
-    except Exception as e:
-        with _UPLOAD_LOCK:
-            if _IN_FLIGHT_UPLOADS.get(target_type) == step:
-                _IN_FLIGHT_UPLOADS.pop(target_type, None)
-                _IN_FLIGHT_UPLOAD_TIMES.pop(target_type, None)
-        print(f"⚠️ [CloudSync Error]: {e}")
-        return None
+        _ACTIVE_UPLOAD_THREADS.append(thread)
+    thread.start()
+    return thread
 
 
 def notify_training_start(
-    source: str = "kaggle_tpu",
     step: int = 0,
+    model: Optional[str] = None,
+    source_node: Optional[str] = None,
     hours: float = 8.5,
-    message: str = "",
+    message: Optional[str] = None,
     url: Optional[str] = None,
     token: Optional[str] = None,
 ) -> bool:
-    """
-    Sends an HTTP notification to bioflo.in indicating that a training session
-    has commenced, which in turn records active_session and sends an alert.
-    """
+    """Notifies the central hub on bioflo.in that training has started."""
     sync_url = url or DEFAULT_URL
     sync_token = token or DEFAULT_TOKEN
-    import urllib.parse
-    payload = urllib.parse.urlencode({
+    if model in TPU_PRESET_ALIASES:
+        model = "v5_small"
+    node_name = source_node or detect_source_environment()
+    model_name = model or "v5_small"
+    msg = message or f"🚀 CerebroSpheroid {model_name} training active on {node_name}"
+
+    params = urllib.parse.urlencode({
         "action": "notify",
-        "source": source,
+        "model": model_name,
+        "source": node_name,
         "step": str(step),
         "hours": str(hours),
-        "message": message or f"CerebroSpheroid V4 training session started on {source} ({hours}h window).",
-    }).encode("utf-8")
-
+        "message": msg,
+    })
     req = urllib.request.Request(
-        sync_url,
-        data=payload,
-        headers={
-            "Authorization": f"Bearer {sync_token}",
-            "User-Agent": "CerebroCloudSync/1.0",
-        }
+        f"{sync_url}?{params}",
+        headers={"Authorization": f"Bearer {sync_token}", "User-Agent": "CerebroV5CloudSync/1.0"}
     )
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-            if data.get("success"):
-                print(f"📢 [cloud_sync] Active training notice registered on bioflo.in ({source}, {hours}h).")
-                return True
-    except Exception:
-        # Silently pass if endpoint is not deployed on server
-        pass
-    return False
-
-
-def auto_sync_checkpoints(
-    local_dir: str = "checkpoints",
-    url: Optional[str] = None,
-    token: Optional[str] = None,
-    resume_target: str = "latest"
-) -> Optional[str]:
-    """
-    Checks remote status against local files.
-    If remote checkpoint is newer, automatically downloads it.
-    Can target either 'latest' (highest step) or 'best' (minimum validation loss).
-    Returns path to the best available checkpoint file for resuming.
-    """
-    os.makedirs(local_dir, exist_ok=True)
-    manifest_info = check_remote_manifest(url, token)
-    remote_manifest = manifest_info.get("manifest", {})
-    if not isinstance(remote_manifest, dict):
-        remote_manifest = {}
-    
-    target_key = "best" if resume_target == "best" else "latest"
-    remote_target = remote_manifest.get(target_key, {}) if isinstance(remote_manifest, dict) else {}
-    remote_step = remote_target.get("step", 0) if isinstance(remote_target, dict) else 0
-
-    # Inspect local checkpoint directory
-    local_latest_step = -1
-    local_latest_path = None
-
-    import glob
-    candidates = glob.glob(os.path.join(local_dir, "*.pt"))
-    for cand in candidates:
-        import re
-        m = re.search(r"step_(\d+)", os.path.basename(cand))
-        s = -1
-        if m:
-            s = int(m.group(1))
-        else:
-            base = cand[:-3] if cand.endswith(".pt") else cand
-            for meta_cand in [base + ".meta.json", base + ".json", base.replace("_latest", "_state") + ".json", base.replace("_best", "_state") + ".json"]:
-                if os.path.exists(meta_cand):
-                    try:
-                        with open(meta_cand, "r") as mf:
-                            m_data = json.load(mf)
-                            s = int(m_data.get("step", -1))
-                            if s >= 0:
-                                break
-                    except Exception:
-                        pass
-        if s > local_latest_step:
-            local_latest_step = s
-            local_latest_path = cand
-
-    print(f"🔍 [cloud_sync] Checkpoint Assessment ({target_key}): Local Step = {local_latest_step:,} | Remote Step = {remote_step:,}")
-
-    target_local_file = os.path.join(local_dir, f"cerebro_spheroid_v4_{target_key}.pt")
-    has_target = manifest_info.get(f"has_{target_key}", False)
-    if (remote_step > local_latest_step or not os.path.exists(target_local_file)) and has_target:
-        print(f"📥 [cloud_sync] Pulling {target_key} checkpoint from bioflo.in (Step {remote_step:,})...")
-        success = pull_checkpoint(target_local_file, target_type=target_key, url=url, token=token)
-        if success:
-            loss_val = float(remote_target.get("loss", 7.34)) if isinstance(remote_target, dict) else 7.34
-            best_obj = remote_manifest.get("best", {}) if isinstance(remote_manifest, dict) else {}
-            best_val = float(best_obj.get("loss", loss_val)) if isinstance(best_obj, dict) else loss_val
-            meta_payload = {
-                "step": remote_step,
-                "loss": loss_val,
-                "best": best_val,
-                "best_eval_loss": best_val,
-                "eval_loss": best_val,
-                "selected": loss_val,
-                "source": remote_target.get("source", "bioflo"),
-                "resumed_from_cloud": True,
-            }
-            for meta_ext in [".json", ".meta.json"]:
-                try:
-                    with open(target_local_file.replace(".pt", meta_ext), "w") as f:
-                        json.dump(meta_payload, f, indent=2)
-                except Exception:
-                    pass
-
-            # Provide both naming conventions (cerebro_spheroid_v4_{key}.pt and cerebro_spheroid_v4_jax_{key}.pt)
-            alt_local_file = target_local_file.replace(f"v4_{target_key}.pt", f"v4_jax_{target_key}.pt")
-            try:
-                import shutil
-                shutil.copyfile(target_local_file, alt_local_file)
-                for meta_ext in [".json", ".meta.json"]:
-                    shutil.copyfile(target_local_file.replace(".pt", meta_ext), alt_local_file.replace(".pt", meta_ext))
-            except Exception:
-                pass
-
-            return target_local_file
-
-    if target_key == "best" and os.path.exists(target_local_file):
-        return target_local_file
-
-    return local_latest_path or (target_local_file if os.path.exists(target_local_file) else None)
+            return data.get("success", False)
+    except Exception as e:
+        print(f"⚠️ [cloud_sync] Could not send start notification: {e}")
+        return False
 
 
 def fetch_remote_hardware_config(
@@ -554,7 +535,7 @@ def fetch_remote_hardware_config(
     """Retrieves cached optimal batch size, remat, and throughput config for hardware from bioflo.in."""
     sync_url = url or DEFAULT_URL
     sync_token = token or DEFAULT_TOKEN
-    clean_model = "v5_small" if model in ("tpu_v5e_1", "tpu", "v5_tpu") else model
+    clean_model = "v5_small" if model in TPU_PRESET_ALIASES else model
 
     req_url = f"{sync_url}?action=get_config&model={clean_model}&device={urllib.parse.quote(device_signature)}"
     req = urllib.request.Request(
@@ -582,7 +563,7 @@ def push_remote_hardware_config(
     """Uploads benchmarked optimal hyperparameters to bioflo.in for zero-delay reuse."""
     sync_url = url or DEFAULT_URL
     sync_token = token or DEFAULT_TOKEN
-    clean_model = "v5_small" if model in ("tpu_v5e_1", "tpu", "v5_tpu") else model
+    clean_model = "v5_small" if model in TPU_PRESET_ALIASES else model
     source = source_node or detect_source_environment()
 
     payload = {
@@ -617,3 +598,72 @@ def push_remote_hardware_config(
     except Exception as e:
         print(f"⚠️ [cloud_sync] Failed to save hardware config to {sync_url}: {e}")
         return False
+
+
+def push_remote_loss_history(
+    model: str,
+    records: List[Any],
+    url: Optional[str] = None,
+    token: Optional[str] = None,
+) -> bool:
+    """Uploads/syncs loss records over time to bioflo.in website data repository."""
+    sync_url = url or DEFAULT_URL
+    sync_token = token or DEFAULT_TOKEN
+    clean_model = "v5_small" if model in TPU_PRESET_ALIASES else model
+
+    serialized = []
+    for r in records:
+        if hasattr(r, "to_dict"):
+            serialized.append(r.to_dict())
+        elif isinstance(r, dict):
+            serialized.append(r)
+
+    payload = {
+        "action": "save_loss_history",
+        "model": clean_model,
+        "records": serialized,
+    }
+
+    try:
+        req_data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            f"{sync_url}?action=save_loss_history",
+            data=req_data,
+            headers={
+                "Authorization": f"Bearer {sync_token}",
+                "Content-Type": "application/json",
+                "User-Agent": "CerebroV5CloudSync/1.0",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return bool(data.get("success", False))
+    except Exception as e:
+        print(f"ℹ️ [cloud_sync] Could not sync loss history to {sync_url}: {e}")
+        return False
+
+
+def fetch_remote_loss_history(
+    model: str,
+    url: Optional[str] = None,
+    token: Optional[str] = None,
+) -> Optional[List[Dict[str, Any]]]:
+    """Retrieves recorded training loss progression over time from bioflo.in website data repository."""
+    sync_url = url or DEFAULT_URL
+    sync_token = token or DEFAULT_TOKEN
+    clean_model = "v5_small" if model in TPU_PRESET_ALIASES else model
+
+    req_url = f"{sync_url}?action=get_loss_history&model={clean_model}"
+    req = urllib.request.Request(
+        req_url,
+        headers={"Authorization": f"Bearer {sync_token}", "User-Agent": "CerebroV5CloudSync/1.0"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            if data.get("status") == "found" and "records" in data:
+                return data["records"]
+    except Exception as e:
+        print(f"ℹ️ [cloud_sync] Could not retrieve remote loss history from {sync_url}: {e}")
+    return None
