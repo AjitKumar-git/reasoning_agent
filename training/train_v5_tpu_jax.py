@@ -98,6 +98,8 @@ from src.cloud_sync import (
     pull_checkpoint,
     push_checkpoint_async,
     push_remote_loss_history,
+    push_remote_token_tracker,
+    fetch_remote_token_tracker,
     detect_source_environment,
     wait_for_in_flight_uploads,
 )
@@ -201,6 +203,10 @@ def parse_args(args_list=None):
     parser.add_argument("--resume_target", type=str, default="latest", choices=["latest", "best"], help="Target checkpoint to pull from cloud ('latest' or 'best')")
     parser.add_argument("--reset_best", action="store_true", default=False, help="Reset best validation loss tracker")
     parser.add_argument("--from-scratch", "--from_scratch", dest="from_scratch", action="store_true", default=False, help="Start clean from Step 0 without loading any checkpoint")
+    parser.add_argument("--effective-batch-size", "--effective_batch_size", dest="effective_batch_size", type=int, default=256, help="Target global effective batch size (default: 256 for TPU v5e-1, supports 128 / 126; automatically computes grad_accum)")
+    parser.add_argument("--target-tokens", "--target_tokens", dest="target_tokens", type=int, default=200_000_000_000, help="Target token ingestion budget for campaign (default: 200,000,000,000 tokens)")
+    parser.add_argument("--init_from_checkpoint", "--init-from-checkpoint", dest="init_from_checkpoint", type=str, default=None, help="Base foundation checkpoint to load weights from (e.g. step900k)")
+    parser.add_argument("--reset_step_counter", "--reset-step-counter", dest="reset_step_counter", action="store_true", default=False, help="Reset step counter to 0 after loading base weights to start new campaign from scratch")
 
     return parser.parse_args(args_list)
 
@@ -369,6 +375,32 @@ def main(args=None):
     elif max_bs is not None:
         args.batch_size = min(int(args.batch_size), int(max_bs))
 
+    # Effective Batch Size & Gradient Accumulation
+    if getattr(args, "effective_batch_size", None) is not None and args.effective_batch_size > 0:
+        eff_target = args.effective_batch_size
+        if eff_target == 126:
+            if args.batch_size > 126:
+                args.batch_size = 126
+                args.grad_accum = 1
+            elif 126 % args.batch_size == 0:
+                args.grad_accum = 126 // args.batch_size
+            else:
+                args.batch_size = 126
+                args.grad_accum = 1
+        else:
+            if args.batch_size > eff_target:
+                args.batch_size = eff_target
+            args.grad_accum = max(1, eff_target // max(1, args.batch_size))
+        eff_bs = args.batch_size * args.grad_accum
+        print(f"⚡ [Batch Scaling] Target Effective Batch Size: {eff_bs} (Micro Batch: {args.batch_size} × Grad Accum: {args.grad_accum})")
+
+    eff_batch_size = args.batch_size * getattr(args, "grad_accum", 1)
+    tokens_per_opt_step = eff_batch_size * (args.prompt_len + args.seq_len)
+    if getattr(args, "target_tokens", None) is not None and args.target_tokens > 0:
+        calculated_steps = int(math.ceil(float(args.target_tokens) / max(1.0, float(tokens_per_opt_step))))
+        args.total_steps = calculated_steps
+        print(f"🎯 [Target Token Budget] {args.target_tokens/1e9:.2f} Billion Tokens -> Scheduled for {args.total_steps:,} Steps (at {tokens_per_opt_step:,} tok/step)")
+
     # 3. Model Configuration & Parameters
     config_preset = "v5_small" if args.preset in ("tpu_v5e_1", "tpu_v6e_1", "tpu_v6e") else args.preset
     if config_preset not in PRESETS_V5:
@@ -479,17 +511,21 @@ def main(args=None):
             except Exception as e:
                 print(f"⚠️ [cloud_sync] Notice: {e}")
 
-        # Discover and restore latest local checkpoint
-        if not os.path.exists(local_latest) and os.path.exists(fallback_latest):
+        # Discover and restore latest local checkpoint or explicit foundation checkpoint
+        discovered_ckpt = None
+        if getattr(args, "init_from_checkpoint", None) and os.path.exists(args.init_from_checkpoint):
+            discovered_ckpt = args.init_from_checkpoint
+            print(f"📦 Loading base model weights from explicit checkpoint: {discovered_ckpt}")
+        elif not os.path.exists(local_latest) and os.path.exists(fallback_latest):
             local_latest = fallback_latest
 
-        discovered_ckpt = None
-        if os.path.exists(local_latest):
-            discovered_ckpt = local_latest
-        else:
-            found_ckpt, found_step, found_loss = discover_latest_checkpoint(args.checkpoint_dir, preset=args.preset)
-            if found_ckpt:
-                discovered_ckpt = found_ckpt
+        if not discovered_ckpt:
+            if os.path.exists(local_latest):
+                discovered_ckpt = local_latest
+            else:
+                found_ckpt, found_step, found_loss = discover_latest_checkpoint(args.checkpoint_dir, preset=args.preset)
+                if found_ckpt:
+                    discovered_ckpt = found_ckpt
 
         if discovered_ckpt and os.path.exists(discovered_ckpt):
             try:
@@ -507,6 +543,14 @@ def main(args=None):
                     print(f"✅ Restored & adapted {restored}/{len(params)} parameter arrays into JAX engine (100% parity)!")
                 else:
                     print(f"⚠️ Restored & adapted {restored}/{len(params)} parameter arrays into JAX engine ({len(params) - restored} missing).")
+                
+                # Campaign Reset: Keep weights, reset schedule & step counter
+                if getattr(args, "reset_step_counter", False):
+                    start_step = 0
+                    best_eval_loss = float("inf")
+                    last_eval_loss = float("inf")
+                    initial_ema_loss = None
+                    print("🌱 [Campaign Reset Active] Step counter reset to 0! Calibrating fresh schedule from adapted base weights.")
             except Exception as e:
                 print(f"⚠️ Checkpoint load notice: {e}. Starting fresh.")
 
@@ -849,6 +893,23 @@ def main(args=None):
     step_window_count = 0
     ema_loss: Optional[float] = initial_ema_loss
 
+    # Persistent Cumulative Token Accounting
+    loaded_ckpt = ckpt if ("ckpt" in locals() and isinstance(ckpt, dict)) else {}
+    if getattr(args, "reset_step_counter", False):
+        cumulative_tokens = 0
+        initial_lifetime_tokens = int(loaded_ckpt.get("lifetime_tokens", 14_745_600_000))
+    else:
+        cumulative_tokens = int(loaded_ckpt.get("cumulative_tokens", 0))
+        initial_lifetime_tokens = int(loaded_ckpt.get("lifetime_tokens", 0))
+    lifetime_tokens = initial_lifetime_tokens + cumulative_tokens
+
+    # Restore per-dataset token attribution if present
+    if not getattr(args, "reset_step_counter", False):
+        loaded_ds_tokens = loaded_ckpt.get("tokens_by_dataset", {})
+        if loaded_ds_tokens and hasattr(batcher, "set_tokens_by_dataset"):
+            batcher.set_tokens_by_dataset(loaded_ds_tokens)
+            print(f"📦 [Checkpoint Restore] Restored per-dataset token stats: {loaded_ds_tokens}")
+
     try:
         while step < args.total_steps and not shutdown_requested:
             prev_step = step
@@ -935,6 +996,8 @@ def main(args=None):
             # Step & token throughput accounting
             step_window_tokens += step_tokens
             step_window_count += step_stride
+            cumulative_tokens += step_tokens
+            lifetime_tokens = initial_lifetime_tokens + cumulative_tokens
 
             # Console Progress Logging
             crossed_log = (prev_step == start_step) or ((step // max(1, args.log_every)) > (prev_step // max(1, args.log_every)))
@@ -944,14 +1007,24 @@ def main(args=None):
                 tok_per_sec = step_window_tokens / max(elapsed_log, 1e-6)
 
                 gov_str = f" | Gov: {alpha_gov:.2f}" if getattr(args, "loss_window_governor", True) and alpha_gov > 0.01 else ""
+
+                tgt_tok = getattr(args, "target_tokens", 200_000_000_000)
+                if tgt_tok and tgt_tok > 0:
+                    pct = (cumulative_tokens / tgt_tok) * 100.0
+                    eta_sec = max(0.0, tgt_tok - cumulative_tokens) / max(tok_per_sec, 1e-6)
+                    eta_h = eta_sec / 3600.0
+                    tok_str = f"Tokens: {cumulative_tokens/1e9:5.3f}B/{tgt_tok/1e9:4.2f}B ({pct:5.2f}%) | ETA: {eta_h:4.1f}h | "
+                else:
+                    tok_str = f"Tokens: {cumulative_tokens/1e9:5.3f}B | "
+
                 print(
                     f"[Step {step:6d}/{args.total_steps}] "
+                    f"{tok_str}"
                     f"Loss: {loss_val:6.4f} | "
                     f"Steps/s: {steps_per_sec:5.2f} | "
                     f"Tok/s: {tok_per_sec:7,.0f} | "
                     f"LR: {cur_lr:.2e} | "
-                    f"Samp_p: {cur_sampling_p:.2f}{gov_str} | "
-                    f"Elapsed: {time.time() - t_start:5.1f}s"
+                    f"Samp_p: {cur_sampling_p:.2f}{gov_str}"
                 )
                 t_last_log = time.time()
                 step_window_tokens = 0
@@ -973,6 +1046,11 @@ def main(args=None):
                     for d_name, d_val in zip(eval_domains, val_losses):
                         d_ppl = math.exp(min(d_val, 20.0))
                         print(f"   ├─ {d_name:<26}: Loss {d_val:.4f} (PPL: {d_ppl:.2f})")
+                if hasattr(batcher, "get_tokens_by_dataset"):
+                    ds_stats = batcher.get_tokens_by_dataset()
+                    if ds_stats:
+                        parts = [f"{k}: {v/1e9:.3f}B" for k, v in sorted(ds_stats.items())]
+                        print(f"   └─ Ingested Tokens Breakdown: " + " | ".join(parts))
 
                 if is_champion:
                     best_eval_loss = eval_loss
@@ -985,6 +1063,11 @@ def main(args=None):
                         "ppl": eval_ppl,
                         "preset": args.preset,
                         "sync_model": sync_model_name,
+                        "cumulative_tokens": cumulative_tokens,
+                        "lifetime_tokens": lifetime_tokens,
+                        "target_tokens": getattr(args, "target_tokens", 200_000_000_000),
+                        "effective_batch_size": args.batch_size * grad_accum,
+                        "tokens_by_dataset": batcher.get_tokens_by_dataset() if hasattr(batcher, "get_tokens_by_dataset") else {},
                         "timestamp": time.time(),
                     }
                     ckpt_mgr.dispatch(_get_host_params(), buffers, best_fname, meta_dict=meta_best, block_if_busy=True)
@@ -1029,6 +1112,11 @@ def main(args=None):
                     "best_eval_loss": best_eval_loss,
                     "preset": args.preset,
                     "sync_model": sync_model_name,
+                    "cumulative_tokens": cumulative_tokens,
+                    "lifetime_tokens": lifetime_tokens,
+                    "target_tokens": getattr(args, "target_tokens", 200_000_000_000),
+                    "effective_batch_size": args.batch_size * grad_accum,
+                    "tokens_by_dataset": batcher.get_tokens_by_dataset() if hasattr(batcher, "get_tokens_by_dataset") else {},
                     "timestamp": time.time(),
                 }
                 ckpt_mgr.dispatch(_get_host_params(), buffers, latest_fname, meta_dict=meta_latest)
@@ -1052,6 +1140,26 @@ def main(args=None):
                         )
                     except Exception:
                         pass
+
+            # Live Cloud Token Tracker Sync (Periodic & on Milestones)
+            crossed_sync = (step % max(1, getattr(args, "cloud_sync_interval", 100)) == 0) or save_latest or is_champion
+            if args.cloud_sync and crossed_sync:
+                try:
+                    ds_stats = batcher.get_tokens_by_dataset() if hasattr(batcher, "get_tokens_by_dataset") else {}
+                    push_remote_token_tracker(
+                        model=sync_model_name or args.preset,
+                        cumulative_tokens=cumulative_tokens,
+                        target_tokens=getattr(args, "target_tokens", 200_000_000_000),
+                        tokens_by_dataset=ds_stats,
+                        effective_batch_size=args.batch_size * grad_accum,
+                        step=step,
+                        loss=float(loss_val),
+                        tok_per_sec=float(tok_per_sec) if 'tok_per_sec' in locals() else 0.0,
+                        url=args.cloud_url,
+                        token=args.cloud_token,
+                    )
+                except Exception:
+                    pass
 
             # Periodic Milestone Archive Saving
             if (step // max(1, args.periodic_every)) > (prev_step // max(1, args.periodic_every)):
@@ -1096,10 +1204,33 @@ def main(args=None):
             "eval_loss": best_eval_loss,
             "preset": args.preset,
             "sync_model": sync_model_name,
+            "cumulative_tokens": cumulative_tokens if "cumulative_tokens" in locals() else 0,
+            "lifetime_tokens": lifetime_tokens if "lifetime_tokens" in locals() else 0,
+            "target_tokens": getattr(args, "target_tokens", 200_000_000_000),
+            "effective_batch_size": args.batch_size * grad_accum,
+            "tokens_by_dataset": batcher.get_tokens_by_dataset() if hasattr(batcher, "get_tokens_by_dataset") else {},
             "timestamp": time.time(),
         }
         ckpt_mgr.flush(_get_host_params(), buffers, final_fname, meta_dict=final_meta)
         ckpt_mgr.shutdown(wait=True)
+
+        if args.cloud_sync:
+            try:
+                ds_stats = batcher.get_tokens_by_dataset() if hasattr(batcher, "get_tokens_by_dataset") else {}
+                push_remote_token_tracker(
+                    model=sync_model_name or args.preset,
+                    cumulative_tokens=cumulative_tokens if "cumulative_tokens" in locals() else 0,
+                    target_tokens=getattr(args, "target_tokens", 200_000_000_000),
+                    tokens_by_dataset=ds_stats,
+                    effective_batch_size=args.batch_size * grad_accum,
+                    step=step,
+                    loss=float(loss) if "loss" in locals() else 0.0,
+                    tok_per_sec=float(tok_per_sec) if 'tok_per_sec' in locals() else 0.0,
+                    url=args.cloud_url,
+                    token=args.cloud_token,
+                )
+            except Exception:
+                pass
         if local_streamer is not None:
             local_streamer.stop()
         if elastic_batcher is not None:

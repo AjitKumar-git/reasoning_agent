@@ -1,15 +1,15 @@
 # Agent Work State & Activity Tracker
 
-> **Status**: 🟢 `COMPLETED` | **Last Updated**: `2026-11-15T13:59:08.699162+05:30` | **Session**: `06bf9452-332e-4cd0-92a8-b233d6bd46ca`
+> **Status**: 🟡 `IN_PROGRESS` | **Last Updated**: `2026-11-15T20:08:50.954055+05:30` | **Session**: `f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2`
 
 ## Current / Active Objective
-**Goal**: why eval losses are above 10 when same were below 3 earlier
+**Goal**: how many tokens might be there in this full curiculum
 
-- **Phase**: `completed`
-- **Current Task**: Idle / Awaiting next request
+- **Phase**: `executing`
+- **Current Task**: Executed run_command: Commit and push changes in cerebro_spheroid_v5
 
 ## Summary of Completed Work
-The sudden spike in held-out evaluation loss from **`< 3`** (e.g. `1.58 – 2.45` at Step 586k) to **`13.7 – 18.3`** in recent logs was caused by **two factors: a feedback-alignment and pad-masking bug** introduced in commit `e6e7be4`, combined with a **transition from in-distribution pretraining snippets to out-of-distribution reasoning benchmarks**.
+Here is the exact breakdown of the tokens in this full curriculum — both the **total unique reservoir of available tokens** and the **total tokens ingested across the 200 Billion token campaign**.
 
 ## Modified Files
 - [`src/__init__.py`](src/__init__.py)
@@ -199,6 +199,14 @@ The sudden spike in held-out evaluation loss from **`< 3`** (e.g. `1.58 – 2.45
 - [`../cerebro_spheroid_v5/training/train_v5_sft.py`](../cerebro_spheroid_v5/training/train_v5_sft.py)
 - [`../cerebro_spheroid_v5/scripts/run_sft_training.py`](../cerebro_spheroid_v5/scripts/run_sft_training.py)
 - [`../cerebro_spheroid_v5/colab/CerebroSpheroid_V5_Colab_SFT.ipynb`](../cerebro_spheroid_v5/colab/CerebroSpheroid_V5_Colab_SFT.ipynb)
+- [`../cerebro_spheroid_v5/scripts/test_v5_small_agi_emergence.py`](../cerebro_spheroid_v5/scripts/test_v5_small_agi_emergence.py)
+- [`../cerebro_spheroid_v5/scripts/chat_cerebro_v5.py`](../cerebro_spheroid_v5/scripts/chat_cerebro_v5.py)
+- [`../cerebro_spheroid_v5/scripts/showcase_cerebro_v5.py`](../cerebro_spheroid_v5/scripts/showcase_cerebro_v5.py)
+- [`../cerebro_spheroid_v5/.gitignore`](../cerebro_spheroid_v5/.gitignore)
+- [`../../../../.gemini/antigravity/brain/06bf9452-332e-4cd0-92a8-b233d6bd46ca/plan_7b_curriculum_smollm2_rival.md`](../../../../.gemini/antigravity/brain/06bf9452-332e-4cd0-92a8-b233d6bd46ca/plan_7b_curriculum_smollm2_rival.md)
+- [`../../../../.gemini/antigravity/brain/06bf9452-332e-4cd0-92a8-b233d6bd46ca/conversation_compaction.md`](../../../../.gemini/antigravity/brain/06bf9452-332e-4cd0-92a8-b233d6bd46ca/conversation_compaction.md)
+- [`../../../../.gemini/antigravity/brain/f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2/conversation_compaction.md`](../../../../.gemini/antigravity/brain/f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2/conversation_compaction.md)
+- [`../cerebro_spheroid_v5/tests/test_token_tracker_and_batcher.py`](../cerebro_spheroid_v5/tests/test_token_tracker_and_batcher.py)
 
 ## Key Findings & Decisions
 - Checkpoint resumption was starting with cold zero-momentum buffers and full learning rate, causing immediate parameter manifold disruptions.
@@ -216,16 +224,16 @@ The sudden spike in held-out evaluation loss from **`< 3`** (e.g. `1.58 – 2.45
 ## Recent Actions (Last 10)
 | Time | Tool | Details |
 | :--- | :--- | :--- |
-| `13:59:00` | `manage_task` | manage_task |
-| `13:58:55` | `run_command` | Check origin/main log |
-| `13:58:41` | `manage_task` | manage_task |
-| `13:58:39` | `run_command` | Rebase and push cerebro_spheroid_v5 |
-| `13:58:39` | `run_command` | Push pending commit in cerebro_spheroid_v5 |
-| `13:58:26` | `run_command` | Check git log in cerebro_spheroid_v5 |
-| `13:58:25` | `run_command` | Show f1b6bfd commit stat |
-| `13:58:18` | `run_command` | Check git status in cerebro_spheroid_v5 |
-| `13:58:18` | `manage_task` | manage_task |
-| `13:58:12` | `run_command` | Fetch origin in cerebro_spheroid_v5 |
+| `20:08:50` | `run_command` | Commit and push changes in cerebro_spheroid_v5 |
+| `20:08:39` | `run_command` | Git status in reasoning_agent |
+| `20:08:34` | `run_command` | Check no README.md exists in cerebro_spheroid_v5 |
+| `20:08:29` | `run_command` | Git status in cerebro_spheroid_v5 |
+| `20:08:23` | `manage_task` | manage_task |
+| `20:08:19` | `manage_task` | manage_task |
+| `20:08:15` | `run_command` | Check test dir in reasoning_agent |
+| `20:08:10` | `run_command` | Sync test_token_tracker_and_batcher.py to reasoning_agent |
+| `20:08:05` | `run_command` | Run test_token_tracker_and_batcher.py |
+| `20:08:00` | `write_file` | write_file |
 
 ---
 *This file is automatically maintained by `auto-work-tracker`. Other agents can parse `.agents/work_state.json` or inspect this file directly to resume or review progress.*
