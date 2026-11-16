@@ -1,15 +1,15 @@
 # Agent Work State & Activity Tracker
 
-> **Status**: 🟡 `IN_PROGRESS` | **Last Updated**: `2026-11-16T00:58:47.293008+05:30` | **Session**: `f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2`
+> **Status**: 🟡 `IN_PROGRESS` | **Last Updated**: `2026-11-16T21:16:55.904239+05:30` | **Session**: `f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2`
 
 ## Current / Active Objective
-**Goal**: check agi emergence on models
+**Goal**: fix mardown in sft as well
 
 - **Phase**: `executing`
-- **Current Task**: Executed run_command: Git status in reasoning_agent
+- **Current Task**: Executed manage_task: manage_task
 
 ## Summary of Completed Work
-I audited the active **CerebroSpheroid V5** checkpoints using the AGI Emergence and Manifold Safety Auditor (`scripts/audit_agi_emergence.py` and `scripts/test_v5_small_agi_emergence.py`).
+I have updated and corrected all markdown and documentation in [CerebroSpheroid_V5_Colab_SFT.ipynb](file:///home/ajit/Documents/Startup/Active_Development/reasoning_agent/colab/CerebroSpheroid_V5_Colab_SFT.ipynb) across both repositories:
 
 ## Modified Files
 - [`../../../../.gemini/antigravity/brain/06bf9452-332e-4cd0-92a8-b233d6bd46ca/conversation_compaction.md`](../../../../.gemini/antigravity/brain/06bf9452-332e-4cd0-92a8-b233d6bd46ca/conversation_compaction.md)
@@ -154,20 +154,60 @@ I audited the active **CerebroSpheroid V5** checkpoints using the AGI Emergence 
 - [`src/spheroid_optimizer.py`](src/spheroid_optimizer.py)
 - [`training/test_spheroid_optimizer.py`](training/test_spheroid_optimizer.py)
 - [`training/train_v3_full.py`](training/train_v3_full.py)
+- [`scripts/test_reasoning_and_standby_pulse.py`](scripts/test_reasoning_and_standby_pulse.py)
+- [`../cerebro_spheroid_v5/scripts/compute_data_density.py`](../cerebro_spheroid_v5/scripts/compute_data_density.py)
+- [`scripts/test_shell_energy_dynamics.py`](scripts/test_shell_energy_dynamics.py)
+- [`scripts/analyze_weight_distribution.py`](scripts/analyze_weight_distribution.py)
+- [`../cerebro_spheroid_v5/scripts/run_refined_sft_pytorch.py`](../cerebro_spheroid_v5/scripts/run_refined_sft_pytorch.py)
+- [`../cerebro_spheroid_v5/scripts/run_harmonized_sft.py`](../cerebro_spheroid_v5/scripts/run_harmonized_sft.py)
+- [`../cerebro_spheroid_v5/scripts/test_calibrated_sft.py`](../cerebro_spheroid_v5/scripts/test_calibrated_sft.py)
+- [`scripts/benchmark_industry_standard.py`](scripts/benchmark_industry_standard.py)
+- [`scripts/build_diverse_sft_dataset.py`](scripts/build_diverse_sft_dataset.py)
+- [`scripts/train_master_diverse_sft.py`](scripts/train_master_diverse_sft.py)
+- [`src/jax/data_streamer.py`](src/jax/data_streamer.py)
+- [`src/graded_curriculum.py`](src/graded_curriculum.py)
+- [`scripts/train_v5_graded_curriculum.py`](scripts/train_v5_graded_curriculum.py)
+- [`scripts/chat_cerebro_v5.py`](scripts/chat_cerebro_v5.py)
+- [`scripts/stage_pretraining_corpus.py`](scripts/stage_pretraining_corpus.py)
+- [`training/train_v5_tpu_jax.py`](training/train_v5_tpu_jax.py)
+- [`scripts/train_v5_tpu_jax.py`](scripts/train_v5_tpu_jax.py)
+- [`scripts/patch_colab_notebooks.py`](scripts/patch_colab_notebooks.py)
+- [`../../../../.gemini/antigravity/brain/f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2/cerebro_spheroid_v5_cognitive_reasoning_plan.md`](../../../../.gemini/antigravity/brain/f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2/cerebro_spheroid_v5_cognitive_reasoning_plan.md)
+- [`data/tokenizer/special_tokens_map.json`](data/tokenizer/special_tokens_map.json)
+- [`data/tokenizer/tokenizer_config.json`](data/tokenizer/tokenizer_config.json)
+- [`scripts/run_harmonized_sft.py`](scripts/run_harmonized_sft.py)
+- [`scripts/run_refined_sft_pytorch.py`](scripts/run_refined_sft_pytorch.py)
+- [`colab/CerebroSpheroid_V5_Colab_SFT.ipynb`](colab/CerebroSpheroid_V5_Colab_SFT.ipynb)
+- [`colab/CerebroSpheroid_V5_Colab_Training.ipynb`](colab/CerebroSpheroid_V5_Colab_Training.ipynb)
+- [`colab/CerebroSpheroid_V5_Colab_TPU_JAX.ipynb`](colab/CerebroSpheroid_V5_Colab_TPU_JAX.ipynb)
+- [`scripts/patch_sft_colab.py`](scripts/patch_sft_colab.py)
+- [`scripts/build_layman_sft_dataset.py`](scripts/build_layman_sft_dataset.py)
+- [`scripts/patch_colab_option_a.py`](scripts/patch_colab_option_a.py)
+- [`../../../../.gemini/antigravity/brain/f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2/cerebro_v5_specialized_trihead_sft_plan.md`](../../../../.gemini/antigravity/brain/f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2/cerebro_v5_specialized_trihead_sft_plan.md)
+- [`scripts/build_chat_thinking_dataset.py`](scripts/build_chat_thinking_dataset.py)
+- [`scripts/benchmark_cerebro_cognitive.py`](scripts/benchmark_cerebro_cognitive.py)
+- [`src/tools/calculator.py`](src/tools/calculator.py)
+- [`../cerebro_spheroid_v5/src/tools/calculator.py`](../cerebro_spheroid_v5/src/tools/calculator.py)
+- [`../../../../.gemini/antigravity/brain/f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2/walkthrough.md`](../../../../.gemini/antigravity/brain/f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2/walkthrough.md)
+- [`../../../../.gemini/antigravity/brain/f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2/cerebro_v5_agentic_sft_pitfalls_audit.md`](../../../../.gemini/antigravity/brain/f18ce1b7-3f82-4e58-82cc-e5aa3b2071a2/cerebro_v5_agentic_sft_pitfalls_audit.md)
+- [`src/tools/world_facts_manager.py`](src/tools/world_facts_manager.py)
+- [`src/tools/tool_dispatcher.py`](src/tools/tool_dispatcher.py)
+- [`src/jax/auto_tuner.py`](src/jax/auto_tuner.py)
+- [`scripts/patch_sft_markdown.py`](scripts/patch_sft_markdown.py)
 
 ## Recent Actions (Last 10)
 | Time | Tool | Details |
 | :--- | :--- | :--- |
-| `00:58:47` | `run_command` | Git status in reasoning_agent |
-| `00:58:40` | `edit_file` | edit_file |
-| `00:58:34` | `read_file` | read_file |
-| `00:58:27` | `edit_file` | edit_file |
-| `00:58:18` | `read_file` | read_file |
-| `00:58:10` | `edit_file` | edit_file |
-| `00:58:00` | `read_file` | read_file |
-| `00:57:52` | `run_command` | Git diff stat in reasoning_agent |
-| `00:57:46` | `run_command` | Confirm no README in cerebro_spheroid_v5 |
-| `00:57:41` | `run_command` | Check git status in cerebro_spheroid_v5 |
+| `21:16:55` | `manage_task` | manage_task |
+| `21:16:54` | `run_command` | Verify spotless secret check in reasoning_agent |
+| `21:16:52` | `manage_task` | manage_task |
+| `21:16:38` | `run_command` | Update remote URL to SSH for reasoning_agent |
+| `21:16:33` | `run_command` | Check git remote and status in reasoning_agent |
+| `21:16:29` | `run_command` | Push to origin main in cerebro_spheroid_v5 |
+| `21:16:15` | `run_command` | Verify no README.md in cerebro_spheroid_v5 |
+| `21:16:10` | `run_command` | Verify amended commit is clean |
+| `21:16:05` | `run_command` | Amend commit in cerebro_spheroid_v5 |
+| `21:16:00` | `run_command` | Check git status in cerebro_spheroid_v5 |
 
 ---
 *This file is automatically maintained by `auto-work-tracker`. Other agents can parse `.agents/work_state.json` or inspect this file directly to resume or review progress.*
