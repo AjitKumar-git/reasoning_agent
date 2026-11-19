@@ -6,7 +6,7 @@ Features:
    Bi-directional lossless conversion between PyTorch state_dict and JAX PyTrees.
    Supports automatic 2D -> 3D tensor fusion for intra-shell SwiGLU weights and shortcuts.
 2. Autonomous Checkpoint Discovery (Zero Hardcoded Step Numbers):
-   Automatically inspects local and Google Drive/cloud directories to identify the most advanced checkpoint.
+   Automatically inspects local and bioflo.in cloud directories to identify the most advanced checkpoint.
 3. Asynchronous Background Checkpoint Manager (AsyncCheckpointManager):
    Offloads parameter conversion, PyTorch disk serialization, and remote cloud upload
    to an independent CPU thread pool, eliminating TPU latency stalls (0ms TPU pause).
@@ -18,10 +18,13 @@ import glob
 import json
 import shutil
 import time
-from typing import Dict, Tuple, Optional, Any, List
+import dataclasses
+from typing import Dict, Tuple, Optional, Any, List, Union
 import concurrent.futures
 
 import numpy as np
+
+from src.cortical_expansion import apply_net2net_cortical_init, generate_expanded_tract_wiring
 
 try:
     import torch
@@ -54,13 +57,40 @@ def _safe_torch_tensor(arr):
     return torch.from_numpy(np_arr)
 
 
+def safe_torch_load(
+    ckpt_path_or_file: Any,
+    map_location: str = "cpu",
+    weights_only: bool = True,
+) -> Dict[str, Any]:
+    """Safely loads a PyTorch checkpoint with tensor-only loading (weights_only=True)
+    and validates checkpoint structure to protect against arbitrary code execution.
+    """
+    if not HAS_TORCH:
+        raise RuntimeError(f"PyTorch is required to load .pt checkpoint: {_TORCH_ERR}")
+    if isinstance(ckpt_path_or_file, str) and not os.path.exists(ckpt_path_or_file):
+        raise FileNotFoundError(f"Checkpoint not found at: {ckpt_path_or_file}")
+
+    try:
+        ckpt = torch.load(ckpt_path_or_file, map_location=map_location, weights_only=weights_only)
+    except Exception as e:
+        raise ValueError(f"Safe tensor-only checkpoint loading failed for {ckpt_path_or_file}: {e}") from e
+
+    if not isinstance(ckpt, dict):
+        raise ValueError(
+            f"Invalid checkpoint format in {ckpt_path_or_file}: expected dictionary, got {type(ckpt).__name__}"
+        )
+
+    return ckpt
+
+
 def save_jax_to_torch_pt(
     params: Dict[str, jnp.ndarray],
     buffers: Tuple[jnp.ndarray, jnp.ndarray],
     save_path: str,
     meta: Optional[dict] = None,
+    opt_state: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Converts JAX PyTree into PyTorch state_dict and saves to .pt format."""
+    """Converts JAX PyTree into PyTorch state_dict and saves to .pt format (including Spheroid optimizer moments)."""
     if not HAS_TORCH:
         raise RuntimeError(
             f"PyTorch is required to save .pt checkpoints: {_TORCH_ERR}."
@@ -86,14 +116,79 @@ def save_jax_to_torch_pt(
             if mk not in checkpoint:
                 checkpoint[mk] = mv
 
+    # Persist optimizer state (moments, master weights, and spectral vectors) to prevent cold restarts
+    if opt_state is not None and isinstance(opt_state, dict):
+        try:
+            torch_opt: Dict[str, Any] = {}
+            if "step" in opt_state:
+                step_val = opt_state["step"]
+                torch_opt["step"] = int(np.asarray(jax.device_get(step_val))) if hasattr(step_val, "__len__") or hasattr(step_val, "item") else int(step_val)
+            for sub_name in ["m", "v", "master_p", "power_v"]:
+                if sub_name in opt_state and isinstance(opt_state[sub_name], dict):
+                    torch_opt[sub_name] = {
+                        k: _safe_torch_tensor(v) for k, v in opt_state[sub_name].items()
+                    }
+            checkpoint["opt_state"] = torch_opt
+        except Exception as e_opt:
+            print(f"⚠️ [save_checkpoint] Could not serialize optimizer state: {e_opt}")
+
     tmp_path = f"{save_path}.tmp.{os.getpid()}.{time.time_ns()}"
     torch.save(checkpoint, tmp_path)
     os.replace(tmp_path, save_path)
 
     if meta:
         meta_path = save_path.replace(".pt", ".json")
+        def _json_default(obj):
+            if dataclasses.is_dataclass(obj):
+                return dataclasses.asdict(obj)
+            return str(obj)
+
         with open(meta_path, "w") as f:
-            json.dump(meta, f, indent=2)
+            json.dump(meta, f, indent=2, default=_json_default)
+
+
+def restore_spheroid_opt_state(
+    ckpt_or_path: Union[Dict[str, Any], str],
+    params: Dict[str, jnp.ndarray],
+    key: Optional[jax.Array] = None,
+) -> Dict[str, Any]:
+    """
+    Restores full Spheroid optimizer moments (m, v, master_p, power_v) from checkpoint if present,
+    guaranteeing continuous momentum across training session restarts.
+    Falls back gracefully to init_spheroid_opt_state if opt_state is absent.
+    """
+    from src.jax.spheroid_optimizer import init_spheroid_opt_state
+
+    if isinstance(ckpt_or_path, str):
+        if not HAS_TORCH or not os.path.exists(ckpt_or_path):
+            return init_spheroid_opt_state(params, key=key)
+        try:
+            ckpt = safe_torch_load(ckpt_or_path, map_location="cpu", weights_only=True)
+        except Exception:
+            return init_spheroid_opt_state(params, key=key)
+    else:
+        ckpt = ckpt_or_path
+
+    raw_opt = ckpt.get("opt_state") if isinstance(ckpt, dict) else None
+    if not raw_opt or not isinstance(raw_opt, dict):
+        return init_spheroid_opt_state(params, key=key)
+
+    opt_state = init_spheroid_opt_state(params, key=key)
+    if "step" in raw_opt:
+        raw_s = raw_opt["step"]
+        opt_state["step"] = int(raw_s.item()) if hasattr(raw_s, "item") else int(raw_s)
+
+    restored_components = 0
+    for sub_dict in ["m", "v", "master_p", "power_v"]:
+        if sub_dict in raw_opt and isinstance(raw_opt[sub_dict], dict):
+            for k, val in raw_opt[sub_dict].items():
+                if k in opt_state[sub_dict]:
+                    np_arr = _to_numpy(val)
+                    opt_state[sub_dict][k] = jnp.asarray(np_arr, dtype=opt_state[sub_dict][k].dtype)
+                    restored_components += 1
+
+    print(f"✓ Restored Spheroid optimizer state ({restored_components} moment/master tensors, step {opt_state['step']}) from checkpoint")
+    return opt_state
 
 
 def _to_numpy(t):
@@ -110,11 +205,13 @@ def adapt_and_load_checkpoint_weights(
     target_params: Dict[str, jnp.ndarray],
     target_dtype,
     config: ModelConfigV5,
-) -> int:
+    buffers: Optional[Tuple[jnp.ndarray, jnp.ndarray]] = None,
+    apply_net2net: bool = True,
+) -> Union[int, Tuple[int, Tuple[jnp.ndarray, jnp.ndarray]]]:
     """Adapts checkpoint weights from any previous run (PyTorch state_dict or JAX params, 2D or 3D SwiGLU)."""
     raw_state = ckpt.get("model_state") or ckpt.get("params") or ckpt.get("state_dict") or ckpt
     if not isinstance(raw_state, dict):
-        return 0
+        return (0, buffers) if buffers is not None else 0
 
     restored_keys = set()
     K = config.num_shells
@@ -204,6 +301,21 @@ def adapt_and_load_checkpoint_weights(
                 buf[:rows] = v[:rows]
                 target_params[target_k] = jnp.asarray(buf, dtype=target_dtype)
                 restored_keys.add(target_k)
+            elif (
+                len(t_shape) == len(v.shape)
+                and all(t_shape[i] >= v.shape[i] for i in range(len(t_shape)))
+                and any(t_shape[i] > v.shape[i] for i in range(len(t_shape)))
+            ):
+                # Concentric shell / tract expansion (e.g. 16 -> 32 shells, 40 -> 96 shortcut tracts)
+                buf = np.array(target_params[target_k])
+                if len(t_shape) == 1:
+                    buf[: v.shape[0]] = v
+                elif len(t_shape) == 2:
+                    buf[: v.shape[0], : v.shape[1]] = v
+                elif len(t_shape) == 3:
+                    buf[: v.shape[0], : v.shape[1], : v.shape[2]] = v
+                target_params[target_k] = jnp.asarray(buf, dtype=target_dtype)
+                restored_keys.add(target_k)
 
     # Weight transferability: legacy checkpoints share one radial_up across inward/outward waves
     has_radial_up_out = isinstance(raw_state, dict) and any(
@@ -228,15 +340,37 @@ def adapt_and_load_checkpoint_weights(
                 target_params[tri_k] = base_affine
                 restored_keys.add(tri_k)
 
-    # Temporal router prior preservation if absent from older checkpoints
-    for tr_k in ("motor.temporal_router.weight", "motor.temporal_router.bias"):
-        if tr_k in target_params and tr_k not in restored_keys:
-            restored_keys.add(tr_k)
+    # Temporal Router transferability: canonical zero weight and [0.5, -0.8, 1.0] bias initialization
+    if "motor.temporal_router.weight" in target_params and "motor.temporal_router.weight" not in restored_keys:
+        target_params["motor.temporal_router.weight"] = jnp.zeros_like(target_params["motor.temporal_router.weight"])
+        restored_keys.add("motor.temporal_router.weight")
+    if "motor.temporal_router.bias" in target_params and "motor.temporal_router.bias" not in restored_keys:
+        target_params["motor.temporal_router.bias"] = jnp.array([0.5, -0.8, 1.0], dtype=target_params["motor.temporal_router.bias"].dtype)
+        restored_keys.add("motor.temporal_router.bias")
+
+    # 4. Progressive Cortical Expansion: Preserve tract wiring and apply Net2Net zero-regression init
+    updated_buffers = buffers
+    if buffers is not None and "core.src_indices" in raw_state and "core.dst_indices" in raw_state:
+        base_src = _to_numpy(raw_state["core.src_indices"])
+        base_dst = _to_numpy(raw_state["core.dst_indices"])
+        updated_buffers = generate_expanded_tract_wiring(
+            num_shells=config.num_shells,
+            num_tracts=config.num_shortcut_tracts,
+            base_src=base_src,
+            base_dst=base_dst,
+            num_frozen_shells=16,
+            framework="jax",
+        )
+
+    if apply_net2net and config.num_shells > 16:
+        apply_net2net_cortical_init(target_params, num_frozen_shells=16, num_frozen_tracts=40)
 
     missing = [k for k in target_params.keys() if k not in restored_keys and k != "core.radial_up_out.weight"]
     if missing:
         print(f"ℹ️ [adapt_weights] Unmapped JAX parameter arrays ({len(missing)}/{len(target_params)}): {missing}")
 
+    if buffers is not None:
+        return len(restored_keys), updated_buffers
     return len(restored_keys)
 
 
@@ -322,9 +456,9 @@ def load_torch_pt_to_jax(
     if not os.path.exists(ckpt_path):
         raise FileNotFoundError(f"Checkpoint not found at: {ckpt_path}")
 
-    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    ckpt = safe_torch_load(ckpt_path, map_location="cpu", weights_only=True)
     params, buffers = init_params_v5(jax.random.PRNGKey(seed), config)
-    restored = adapt_and_load_checkpoint_weights(ckpt, params, target_dtype, config)
+    restored, buffers = adapt_and_load_checkpoint_weights(ckpt, params, target_dtype, config, buffers=buffers)
     print(f"✓ Restored & adapted {restored}/{len(params)} parameter arrays into JAX V5 engine")
 
     meta = {}
@@ -400,14 +534,18 @@ class AsyncCheckpointManager:
         target_dir: str,
         cloud_sync: bool = False,
         cloud_url: str = "https://bioflo.in/api/cerebro/sync.php",
-        cloud_token: str = "CerebroSpheroid_Sync_Secure_2026",
+        cloud_token: Optional[str] = None,
         min_cloud_upload_interval_sec: float = 0.0,
     ):
         self.local_dir = local_dir
         self.target_dir = target_dir
         self.cloud_sync = cloud_sync
         self.cloud_url = cloud_url
-        self.cloud_token = cloud_token
+        if cloud_token is None:
+            from src.cloud_sync import get_sync_token
+            self.cloud_token = get_sync_token()
+        else:
+            self.cloud_token = cloud_token
         self.min_cloud_upload_interval_sec = max(0.0, float(min_cloud_upload_interval_sec))
         self._last_cloud_upload_at: Dict[str, float] = {}
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="ckpt_async")
@@ -422,10 +560,11 @@ class AsyncCheckpointManager:
         filename: str,
         meta_dict: Optional[dict],
         force_cloud: bool = False,
+        opt_state_cpu: Optional[Dict[str, Any]] = None,
     ):
         try:
             local_path = os.path.join(self.local_dir, filename)
-            save_jax_to_torch_pt(params_cpu, buffers_cpu, local_path, meta=meta_dict)
+            save_jax_to_torch_pt(params_cpu, buffers_cpu, local_path, meta=meta_dict, opt_state=opt_state_cpu)
 
             # Atomically mirror to target_dir if different
             target_path = os.path.join(self.target_dir, filename)
@@ -441,16 +580,6 @@ class AsyncCheckpointManager:
 
             # Prune scratch disk
             self._prune_scratch()
-
-            # Mirror to persistent Google Drive if mounted in Colab environment
-            gdrive_dir = "/content/drive/MyDrive/cerebro_v5_checkpoints"
-            if os.path.exists(gdrive_dir) and os.path.abspath(self.target_dir) != os.path.abspath(gdrive_dir):
-                try:
-                    tmp_gd = os.path.join(gdrive_dir, f"{filename}.tmp.{os.getpid()}")
-                    shutil.copyfile(target_path if os.path.exists(target_path) else local_path, tmp_gd)
-                    os.replace(tmp_gd, os.path.join(gdrive_dir, filename))
-                except Exception:
-                    pass
 
             # Upload to cloud if active (rate-limit non-final uploads so high-step/s runs do not saturate network)
             if self.cloud_sync and ("latest" in filename or "best" in filename):
@@ -468,8 +597,12 @@ class AsyncCheckpointManager:
                         loss_f = float(raw_loss) if raw_loss is not None else 0.0
                         loss_val = loss_f if (loss_f == loss_f and abs(loss_f) < 1e30) else 0.0
                         sync_model = meta_dict.get("sync_model") if meta_dict else None
+                        # Snapshot isolation: stage to a dedicated temporary file so ongoing TPU training
+                        # steps never mutate or overwrite the checkpoint file while the async upload streams chunks
+                        upload_stage = f"{local_path}.upload.{os.getpid()}.{time.time_ns()}.pt"
+                        shutil.copyfile(local_path, upload_stage)
                         push_checkpoint_async(
-                            local_path,
+                            upload_stage,
                             step=step_val,
                             loss=loss_val,
                             target_type=target_type,
@@ -506,6 +639,7 @@ class AsyncCheckpointManager:
         filename: str,
         meta_dict: Optional[dict] = None,
         block_if_busy: bool = False,
+        opt_state: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """Dispatches an asynchronous save job. Returns True if job was queued."""
         is_critical = ("best" in filename) or ("step_" in filename) or block_if_busy
@@ -514,7 +648,8 @@ class AsyncCheckpointManager:
 
         params_cpu = jax.device_get(params)
         buffers_cpu = jax.device_get(buffers)
-        self._last_future = self.executor.submit(self._worker, params_cpu, buffers_cpu, filename, meta_dict, False)
+        opt_state_cpu = jax.device_get(opt_state) if opt_state is not None else None
+        self._last_future = self.executor.submit(self._worker, params_cpu, buffers_cpu, filename, meta_dict, False, opt_state_cpu)
         return True
 
     def flush(
@@ -523,11 +658,13 @@ class AsyncCheckpointManager:
         buffers: Tuple[jnp.ndarray, jnp.ndarray],
         filename: str,
         meta_dict: Optional[dict] = None,
+        opt_state: Optional[Dict[str, Any]] = None,
     ):
         """Synchronously flushes state (used on shutdown / emergency exit)."""
         params_cpu = jax.device_get(params)
         buffers_cpu = jax.device_get(buffers)
-        self._worker(params_cpu, buffers_cpu, filename, meta_dict, True)
+        opt_state_cpu = jax.device_get(opt_state) if opt_state is not None else None
+        self._worker(params_cpu, buffers_cpu, filename, meta_dict, True, opt_state_cpu)
         if self.cloud_sync:
             try:
                 from src.cloud_sync import wait_for_in_flight_uploads

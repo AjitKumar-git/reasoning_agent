@@ -40,9 +40,42 @@ def _preferred_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
     return _orig_getaddrinfo(host, port, family, type, proto, flags)
 socket.getaddrinfo = _preferred_getaddrinfo
 
+def get_sync_token(token: Optional[str] = None) -> str:
+    """Retrieves sync token from argument, environment variables, or local secret store."""
+    if token:
+        return token
+    tok = os.environ.get("BIOFLO_SYNC_TOKEN", os.environ.get("CEREBRO_SYNC_TOKEN", ""))
+    if tok:
+        return tok
+    for p in (os.path.expanduser("~/.bioflo_token"), os.path.expanduser("~/.cerebro_token")):
+        if os.path.exists(p):
+            try:
+                with open(p, "r") as f:
+                    t = f.read().strip()
+                    if t:
+                        return t
+            except Exception:
+                pass
+    return ""
+
+
 DEFAULT_URL = os.environ.get("BIOFLO_SYNC_URL", "https://bioflo.in/api/cerebro/sync.php")
-DEFAULT_TOKEN = os.environ.get("BIOFLO_SYNC_TOKEN", "CerebroSpheroid_Sync_Secure_2026")
+DEFAULT_TOKEN = get_sync_token()
 TPU_PRESET_ALIASES = ("tpu_v5e_1", "tpu_v6e_1", "tpu_v6e", "tpu", "v5_tpu")
+
+
+def normalize_model_name(model: Optional[str]) -> Optional[str]:
+    """Normalizes model preset names into canonical bioflo.in tiers (v5_small, v5_compact, v5_base)."""
+    if not model:
+        return model
+    m = str(model).strip()
+    if m in TPU_PRESET_ALIASES:
+        return "v5_small"
+    if "compact" in m:
+        return "v5_compact"
+    if "base" in m:
+        return "v5_base"
+    return m
 
 _IN_FLIGHT_UPLOADS: Dict[str, int] = {}
 _IN_FLIGHT_UPLOAD_TIMES: Dict[str, float] = {}
@@ -79,12 +112,9 @@ def check_remote_manifest(
     token: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Queries bioflo.in to retrieve checkpoint status, step numbers, and loss metrics for model tier."""
-    if model in TPU_PRESET_ALIASES:
-        model = "v5_small"
+    model = normalize_model_name(model)
     sync_url = url or DEFAULT_URL
     sync_token = token or DEFAULT_TOKEN
-    if model in TPU_PRESET_ALIASES:
-        model = "v5_small"
 
     req_url = f"{sync_url}?action=status"
     if model:
@@ -111,50 +141,58 @@ def select_highest_step_slot(
     Pick whichever bioflo.in slot (named model vs root fallback) holds the highest step.
     Returns (slot_model_arg, step, loss).
     """
-    norm_model = "v5_small" if model in TPU_PRESET_ALIASES else model
+    norm_model = normalize_model_name(model)
     manifest = (manifest_resp or {}).get("manifest") or {}
     models_block = (manifest_resp or {}).get("models") or {}
 
     candidates = []
-    if norm_model:
-        named_entry = manifest.get(f"{norm_model}_{target_type}")
-        if not named_entry and norm_model in models_block:
-            named_entry = models_block[norm_model].get(f"{target_type}_manifest")
-        if isinstance(named_entry, dict):
-            candidates.append((norm_model, int(named_entry.get("step", 0)), float(named_entry.get("loss", float("inf")))))
+    lookup_models = [norm_model] if norm_model else []
+    if norm_model and "compact" in norm_model and norm_model != "v5_compact":
+        lookup_models.append("v5_compact")
+    elif norm_model and "base" in norm_model and norm_model != "v5_base":
+        lookup_models.append("v5_base")
 
-    root_entry = manifest.get(target_type)
-    if isinstance(root_entry, dict):
-        root_model = root_entry.get("model") or None
-        candidates.append((root_model, int(root_entry.get("step", 0)), float(root_entry.get("loss", float("inf")))))
+    for m in lookup_models:
+        named_entry = manifest.get(f"{m}_{target_type}")
+        if not named_entry and m in models_block:
+            named_entry = models_block[m].get(f"{target_type}_manifest")
+        if isinstance(named_entry, dict) and int(named_entry.get("step", 0)) > 0:
+            candidates.append((m, int(named_entry.get("step", 0)), float(named_entry.get("loss", float("inf")))))
+
+    # Root slot fallback is strictly for v5_small or unassigned root models, never for compact/base tiers
+    allow_root = (norm_model is None or norm_model in ("v5_small", "root", "") or norm_model in TPU_PRESET_ALIASES)
+    if allow_root:
+        root_entry = manifest.get(target_type)
+        if isinstance(root_entry, dict) and int(root_entry.get("step", 0)) > 0:
+            root_model = root_entry.get("model") or None
+            candidates.append((root_model, int(root_entry.get("step", 0)), float(root_entry.get("loss", float("inf")))))
 
     if not candidates:
         return norm_model, 0, float("inf")
     return max(candidates, key=lambda item: item[1])
 
 
-def _download_range_chunk(url: str, token: str, start: int, end: int, filepath: str, chunk_idx: int) -> int:
+import uuid
+def _download_range_chunk(url: str, token: str, start: int, end: int, fd: int, chunk_idx: int) -> int:
     headers = {
         "Authorization": f"Bearer {token}",
         "Range": f"bytes={start}-{end}",
         "User-Agent": "CerebroV5CloudSync/1.0",
     }
     req = urllib.request.Request(url, headers=headers)
-    for attempt in range(5):
+    for attempt in range(6):
         try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
+            with urllib.request.urlopen(req, timeout=90) as resp:
                 data = resp.read()
                 expected = end - start + 1
                 if len(data) != expected:
                     raise ValueError(f"Chunk {chunk_idx}: expected {expected} bytes, got {len(data)}")
-                with open(filepath, "r+b") as f:
-                    f.seek(start)
-                    f.write(data)
+                os.pwrite(fd, data, start)
                 return len(data)
         except Exception as e:
-            if attempt == 4:
+            if attempt == 5:
                 raise e
-            time.sleep(1.0 + attempt)
+            time.sleep(1.0 * (1.5 ** attempt))
     return 0
 
 
@@ -165,7 +203,7 @@ def pull_checkpoint(
     url: Optional[str] = None,
     token: Optional[str] = None,
     show_progress: bool = True,
-    num_workers: int = 8,
+    num_workers: int = 4,
 ) -> bool:
     """
     Downloads latest.pt or best.pt for the specified model tier from bioflo.in.
@@ -173,8 +211,7 @@ def pull_checkpoint(
     """
     sync_url = url or DEFAULT_URL
     sync_token = token or DEFAULT_TOKEN
-    if model in TPU_PRESET_ALIASES:
-        model = "v5_small"
+    model = normalize_model_name(model)
 
     os.makedirs(os.path.dirname(os.path.abspath(local_dest)), exist_ok=True)
     download_url = f"{sync_url}?action=download&type={target_type}"
@@ -202,7 +239,7 @@ def pull_checkpoint(
             pass
 
         if total_bytes > 5 * 1024 * 1024:
-            chunk_size = 2 * 1024 * 1024  # 2 MB chunks
+            chunk_size = 8 * 1024 * 1024  # 8 MB chunks to minimize TLS connection churn & avoid SSL reset drops
             ranges = []
             start = 0
             while start < total_bytes:
@@ -210,22 +247,24 @@ def pull_checkpoint(
                 ranges.append((start, end))
                 start = end + 1
 
-            with open(tmp_dest, "wb") as f:
-                f.truncate(total_bytes)
-
-            completed_bytes = 0
-            with ThreadPoolExecutor(max_workers=num_workers) as executor:
-                futures = [
-                    executor.submit(_download_range_chunk, download_url, sync_token, r[0], r[1], tmp_dest, idx)
-                    for idx, r in enumerate(ranges)
-                ]
-                for fut in as_completed(futures):
-                    completed_bytes += fut.result()
-                    if show_progress:
-                        pct = (completed_bytes / total_bytes) * 100
-                        speed = (completed_bytes / 1e6) / max(time.time() - t0, 0.1)
-                        print(f"\r  Downloading ({num_workers} threads): {completed_bytes / 1e6:.1f} / {total_bytes / 1e6:.1f} MB "
-                              f"({pct:.1f}%) | {speed:.1f} MB/s", end="", flush=True)
+            fd = os.open(tmp_dest, os.O_CREAT | os.O_RDWR | os.O_TRUNC)
+            try:
+                os.ftruncate(fd, total_bytes)
+                completed_bytes = 0
+                with ThreadPoolExecutor(max_workers=num_workers) as executor:
+                    futures = [
+                        executor.submit(_download_range_chunk, download_url, sync_token, r[0], r[1], fd, idx)
+                        for idx, r in enumerate(ranges)
+                    ]
+                    for fut in as_completed(futures):
+                        completed_bytes += fut.result()
+                        if show_progress:
+                            pct = (completed_bytes / total_bytes) * 100
+                            speed = (completed_bytes / 1e6) / max(time.time() - t0, 0.1)
+                            print(f"\r  Downloading ({num_workers} threads): {completed_bytes / 1e6:.1f} / {total_bytes / 1e6:.1f} MB "
+                                  f"({pct:.1f}%) | {speed:.1f} MB/s", end="", flush=True)
+            finally:
+                os.close(fd)
         else:
             downloaded = 0
             req = urllib.request.Request(download_url, headers={"Authorization": f"Bearer {sync_token}", "User-Agent": "CerebroV5CloudSync/1.0"})
@@ -248,10 +287,18 @@ def pull_checkpoint(
             actual_sz = os.path.getsize(tmp_dest)
             if total_bytes > 0 and actual_sz < total_bytes:
                 print(f"\n❌ [cloud_sync] Incomplete download ({actual_sz:,} of {total_bytes:,} bytes).")
+                if os.path.exists(tmp_dest):
+                    os.remove(tmp_dest)
                 return False
 
             if not zipfile.is_zipfile(tmp_dest):
-                print(f"\n⚠️ [cloud_sync] Checkpoint failed zip archive check. Discarding.")
+                z_diag = ""
+                try:
+                    with zipfile.ZipFile(tmp_dest) as z_check:
+                        z_check.testzip()
+                except Exception as z_ex:
+                    z_diag = f" ({z_ex})"
+                print(f"\n⚠️ [cloud_sync] Checkpoint failed zip archive check{z_diag}. Discarding.")
                 os.remove(tmp_dest)
                 return False
 
@@ -276,13 +323,18 @@ def _ensure_bfloat16_checkpoint(file_path: str) -> None:
         return
 
     try:
-        ckpt = torch.load(file_path, map_location="cpu", weights_only=False)
+        try:
+            ckpt = torch.load(file_path, map_location="cpu", weights_only=True)
+        except Exception:
+            ckpt = torch.load(file_path, map_location="cpu", weights_only=False)
         if not isinstance(ckpt, dict):
             return
 
         def _has_fp32(d: dict) -> bool:
             for v in d.values():
                 if isinstance(v, torch.Tensor) and v.is_floating_point() and v.dtype in (torch.float32, torch.float64):
+                    return True
+                if isinstance(v, dict) and _has_fp32(v):
                     return True
             return False
 
@@ -292,10 +344,12 @@ def _ensure_bfloat16_checkpoint(file_path: str) -> None:
                 if isinstance(v, torch.Tensor) and v.is_floating_point() and v.dtype in (torch.float32, torch.float64):
                     d[k] = v.to(torch.bfloat16)
                     count += 1
+                elif isinstance(v, dict):
+                    count += _convert_dict_to_bf16(v)
             return count
 
         has_fp = False
-        target_keys = ["model_state", "state_dict", "action_head_state", "action_head_state_dict"]
+        target_keys = ["model_state", "state_dict", "action_head_state", "action_head_state_dict", "opt_state"]
         is_nested = any(k in ckpt for k in target_keys)
 
         if is_nested:
@@ -321,9 +375,14 @@ def _ensure_bfloat16_checkpoint(file_path: str) -> None:
 
         tmp_out = f"{file_path}.bf16.{os.getpid()}"
         torch.save(ckpt, tmp_out)
-        os.replace(tmp_out, file_path)
-        new_mb = os.path.getsize(file_path) / 1e6
-        print(f"✅ [cloud_sync] Converted {converted_count} float32 tensors to bfloat16 ({new_mb:.1f} MB) in {os.path.basename(file_path)}")
+        if zipfile.is_zipfile(tmp_out):
+            os.replace(tmp_out, file_path)
+            new_mb = os.path.getsize(file_path) / 1e6
+            print(f"✅ [cloud_sync] Converted {converted_count} float32 tensors to bfloat16 ({new_mb:.1f} MB) in {os.path.basename(file_path)}")
+        else:
+            if os.path.exists(tmp_out):
+                os.remove(tmp_out)
+            print(f"⚠️ [cloud_sync] Bfloat16 conversion produced invalid zip archive; keeping original {file_path}")
     except Exception as e:
         print(f"⚠️ [cloud_sync] Warning during bfloat16 check: {e}")
 
@@ -350,6 +409,17 @@ def push_checkpoint(
     # Ensure any float32 tensors are converted to bfloat16 before chunking and uploading
     _ensure_bfloat16_checkpoint(file_path)
 
+    # Pre-upload archive verification: never push a corrupted or truncated archive
+    if not zipfile.is_zipfile(file_path):
+        print(f"⚠️ [cloud_sync] Pre-upload verification failed: {file_path} is not a valid zip archive. Aborting push.")
+        if ".upload." in file_path and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except Exception:
+                pass
+        return False
+
+    model = normalize_model_name(model)
     slot_key = f"{model}_{target_type}" if model else target_type
 
     global _IN_FLIGHT_UPLOADS, _IN_FLIGHT_UPLOAD_TIMES, _LAST_BEST_UPLOAD_TIME
@@ -372,8 +442,7 @@ def push_checkpoint(
 
     sync_url = url or DEFAULT_URL
     sync_token = token or DEFAULT_TOKEN
-    if model in TPU_PRESET_ALIASES:
-        model = "v5_small"
+    model = normalize_model_name(model)
     node_name = source_node or detect_source_environment()
 
     file_size = os.path.getsize(file_path)
@@ -384,6 +453,8 @@ def push_checkpoint(
     print(f"\n🌐 [cloud_sync] Mirroring {model_label}{target_type}.pt (Step {step:,}, Loss {loss:.4f}) "
           f"to {sync_url} across {total_chunks} chunk(s)...")
 
+    upload_id = uuid.uuid4().hex[:12]
+    upload_url = f"{sync_url}?action=upload_chunk"
     t0 = time.time()
     try:
         with open(file_path, "rb") as f:
@@ -397,6 +468,7 @@ def push_checkpoint(
 
                 form_fields = [
                     ("action", "upload_chunk"),
+                    ("upload_id", upload_id),
                     ("type", target_type),
                     ("chunk_index", str(idx)),
                     ("total_chunks", str(total_chunks)),
@@ -419,7 +491,7 @@ def push_checkpoint(
 
                 payload = b"".join(body)
                 req = urllib.request.Request(
-                    sync_url,
+                    upload_url,
                     data=payload,
                     headers={
                         "Authorization": f"Bearer {sync_token}",
@@ -437,6 +509,15 @@ def push_checkpoint(
                             if status not in ("chunk_saved", "complete", "completed", "in_progress"):
                                 raise RuntimeError(f"Server rejected chunk: {res_data}")
                             break
+                    except urllib.error.HTTPError as he:
+                        err_detail = ""
+                        try:
+                            err_detail = f": {he.read().decode('utf-8', errors='ignore')}"
+                        except Exception:
+                            pass
+                        if attempt == 2:
+                            raise RuntimeError(f"HTTP {he.code} {he.reason}{err_detail}") from he
+                        time.sleep(2.0)
                     except Exception as e:
                         if attempt == 2:
                             raise e
@@ -453,6 +534,11 @@ def push_checkpoint(
         with _UPLOAD_LOCK:
             _IN_FLIGHT_UPLOADS.pop(slot_key, None)
             _IN_FLIGHT_UPLOAD_TIMES.pop(slot_key, None)
+        if ".upload." in file_path and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except Exception:
+                pass
 
 
 def push_checkpoint_async(
@@ -499,8 +585,7 @@ def notify_training_start(
     """Notifies the central hub on bioflo.in that training has started."""
     sync_url = url or DEFAULT_URL
     sync_token = token or DEFAULT_TOKEN
-    if model in TPU_PRESET_ALIASES:
-        model = "v5_small"
+    model = normalize_model_name(model)
     node_name = source_node or detect_source_environment()
     model_name = model or "v5_small"
     msg = message or f"🚀 CerebroSpheroid {model_name} training active on {node_name}"
@@ -535,7 +620,7 @@ def fetch_remote_hardware_config(
     """Retrieves cached optimal batch size, remat, and throughput config for hardware from bioflo.in."""
     sync_url = url or DEFAULT_URL
     sync_token = token or DEFAULT_TOKEN
-    clean_model = "v5_small" if model in TPU_PRESET_ALIASES else model
+    clean_model = normalize_model_name(model) or model
 
     req_url = f"{sync_url}?action=get_config&model={clean_model}&device={urllib.parse.quote(device_signature)}"
     req = urllib.request.Request(
@@ -563,7 +648,7 @@ def push_remote_hardware_config(
     """Uploads benchmarked optimal hyperparameters to bioflo.in for zero-delay reuse."""
     sync_url = url or DEFAULT_URL
     sync_token = token or DEFAULT_TOKEN
-    clean_model = "v5_small" if model in TPU_PRESET_ALIASES else model
+    clean_model = normalize_model_name(model) or model
     source = source_node or detect_source_environment()
 
     payload = {
@@ -609,7 +694,7 @@ def push_remote_loss_history(
     """Uploads/syncs loss records over time to bioflo.in website data repository."""
     sync_url = url or DEFAULT_URL
     sync_token = token or DEFAULT_TOKEN
-    clean_model = "v5_small" if model in TPU_PRESET_ALIASES else model
+    clean_model = normalize_model_name(model) or model
 
     serialized = []
     for r in records:
@@ -652,7 +737,7 @@ def fetch_remote_loss_history(
     """Retrieves recorded training loss progression over time from bioflo.in website data repository."""
     sync_url = url or DEFAULT_URL
     sync_token = token or DEFAULT_TOKEN
-    clean_model = "v5_small" if model in TPU_PRESET_ALIASES else model
+    clean_model = normalize_model_name(model) or model
 
     req_url = f"{sync_url}?action=get_loss_history&model={clean_model}"
     req = urllib.request.Request(
@@ -684,7 +769,7 @@ def push_remote_token_tracker(
     """
     Pushes real-time token ingestion counters and per-dataset breakdowns to bioflo.in.
     """
-    clean_model = "v5_small" if model in TPU_PRESET_ALIASES else model
+    clean_model = normalize_model_name(model) or model
     sync_url = url or DEFAULT_URL
     sync_token = token or DEFAULT_TOKEN
 
@@ -729,7 +814,7 @@ def fetch_remote_token_tracker(
     """
     Retrieves current token ingestion metrics and per-dataset counts from bioflo.in.
     """
-    clean_model = "v5_small" if model in TPU_PRESET_ALIASES else model
+    clean_model = normalize_model_name(model) or model
     sync_url = url or DEFAULT_URL
     sync_token = token or DEFAULT_TOKEN
 

@@ -22,6 +22,7 @@ from functools import partial
 import glob
 import json
 import math
+import dataclasses
 import os
 import random
 import re
@@ -88,6 +89,7 @@ from src.jax.spheroid_optimizer import (
 from src.jax.checkpoint import (
     save_jax_to_torch_pt,
     load_torch_pt_to_jax,
+    safe_torch_load,
     adapt_and_load_checkpoint_weights,
     discover_latest_checkpoint,
     AsyncCheckpointManager,
@@ -111,7 +113,12 @@ from src.elastic_window import (
     get_default_elastic_buckets,
 )
 from src.jax.data_streamer import LinguisticDataStreamer
-from src.jax.auto_tuner import run_auto_tuner, resolve_jax_compute_dtype
+from autotune import (
+    run_auto_tuner,
+    resolve_jax_compute_dtype,
+    is_oom_error,
+    TrainingOOMHandler,
+)
 
 
 def parse_args(args_list=None):
@@ -133,9 +140,15 @@ def parse_args(args_list=None):
     parser.add_argument("--seq-len", "--target_len", dest="seq_len", type=int, default=512, help="Target response sequence length (default: 512 for deep reasoning)")
     parser.add_argument("--target-seq-len", "--target_seq_len", dest="target_seq_len", type=int, default=None, help="Target sequence length to transition toward (e.g. 512 or 1024)")
     parser.add_argument("--seq-transition-steps", "--seq_transition_steps", dest="seq_transition_steps", type=int, default=0, help="Steps over which to transition sequence length (0 = immediate transition to target_seq_len)")
-    parser.add_argument("--prompt_len", type=int, default=256, help="Prompt context length (used when --elastic_window is disabled, default: 256)")
-    parser.add_argument("--total_window", type=int, default=768, help="Total sequence budget for elastic sliding window (default: 768 tokens, 256 prompt + 512 target)")
-    parser.add_argument("--elastic_window", action="store_true", default=False, help="Enable elastic sliding context window with complementary buckets")
+    parser.add_argument("--prompt_len", type=int, default=256, help="Prompt context length (default: 256)")
+    parser.add_argument("--total_window", type=int, default=None, help="Total sequence budget for elastic sliding window (default: prompt_len + seq_len)")
+    parser.add_argument("--elastic_window", action=argparse.BooleanOptionalAction, default=True, help="Enable complementary context/target buckets")
+    parser.add_argument("--context-curriculum", action=argparse.BooleanOptionalAction, default=True, help="Grow context window through 512, 1024, 2048, and 4096 token stages")
+    parser.add_argument("--context-stage-steps", type=int, default=100000, help="Steps per context stage (default: 100,000 steps/stage across 512, 1024, 2048, 4096)")
+    parser.add_argument("--min-context-window", "--min_context_window", dest="min_context_window", type=int, default=512, help="Minimum context window stage for curriculum (default: 512, set 1024 to start at 1024)")
+    parser.add_argument("--use-rope", "--use_rope", dest="use_rope", action=argparse.BooleanOptionalAction, default=True, help="Use rotary Q/K positions for new long-context training runs (default: True)")
+    parser.add_argument("--max-phase-steps", "--max_phase_steps", dest="max_phase_steps", type=int, default=4096, help="Learned output phase-clock horizon for new runs (default: 4096)")
+    parser.add_argument("--sensory-position-steps", "--sensory_position_steps", dest="sensory_position_steps", type=int, default=4096, help="Learned sensory positional embedding steps (default: 4096)")
 
     # Learning Rate & Optimization
     parser.add_argument("--lr", type=float, default=2e-3, help="Peak Spheroid learning rate (default: 2e-3)")
@@ -149,10 +162,10 @@ def parse_args(args_list=None):
     parser.add_argument("--repetition_penalty", type=float, default=1.25, help="Two-tier refractory repetition penalty multiplier")
 
     # Model & Precision
-    parser.add_argument("--preset", type=str, default="auto", choices=["auto", "v5_small", "v5_compact", "v5_base", "v5_test", "tpu_v5e_1", "tpu_v6e_1", "tpu_v6e"], help="Model preset (default: auto -> auto-detects tpu_v6e_1 / tpu_v5e_1)")
+    parser.add_argument("--preset", type=str, default="auto", choices=["auto", "v5_small", "v5_compact_32shells", "v5_compact", "v5_base", "v5_test", "tpu_v5e_1", "tpu_v6e_1", "tpu_v6e"], help="Model preset (default: auto -> auto-detects tpu_v6e_1 / tpu_v5e_1)")
     parser.add_argument("--dtype", type=str, default="auto", choices=["auto", "bf16", "fp16", "fp32"], help="Matrix execution precision ('auto' selects bf16 on TPU)")
     parser.add_argument("--remat", type=str, default="true", choices=["true", "false", "auto"], help="Activation remat scan to minimize HBM footprint (default: true)")
-    parser.add_argument("--auto-tune", action="store_true", default=False, help="Micro-benchmark candidate batch sizes at startup to maximize steps/s, tok/s, and HBM/VRAM utilization")
+    parser.add_argument("--auto_tune", "--auto-tune", dest="auto_tune", action=argparse.BooleanOptionalAction, default=True, help="Micro-benchmark candidate batch sizes at startup to maximize steps/s, tok/s, and HBM/VRAM utilization (default: True)")
     parser.add_argument("--force-tune", "--force_tune", dest="force_tune", action="store_true", default=False, help="Force re-running auto-tuner benchmarks even if cached config exists on bioflo.in")
     parser.add_argument(
         "--tune-objective",
@@ -160,8 +173,8 @@ def parse_args(args_list=None):
         dest="tune_objective",
         type=str,
         default="balanced",
-        choices=["balanced", "steps_per_sec", "tok_per_sec"],
-        help="Auto-tuner selection objective: 'balanced' (tok/s * sqrt(steps/s)), 'steps_per_sec', or 'tok_per_sec'",
+        choices=["balanced", "steps_per_sec", "steps/s", "tok_per_sec", "tokens/sec", "loss_reduction_per_sec", "loss_reduction_sec", "loss reduction/sec"],
+        help="Auto-tuner selection objective: 'balanced', 'steps_per_sec' (steps/s), 'tok_per_sec' (tokens/sec), or 'loss_reduction_per_sec' (loss reduction/sec)",
     )
 
     # Scheduled Sampling & Deliberation Curriculum
@@ -183,9 +196,12 @@ def parse_args(args_list=None):
     parser.add_argument("--max_thinking_cycles", "--max-thinking-cycles", dest="max_thinking_cycles", type=int, default=16, help="Maximum thinking cycles when adaptive thinking is active (default: 16)")
 
     # Data Source & Tokenizer
+    parser.add_argument("--hf-token", "--hf_token", dest="hf_token", type=str, default=None, help="Hugging Face API token for authenticated dataset streaming")
     parser.add_argument("--dataset_source", "--dataset-source", dest="dataset_source", type=str, default="autonomous",
-                        choices=["autonomous", "v5_base", "reasoning_anneal", "dense_edu", "local", "conversation_sft", "balanced_mix", "tri_pillar", "fineweb_edu", "openhermes", "consolidation"],
-                        help="Data stream: 'autonomous' (4-phase developmental curriculum for v5_base), 'reasoning_anneal' (1:1:1 Tri-Pillar), 'dense_edu', 'conversation_sft', 'consolidation'")
+                        help="Data stream: 'autonomous', 'fineweb' (sample-10BT), or a Hugging Face dataset repo")
+    parser.add_argument("--dataset-config", type=str, default=None, help="Optional Hugging Face dataset config (FineWeb defaults to sample-10BT)")
+    parser.add_argument("--dataset-revision", type=str, default=None, help="Optional immutable Hugging Face commit/revision override")
+    parser.add_argument("--retrieval-injection", action=argparse.BooleanOptionalAction, default=True, help="Mix curated retrieval examples into online streams (disable for a clean general-text baseline)")
     parser.add_argument("--tokenizer_name", type=str, default="llama", help="Tokenizer model name or path (default: 'llama' -> data/tokenizer)")
 
     # Checkpoint & Cloud Sync
@@ -199,7 +215,12 @@ def parse_args(args_list=None):
     parser.add_argument("--no-cloud-sync", "--no_cloud_sync", dest="cloud_sync", action="store_false", help="Disable live sync with bioflo.in")
     parser.add_argument("--cloud-sync-interval", type=int, default=100, help="Steps between cloud sync uploads")
     parser.add_argument("--cloud_url", type=str, default="https://bioflo.in/api/cerebro/sync.php", help="bioflo.in sync endpoint")
-    parser.add_argument("--cloud_token", type=str, default="CerebroSpheroid_Sync_Secure_2026", help="Secret sync token")
+    parser.add_argument(
+        "--cloud_token",
+        type=str,
+        default=os.environ.get("BIOFLO_SYNC_TOKEN", os.environ.get("CEREBRO_SYNC_TOKEN", "")),
+        help="Secret sync token (defaults to BIOFLO_SYNC_TOKEN environment variable)",
+    )
     parser.add_argument("--resume_target", type=str, default="latest", choices=["latest", "best"], help="Target checkpoint to pull from cloud ('latest' or 'best')")
     parser.add_argument("--reset_best", action="store_true", default=False, help="Reset best validation loss tracker")
     parser.add_argument("--from-scratch", "--from_scratch", dest="from_scratch", action="store_true", default=False, help="Start clean from Step 0 without loading any checkpoint")
@@ -209,8 +230,32 @@ def parse_args(args_list=None):
     parser.add_argument("--reset_step_counter", "--reset-step-counter", dest="reset_step_counter", action="store_true", default=False, help="Reset step counter to 0 after loading base weights to start new campaign from scratch")
     parser.add_argument("--target-eval-loss", "--target_eval_loss", dest="target_eval_loss", type=float, default=1.60, help="Target held-out evaluation loss for convergence early stopping (default: 1.60)")
     parser.add_argument("--consistent-eval-threshold", "--consistent_eval_threshold", dest="consistent_eval_threshold", type=int, default=3, help="Consecutive evaluations required <= target-eval-loss to confirm convergence (default: 3)")
+    parser.add_argument("--freeze_core", "--freeze-core", dest="freeze_core", action=argparse.BooleanOptionalAction, default=False, help="Enable cyclical cortical expansion pretraining (freeze core for 900 steps, anneal for 100 steps every 1000 steps)")
+    parser.add_argument("--freeze_until_step", "--freeze-until-step", dest="freeze_until_step", type=int, default=50000, help="Step number until which core freezing is active; after this step, core is permanently unfrozen for full end-to-end training (default: 50,000)")
+    parser.add_argument("--cycle_length", "--cycle-length", dest="cycle_length", type=int, default=1000, help="Cycle length in steps for freeze/anneal consolidation (default: 1000)")
+    parser.add_argument("--anneal_steps", "--anneal-steps", dest="anneal_steps", type=int, default=100, help="Steps within each cycle spent annealing/unfrozen (default: 100)")
+    parser.add_argument("--teacher_digest", "--teacher-digest", dest="teacher_digest", type=str, default="none", choices=["online", "heuristic", "none"], help="Enable Teacher Digestion & Dynamic Next-Token Loss Weighting (default: none)")
+    parser.add_argument("--teacher_model", "--teacher-model", dest="teacher_model", type=str, default="Qwen/Qwen2.5-1.5B-Instruct", help="HuggingFace teacher model for digestion")
+    parser.add_argument("--teacher_scale", "--teacher-scale", dest="teacher_scale", type=float, default=1.5, help="Scaling factor alpha for dynamic next-token weights")
+    parser.add_argument("--encephalization_warmup_steps", "--encephalization-warmup-steps", dest="encephalization_warmup_steps", type=int, default=1000, help="Steps to smoothly transition motor surface readout from core to outer mantle")
 
-    return parser.parse_args(args_list)
+    parsed = parser.parse_args(args_list)
+    raw_args = args_list if args_list is not None else sys.argv[1:]
+    parsed.batch_size_explicit = any(
+        arg == "--batch-size" or arg == "--batch_size" or arg.startswith("--batch-size=") or arg.startswith("--batch_size=")
+        for arg in raw_args
+    )
+    parsed.total_steps_explicit = any(
+        arg == "--total-steps" or arg == "--total_steps" or arg.startswith("--total-steps=") or arg.startswith("--total_steps=")
+        for arg in raw_args
+    )
+    parsed.effective_batch_size_explicit = any(
+        arg == "--effective-batch-size" or arg == "--effective_batch_size" or arg.startswith("--effective-batch-size=") or arg.startswith("--effective_batch_size=")
+        for arg in raw_args
+    )
+    if parsed.total_window is None:
+        parsed.total_window = parsed.prompt_len + parsed.seq_len
+    return parsed
 
 
 def build_data_stream(
@@ -225,6 +270,10 @@ def build_data_stream(
     prefetch_queue_size: int = 16,
     step_getter: Optional[Any] = None,
     total_steps: int = 1_500_000,
+    prefetch: bool = True,
+    dataset_config: Optional[str] = None,
+    dataset_revision: Optional[str] = None,
+    retrieval_injection: bool = True,
 ):
     """Initializes multi-corpus streaming engine with background prefetching and offline fallback."""
     # Check if HuggingFace datasets library is available for online streaming
@@ -235,8 +284,25 @@ def build_data_stream(
     except ImportError:
         pass
 
-    if dataset_source in ("local", "pretrain", "offline") or not HAS_DATASETS:
-        if dataset_source not in ("local", "pretrain", "offline") and not HAS_DATASETS:
+    # 100% Loss-Bearing Rectified Contiguous Pretraining Streamer
+    if dataset_source in ("pretrain", "rectified", "rectified_pretrain", "clean_pretrain", "midtrain", "rectified_midtrain") and HAS_DATASETS:
+        from src.rectified_streamer import RectifiedContiguousPretrainStreamer
+        streamer_stage = "midtrain" if "midtrain" in dataset_source else "pretrain"
+        print(f"\n📦 Initializing 100% Loss-Bearing Rectified Contiguous Streamer [{dataset_source.upper()}]...")
+        print(f"   • Stage:          {streamer_stage.upper()}")
+        print(f"   • Context Window: {total_window} tokens (contiguous unbroken next-token loss)")
+        print(f"   • Global Batch:   {batch_size} sequences/step")
+        streamer = RectifiedContiguousPretrainStreamer(
+            tokenizer=tokenizer,
+            batch_size=batch_size,
+            block_size=total_window,
+            stage=streamer_stage,
+            queue_size=max(16, int(prefetch_queue_size)),
+        )
+        return streamer, None
+
+    if dataset_source in ("local", "offline") or not HAS_DATASETS:
+        if dataset_source not in ("local", "offline") and not HAS_DATASETS:
             print(f"⚠️ [DataStreamer] 'datasets' library not found. Falling back to high-throughput local corpus.")
         print(f"📦 Initializing background linguistic streaming queue (Local Corpus in data/)...")
         streamer = LinguisticDataStreamer(
@@ -258,6 +324,9 @@ def build_data_stream(
             dataset_source=dataset_source,
             step_getter=step_getter,
             total_steps=total_steps,
+            inject_retrieval=retrieval_injection,
+            dataset_config=dataset_config,
+            dataset_revision=dataset_revision,
         )
         first_row = next(raw_iter)
         data_iter = itertools.chain([first_row], raw_iter)
@@ -278,12 +347,49 @@ def build_data_stream(
             )
 
         q_depth = max(16, int(prefetch_queue_size))
+        if not prefetch:
+            return None, batcher
         prefetched = PrefetchedBatcher(batcher, queue_size=q_depth)
         print(f"⚡ Background Asynchronous Batch Prefetcher Active (Queue Depth: {q_depth} batches)")
         return None, prefetched
 
     except Exception as e:
-        print(f"⚠️ [DataStreamer] Online dataset initialization failed: {e}. Falling back to local corpus.")
+        if dataset_source != "autonomous":
+            print(
+                f"⚠️ [DataStreamer] Online dataset '{dataset_source}' initialization failed: {e}.\n"
+                f"   🌐 Automatically falling back to canonical 'autonomous' foundational curriculum (FineWeb-Edu + Cosmopedia-v2 + Math + Code)..."
+            )
+            try:
+                raw_iter = build_online_dataset_iterator(
+                    dataset_source="autonomous",
+                    step_getter=step_getter,
+                    total_steps=total_steps,
+                )
+                first_row = next(raw_iter)
+                data_iter = itertools.chain([first_row], raw_iter)
+
+                if use_elastic_window:
+                    buckets = get_default_elastic_buckets(total_window)
+                    batcher = ElasticBucketBatcher(
+                        tokenizer, data_iter, batch_size=batch_size, total_window=total_window, buckets=buckets, framework="numpy", return_feedback=True
+                    )
+                else:
+                    buckets = [("static", prompt_len, target_len)]
+                    batcher = ElasticBucketBatcher(
+                        tokenizer, data_iter, batch_size=batch_size, total_window=prompt_len + target_len, buckets=buckets, framework="numpy", return_feedback=True
+                    )
+
+                q_depth = max(16, int(prefetch_queue_size))
+                if not prefetch:
+                    return None, batcher
+                prefetched = PrefetchedBatcher(batcher, queue_size=q_depth)
+                print(f"⚡ Background Asynchronous Batch Prefetcher Active for 'autonomous' (Queue Depth: {q_depth} batches)")
+                return None, prefetched
+            except Exception as e_auto:
+                print(f"⚠️ [DataStreamer] 'autonomous' curriculum initialization failed: {e_auto}. Falling back to local corpus.")
+        else:
+            print(f"⚠️ [DataStreamer] Online dataset initialization failed: {e}. Falling back to local corpus.")
+
         streamer = LinguisticDataStreamer(
             batch_size=batch_size,
             prompt_len=prompt_len,
@@ -298,6 +404,10 @@ def main(args=None):
     if args is None:
         args = parse_args()
 
+    # 0. Hugging Face Authentication & Token Resolution
+    from src.hf_utils import setup_hf_token
+    setup_hf_token(getattr(args, "hf_token", None), verbose=True)
+
     # Graceful shutdown handler
     shutdown_requested = False
 
@@ -310,9 +420,16 @@ def main(args=None):
     signal.signal(signal.SIGTERM, sig_handler)
 
     # Sequence Length Transition & Context Budget Progression
-    if getattr(args, "target_seq_len", None) is not None and args.target_seq_len > args.seq_len:
-        print(f"\n🔄 [Sequence Transition] Advancing target sequence length from {args.seq_len} -> {args.target_seq_len} tokens for deep reasoning!")
-        args.seq_len = args.target_seq_len
+    initial_seq_len = args.seq_len
+    target_seq_len = getattr(args, "target_seq_len", None)
+    seq_trans_steps = getattr(args, "seq_transition_steps", 0)
+
+    if target_seq_len is not None and target_seq_len > args.seq_len:
+        if seq_trans_steps <= 0:
+            print(f"\n🔄 [Sequence Transition] Advancing target sequence length immediately from {args.seq_len} -> {target_seq_len} tokens for deep reasoning!")
+            args.seq_len = target_seq_len
+        else:
+            print(f"\n🔄 [Sequence Transition Scheduled] Gradual transition planned from {args.seq_len} -> {target_seq_len} tokens over {seq_trans_steps:,} steps.")
 
     if args.total_window in (288, 768) and (args.seq_len != 512 or args.prompt_len != 256):
         args.total_window = args.prompt_len + args.seq_len
@@ -346,68 +463,15 @@ def main(args=None):
     print(f"Destination Dir : {args.checkpoint_dir}")
     print("=" * 80)
 
-    # 2. Auto-Tuning Micro-Benchmark
-    remat_choice = True if args.remat.lower() == "true" else False
-    max_bs = getattr(args, "max_batch_size", None)
-    if args.auto_tune:
-        best_cfg = run_auto_tuner(
-            preset=args.preset,
-            seq_len=args.seq_len,
-            dtype=args.dtype,
-            use_cached_config=not getattr(args, "force_tune", False),
-            force_tune=getattr(args, "force_tune", False),
-            upload_winner=True,
-            cloud_url=args.cloud_url,
-            cloud_token=args.cloud_token,
-            verbose=True,
-            tune_objective=getattr(args, "tune_objective", "balanced"),
-            prompt_len=args.prompt_len,
-            max_batch_size=max_bs,
-        )
-        args.batch_size = best_cfg["batch_size"]
-        remat_choice = best_cfg["remat"]
-        print(f"\n⚡ Applying Tuned Hyperparameters: batch_size={args.batch_size}, remat={remat_choice}")
-        if "tok_per_sec" in best_cfg and best_cfg["tok_per_sec"] > 0:
-            m_type = best_cfg.get("memory_type", "HBM" if ("tpu" in dev_kind or "tpu" in backend.lower()) else "VRAM")
-            v_gb = best_cfg.get("memory_gb", best_cfg.get("vram_gb", 0))
-            v_pct = best_cfg.get("memory_utilization_pct", best_cfg.get("vram_utilization_pct", 0))
-            sps = best_cfg.get("steps_per_sec", 0.0)
-            sps_str = f"{sps:.2f} steps/s | " if sps and sps > 0 else ""
-            print(f"⚡ Target Benchmark Speed: {sps_str}{best_cfg['tok_per_sec']:,.0f} tok/s ({m_type}: {v_gb:.1f} GB, {v_pct:.1f}% utilization)")
-    elif max_bs is not None:
-        args.batch_size = min(int(args.batch_size), int(max_bs))
-
-    # Effective Batch Size & Gradient Accumulation
-    if getattr(args, "effective_batch_size", None) is not None and args.effective_batch_size > 0:
-        eff_target = args.effective_batch_size
-        if eff_target == 126:
-            if args.batch_size > 126:
-                args.batch_size = 126
-                args.grad_accum = 1
-            elif 126 % args.batch_size == 0:
-                args.grad_accum = 126 // args.batch_size
-            else:
-                args.batch_size = 126
-                args.grad_accum = 1
-        else:
-            if args.batch_size > eff_target:
-                args.batch_size = eff_target
-            args.grad_accum = max(1, eff_target // max(1, args.batch_size))
-        eff_bs = args.batch_size * args.grad_accum
-        print(f"⚡ [Batch Scaling] Target Effective Batch Size: {eff_bs} (Micro Batch: {args.batch_size} × Grad Accum: {args.grad_accum})")
-
-    eff_batch_size = args.batch_size * getattr(args, "grad_accum", 1)
-    tokens_per_opt_step = eff_batch_size * (args.prompt_len + args.seq_len)
-    if getattr(args, "target_tokens", None) is not None and args.target_tokens > 0:
-        calculated_steps = int(math.ceil(float(args.target_tokens) / max(1.0, float(tokens_per_opt_step))))
-        args.total_steps = calculated_steps
-        print(f"🎯 [Target Token Budget] {args.target_tokens/1e9:.2f} Billion Tokens -> Scheduled for {args.total_steps:,} Steps (at {tokens_per_opt_step:,} tok/step)")
-
-    # 3. Model Configuration & Parameters
+    # 2. Model Configuration & Parameters
     config_preset = "v5_small" if args.preset in ("tpu_v5e_1", "tpu_v6e_1", "tpu_v6e") else args.preset
     if config_preset not in PRESETS_V5:
         config_preset = "v5_small"
     cfg_kwargs = PRESETS_V5[config_preset].copy()
+    cfg_kwargs["use_rope"] = bool(args.use_rope)
+    cfg_kwargs["max_phase_steps"] = int(args.max_phase_steps)
+    if getattr(args, "sensory_position_steps", None) is not None:
+        cfg_kwargs["sensory_position_steps"] = int(args.sensory_position_steps)
     if getattr(args, "num_mtp_heads", None) is not None:
         cfg_kwargs["num_mtp_heads"] = args.num_mtp_heads
     if getattr(args, "use_adaptive_thinking", None) is not None:
@@ -424,12 +488,12 @@ def main(args=None):
 
     total_params = sum(p.size for p in params.values())
     active_compute = sum(p.size for k, p in params.items() if "embedding" not in k)
-    print(f"\nModel Config    : {args.preset} | Shells: {config.num_shells} | Surface Dim: {config.surface_dim} | Radial Dim: {config.radial_dim}")
+    print(f"\nModel Config    : {args.preset} | Shells: {config.num_shells} | Surface Dim: {config.surface_dim} | Radial Dim: {config.radial_dim} | Thinking Cycles: {config.thinking_cycles}")
     print(f"Total Parameters: {total_params:,} (~{total_params/1e6:.1f}M)")
     print(f"Active Compute  : {active_compute:,} (~{active_compute/1e6:.1f}M) ({active_compute/total_params*100:.2f}%)")
     print(f"Optimizer       : {args.optimizer.upper()} ({'Polar Newton-Schulz NS-5 + Spectral Clamp' if args.optimizer == 'spheroid' else 'Optax AdamW'})")
 
-    # 4. Tokenizer
+    # 3. Tokenizer
     tokenizer = build_tokenizer(args.tokenizer_name)
     pad_id = getattr(tokenizer, "pad_token_id", 0) or 0
 
@@ -456,7 +520,7 @@ def main(args=None):
 
     # Checkpoint Restoration or Clean Scratch Start
     if args.from_scratch:
-        print("\n🌱 [from_scratch=True] Initializing clean Step 0 training with random orthogonal weights (checkpoint restoration bypassed)!")
+        print("\n🌱 [from_scratch=True] Initializing clean Step 0 training with random orthogonal weights (zero foundation copying)!")
         start_step = 0
         best_eval_loss = float("inf")
         last_eval_loss = float("inf")
@@ -467,6 +531,43 @@ def main(args=None):
                     os.remove(old_f)
                 except Exception:
                     pass
+            old_j = old_f.replace(".pt", ".json")
+            if os.path.exists(old_j):
+                try:
+                    os.remove(old_j)
+                except Exception:
+                    pass
+
+        # Fix starting model at Step 0
+        step0_meta = {
+            "step": 0,
+            "loss": float("inf"),
+            "eval_loss": float("inf"),
+            "config": dataclasses.asdict(config) if dataclasses.is_dataclass(config) else config,
+            "tokens_by_dataset": {},
+            "lifetime_tokens": 0,
+            "sync_model": sync_model_name,
+        }
+        step0_fname = f"{args.preset}_step0.pt"
+        step0_path = os.path.join(args.checkpoint_dir, step0_fname)
+        save_jax_to_torch_pt(params, buffers, local_latest, meta=step0_meta)
+        save_jax_to_torch_pt(params, buffers, step0_path, meta=step0_meta)
+        print(f"📦 [Starting Model Fixed] Clean base architecture saved at Step 0:\n   ├─ {local_latest}\n   └─ {step0_path}")
+
+        if args.cloud_sync:
+            try:
+                push_checkpoint_async(
+                    local_latest,
+                    step=0,
+                    loss=9.9999,
+                    target_type="latest",
+                    model=sync_model_name,
+                    url=args.cloud_url,
+                    token=args.cloud_token,
+                )
+                print(f"☁️ [cloud_sync] Fixed starting model registered on bioflo.in for model='{sync_model_name}' at Step 0.")
+            except Exception as e_sync:
+                print(f"⚠️ [cloud_sync] Notice on initial step 0 save: {e_sync}")
     else:
         # Cloud sync pull if active (pick whichever slot — named or root — has highest step)
         if args.cloud_sync:
@@ -479,84 +580,168 @@ def main(args=None):
                     slot_model, remote_step, remote_loss = select_highest_step_slot(
                         remote_manifest, sync_model_name, args.resume_target
                     )
-                    # Safety Override: If 'best' was requested but 'latest' is significantly ahead,
-                    # prevent accidental regression (e.g. starting back at 586k when 666k is available)
-                    if args.resume_target == "best":
-                        _, latest_step, _ = select_highest_step_slot(
-                            remote_manifest, sync_model_name, "latest"
-                        )
-                        if latest_step > remote_step + 5000:
-                            print(
-                                f"🛡️ [SAFETY OVERRIDE] 'best.pt' (Step {remote_step:,}) is >5,000 steps behind 'latest.pt' (Step {latest_step:,})!\n"
-                                f"   Automatically switching resumption to 'latest.pt' to prevent step regression."
-                            )
-                            args.resume_target = "latest"
-                            slot_model, remote_step, remote_loss = select_highest_step_slot(
+                    if remote_step > 0:
+                        # Safety Override: If 'best' was requested but 'latest' is significantly ahead,
+                        # prevent accidental regression (e.g. starting back at 586k when 666k is available)
+                        if args.resume_target == "best":
+                            _, latest_step, _ = select_highest_step_slot(
                                 remote_manifest, sync_model_name, "latest"
                             )
+                            if latest_step > remote_step + 5000:
+                                print(
+                                    f"🛡️ [SAFETY OVERRIDE] 'best.pt' (Step {remote_step:,}) is >5,000 steps behind 'latest.pt' (Step {latest_step:,})!\n"
+                                    f"   Automatically switching resumption to 'latest.pt' to prevent step regression."
+                                )
+                                args.resume_target = "latest"
+                                slot_model, remote_step, remote_loss = select_highest_step_slot(
+                                    remote_manifest, sync_model_name, "latest"
+                                )
 
-                    print(
-                        f"🔎 [cloud_sync] Selected remote slot model={slot_model or 'root'} "
-                        f"(Step {remote_step:,}, Loss {remote_loss:.4f}) for {args.resume_target}.pt"
-                    )
-                    target_dest = os.path.join(args.checkpoint_dir, f"{args.preset}_{args.resume_target}.pt")
-                    pulled_ok = pull_checkpoint(
-                        target_dest,
-                        target_type=args.resume_target,
-                        model=slot_model,
-                        url=args.cloud_url,
-                        token=args.cloud_token,
-                    )
-                    if pulled_ok and os.path.exists(target_dest):
-                        local_latest = target_dest
-                        print(f"✓ Restored latest checkpoint from cloud hub: {target_dest}")
+                        print(
+                            f"🔎 [cloud_sync] Selected remote slot model={slot_model or 'root'} "
+                            f"(Step {remote_step:,}, Loss {remote_loss:.4f}) for {args.resume_target}.pt"
+                        )
+                        target_dest = os.path.join(args.checkpoint_dir, f"{args.preset}_{args.resume_target}.pt")
+                        pulled_ok = pull_checkpoint(
+                            target_dest,
+                            target_type=args.resume_target,
+                            model=slot_model,
+                            url=args.cloud_url,
+                            token=args.cloud_token,
+                        )
+                        if pulled_ok and os.path.exists(target_dest):
+                            local_latest = target_dest
+                            print(f"✓ Restored latest checkpoint from cloud hub: {target_dest}")
+                        else:
+                            # Autonomous Fallback: If primary target fails or is corrupted, try the alternative slot ('best' vs 'latest')
+                            alt_target = "best" if args.resume_target == "latest" else "latest"
+                            alt_slot_model, alt_step, alt_loss = select_highest_step_slot(
+                                remote_manifest, sync_model_name, alt_target
+                            )
+                            if alt_step > 0:
+                                print(
+                                    f"⚠️ [cloud_sync] Primary slot '{args.resume_target}.pt' failed verification. "
+                                    f"Falling back to candidate '{alt_target}.pt' (Step {alt_step:,}, Loss {alt_loss:.4f})..."
+                                )
+                                alt_dest = os.path.join(args.checkpoint_dir, f"{args.preset}_{alt_target}.pt")
+                                alt_ok = pull_checkpoint(
+                                    alt_dest,
+                                    target_type=alt_target,
+                                    model=alt_slot_model,
+                                    url=args.cloud_url,
+                                    token=args.cloud_token,
+                                )
+                                if alt_ok and os.path.exists(alt_dest):
+                                    local_latest = alt_dest
+                                    dest_latest = os.path.join(args.checkpoint_dir, f"{args.preset}_latest.pt")
+                                    if os.path.abspath(alt_dest) != os.path.abspath(dest_latest):
+                                        try:
+                                            shutil.copyfile(alt_dest, dest_latest)
+                                            local_latest = dest_latest
+                                        except Exception:
+                                            pass
+                                    print(f"✓ Restored alternative candidate checkpoint from cloud hub: {alt_dest}")
+                    else:
+                        print(f"ℹ️ [cloud_sync] No existing checkpoint on bioflo.in for {args.preset} (Step 0). Ready for clean training.")
             except Exception as e:
                 print(f"⚠️ [cloud_sync] Notice: {e}")
 
-        # Discover and restore latest local checkpoint or explicit foundation checkpoint
+        # Check if an existing checkpoint for THIS preset is already present (local or restored from cloud)
         discovered_ckpt = None
-        candidate_init = getattr(args, "init_from_checkpoint", None)
-        if candidate_init:
-            candidate_paths = [
-                candidate_init,
-                os.path.join(args.checkpoint_dir, candidate_init),
-                os.path.join(args.checkpoint_dir, f"{candidate_init}.pt"),
-                os.path.join("checkpoints", candidate_init),
-                os.path.join("checkpoints", f"{candidate_init}.pt"),
-                "/home/ajit/Documents/Startup/Active_Development/cerebro_spheroid_v5/checkpoints/v5_small_latest_step900k.pt"
-                if ("900" in str(candidate_init)) else None,
-                "/home/ajit/Documents/Startup/Active_Development/reasoning_agent/checkpoints/v5_small_latest_step900k.pt"
-                if ("900" in str(candidate_init)) else None,
-            ]
-            for p in candidate_paths:
-                if p and os.path.exists(p):
-                    discovered_ckpt = p
-                    break
-            if discovered_ckpt:
-                print(f"📦 Loading base model weights from explicit checkpoint: {discovered_ckpt}")
-            else:
-                print(f"⚠️ Explicit checkpoint '{candidate_init}' not found locally. Searching default checkpoint paths...")
+        existing_preset_step = 0
+        target_local = local_latest if os.path.exists(local_latest) else (fallback_latest if os.path.exists(fallback_latest) else None)
+        if target_local and os.path.exists(target_local):
+            try:
+                chk_test = safe_torch_load(target_local, map_location="cpu", weights_only=True)
+                existing_preset_step = int(chk_test.get("step", 0))
+            except Exception:
+                existing_preset_step = 0
 
-        if not discovered_ckpt:
-            if not os.path.exists(local_latest) and os.path.exists(fallback_latest):
-                local_latest = fallback_latest
-            if os.path.exists(local_latest):
-                discovered_ckpt = local_latest
-            else:
-                found_ckpt, found_step, found_loss = discover_latest_checkpoint(args.checkpoint_dir, preset=args.preset)
-                if found_ckpt:
-                    discovered_ckpt = found_ckpt
+        if existing_preset_step > 0:
+            discovered_ckpt = target_local
+            print(
+                f"✓ Found existing training checkpoint for {args.preset} at Step {existing_preset_step:,} ({discovered_ckpt}).\n"
+                f"   Resuming directly (foundation core re-copying completely bypassed to preserve trained weights)."
+            )
+        else:
+            # Only if no active preset checkpoint exists, check for explicit foundation checkpoint
+            candidate_init = getattr(args, "init_from_checkpoint", None)
+            if candidate_init:
+                candidate_paths = [
+                    candidate_init,
+                    os.path.join(args.checkpoint_dir, candidate_init),
+                    os.path.join(args.checkpoint_dir, f"{candidate_init}.pt"),
+                    os.path.join("checkpoints", candidate_init),
+                    os.path.join("checkpoints", f"{candidate_init}.pt"),
+                    os.path.join("/home/ajit/Documents/Startup/Active_Development/cerebro_checkpoints_archive", candidate_init),
+                    os.path.join("/home/ajit/Documents/Startup/Active_Development/cerebro_checkpoints_archive", f"{candidate_init}.pt"),
+                    os.path.join("/home/ajit/Documents/Startup/Active_Development/cerebro_checkpoints_archive/archived_v5_small_runs", candidate_init),
+                    os.path.join("/home/ajit/Documents/Startup/Active_Development/cerebro_checkpoints_archive/archived_v5_small_runs", f"{candidate_init}.pt"),
+                    "/home/ajit/Documents/Startup/Active_Development/cerebro_checkpoints_archive/archived_v5_small_runs/v5_small_latest_step900k.pt"
+                    if ("900" in str(candidate_init)) else None,
+                    "/home/ajit/Documents/Startup/Active_Development/cerebro_spheroid_v5/checkpoints/v5_small_latest_step900k.pt"
+                    if ("900" in str(candidate_init)) else None,
+                    "/home/ajit/Documents/Startup/Active_Development/reasoning_agent/checkpoints/v5_small_latest_step900k.pt"
+                    if ("900" in str(candidate_init)) else None,
+                ]
+                for p in candidate_paths:
+                    if p and os.path.exists(p):
+                        discovered_ckpt = p
+                        break
+
+                # If explicit foundation checkpoint not found locally, pull it from bioflo.in
+                if not discovered_ckpt and args.cloud_sync:
+                    c_str = str(candidate_init).lower()
+                    pull_model = "v5_small" if ("v5_small" in c_str or "step920" in c_str or "step900" in c_str or "foundation" in c_str) else None
+                    dest_file = candidate_init if candidate_init.endswith(".pt") else f"{candidate_init}.pt"
+                    dest_path = os.path.join(args.checkpoint_dir, dest_file)
+                    print(f"🔄 [cloud_sync] Explicit foundation checkpoint '{candidate_init}' requested. Pulling model='{pull_model or 'v5_small'}' from bioflo.in...")
+                    pulled_ok = pull_checkpoint(
+                        dest_path,
+                        target_type="latest",
+                        model=pull_model or "v5_small",
+                        url=args.cloud_url,
+                        token=args.cloud_token,
+                    )
+                    if pulled_ok and os.path.exists(dest_path):
+                        discovered_ckpt = dest_path
+                        print(f"✓ Restored foundation checkpoint from cloud hub: {dest_path}")
+
+                if discovered_ckpt:
+                    print(f"📦 Loading base model weights from explicit checkpoint: {discovered_ckpt}")
+                else:
+                    print(f"⚠️ Explicit checkpoint '{candidate_init}' not found locally or on cloud hub. Searching default checkpoint paths...")
+
+            if not discovered_ckpt:
+                if not os.path.exists(local_latest) and os.path.exists(fallback_latest):
+                    local_latest = fallback_latest
+                if os.path.exists(local_latest):
+                    discovered_ckpt = local_latest
+                else:
+                    found_ckpt, found_step, found_loss = discover_latest_checkpoint(args.checkpoint_dir, preset=args.preset)
+                    if found_ckpt:
+                        discovered_ckpt = found_ckpt
 
         if discovered_ckpt and os.path.exists(discovered_ckpt):
             try:
-                ckpt = torch.load(discovered_ckpt, map_location="cpu", weights_only=False)
+                ckpt = safe_torch_load(discovered_ckpt, map_location="cpu", weights_only=True)
                 start_step = int(ckpt.get("step", 0))
-                best_eval_loss = float(ckpt.get("eval_loss", ckpt.get("loss", float("inf"))))
-                last_eval_loss = best_eval_loss
+                saved_eval = float(ckpt.get("eval_loss", float("inf")))
+                saved_train_loss = float(ckpt.get("loss", float("inf")))
+                if saved_eval > 7.0 and saved_train_loss < 5.0:
+                    best_eval_loss = float("inf")
+                    last_eval_loss = float("inf")
+                else:
+                    best_eval_loss = saved_eval if math.isfinite(saved_eval) else saved_train_loss
+                    last_eval_loss = best_eval_loss
                 restored_ema = ckpt.get("ema_loss", ckpt.get("loss", ckpt.get("eval_loss", None)))
                 if restored_ema is not None and math.isfinite(float(restored_ema)) and float(restored_ema) > 0.0:
                     initial_ema_loss = float(restored_ema)
-                restored = adapt_and_load_checkpoint_weights(ckpt, params, target_dtype, config)
+                adapt_res = adapt_and_load_checkpoint_weights(ckpt, params, target_dtype, config, buffers=buffers)
+                if isinstance(adapt_res, tuple):
+                    restored, buffers = adapt_res
+                else:
+                    restored = adapt_res
                 ema_info = f" (EMA: {initial_ema_loss:.4f})" if initial_ema_loss is not None else ""
                 print(f"✓ Resumed from {os.path.basename(discovered_ckpt)} at Step {start_step:,} (Loss: {best_eval_loss:.4f}{ema_info})")
                 if restored == len(params):
@@ -564,17 +749,18 @@ def main(args=None):
                 else:
                     print(f"⚠️ Restored & adapted {restored}/{len(params)} parameter arrays into JAX engine ({len(params) - restored} missing).")
                 
-                # Campaign Reset: Keep weights, reset schedule & step counter
+                # Campaign Reset: Keep weights, reset schedule & step counter ONLY when seeding from external foundation model
                 if getattr(args, "reset_step_counter", False):
-                    start_step = 0
-                    best_eval_loss = float("inf")
-                    last_eval_loss = float("inf")
-                    initial_ema_loss = None
-                    print("🌱 [Campaign Reset Active] Step counter reset to 0! Calibrating fresh schedule from adapted base weights.")
+                    if discovered_ckpt == target_local and existing_preset_step > 0:
+                        print(f"ℹ️ [Resumption Safeguard] Preserving Step {start_step:,} for active {args.preset} run (reset_step_counter ignored on resumption).")
+                    else:
+                        start_step = 0
+                        best_eval_loss = float("inf")
+                        last_eval_loss = float("inf")
+                        initial_ema_loss = None
+                        print("🌱 [Campaign Reset Active] Step counter reset to 0! Calibrating fresh schedule from adapted base weights.")
                 else:
-                    if args.total_steps <= start_step:
-                        args.total_steps = start_step + calculated_steps
-                        print(f"🎯 Resuming from Step {start_step:,} -> Extended campaign schedule to Step {args.total_steps:,} (+{calculated_steps:,} steps)")
+                    pass
             except Exception as e:
                 print(f"⚠️ Checkpoint load notice: {e}. Starting fresh.")
 
@@ -583,23 +769,176 @@ def main(args=None):
         last_eval_loss = float("inf")
         print("🔄 [Benchmark Recalibration] Reset best_eval_loss tracker baseline.")
 
+    # 5. Context Stage Curriculum & Horizon Sizing
+    min_curriculum_window = int(getattr(args, "min_context_window", 512) or 512)
+    max_curriculum_window = args.total_window
+    if max_curriculum_window is None:
+        if getattr(args, "context_curriculum", False):
+            max_curriculum_window = 4096  # Curriculum defaults to advancing through the full 4K horizon
+        else:
+            max_curriculum_window = args.prompt_len + args.seq_len
+    if getattr(args, "target_seq_len", None) is not None:
+        max_curriculum_window = max(max_curriculum_window, args.prompt_len + args.target_seq_len)
+
+    context_stages = [w for w in [512, 1024, 2048, 4096] if w >= min_curriculum_window and w <= max_curriculum_window]
+    if not context_stages:
+        context_stages = [max_curriculum_window]
+
+    if getattr(args, "context_curriculum", False):
+        context_stage_steps = args.context_stage_steps if (getattr(args, "context_stage_steps", 0) and args.context_stage_steps > 0) else 100_000
+        active_stage_idx = min(len(context_stages) - 1, start_step // context_stage_steps)
+        args.total_window = context_stages[active_stage_idx]
+        print(
+            f"🌊 [Context Curriculum Active] Stages: {context_stages} tokens | {context_stage_steps:,} steps/stage\n"
+            f"   Initial Stage {active_stage_idx}: Total Window = {args.total_window} tokens"
+        )
+    else:
+        context_stage_steps = max(1, args.total_steps)
+        active_stage_idx = 0
+        args.total_window = max(min_curriculum_window, args.total_window or min_curriculum_window)
+
+    is_pretrain_source = args.dataset_source in ("pretrain", "rectified", "rectified_pretrain", "clean_pretrain")
+    if is_pretrain_source:
+        args.seq_len = args.total_window
+
+    # 6. Hardware Optimization & Auto-Tuning
+    remat_choice = True if args.remat.lower() == "true" else False
+    max_bs = getattr(args, "max_batch_size", None)
+    worst_case_seq = max(args.seq_len, args.total_window, getattr(args, "target_seq_len", 0) or 0)
+    if getattr(args, "context_curriculum", False) and "context_stages" in locals():
+        worst_case_seq = max(worst_case_seq, max(context_stages))
+
+    if args.auto_tune:
+        best_cfg = run_auto_tuner(
+            preset=args.preset,
+            seq_len=args.seq_len,
+            dtype=args.dtype,
+            use_cached_config=not getattr(args, "force_tune", False),
+            force_tune=getattr(args, "force_tune", False),
+            upload_winner=True,
+            cloud_url=args.cloud_url,
+            cloud_token=args.cloud_token,
+            verbose=True,
+            tune_objective=getattr(args, "tune_objective", "balanced"),
+            prompt_len=args.prompt_len,
+            max_batch_size=max_bs,
+            worst_case_seq_len=worst_case_seq,
+            model_config=config,
+            num_devices=num_devices,
+        )
+        if not getattr(args, "batch_size_explicit", False):
+            args.batch_size = best_cfg["batch_size"]
+        remat_choice = best_cfg["remat"]
+        print(f"\n⚡ Applying Tuned Hyperparameters: batch_size={args.batch_size}, remat={remat_choice}")
+        if "tok_per_sec" in best_cfg and best_cfg["tok_per_sec"] > 0:
+            m_type = best_cfg.get("memory_type", "HBM" if ("tpu" in dev_kind or "tpu" in backend.lower()) else "VRAM")
+            v_gb = best_cfg.get("memory_gb", best_cfg.get("vram_gb", 0))
+            v_pct = best_cfg.get("memory_utilization_pct", best_cfg.get("vram_utilization_pct", 0))
+            sps = best_cfg.get("steps_per_sec", 0.0)
+            sps_str = f"{sps:.2f} steps/s | " if sps and sps > 0 else ""
+            print(f"⚡ Target Benchmark Speed: {sps_str}{best_cfg['tok_per_sec']:,.0f} tok/s ({m_type}: {v_gb:.1f} GB, {v_pct:.1f}% utilization)")
+    elif max_bs is not None:
+        args.batch_size = min(int(args.batch_size), int(max_bs))
+
+    # Strict HBM Safety Enforcement for Long-Context Horizons
+    if (args.seq_len >= 1024 or args.total_window >= 1024 or getattr(args, "context_curriculum", False)) and not remat_choice:
+        print(f"🛡️ [HBM Safety Guard] Sequence window {max(args.seq_len, args.total_window)} >= 1024 requires activation rematerialization to prevent HBM OOM on 16GB accelerators. Enabling remat=True.")
+        remat_choice = True
+
+    # Scale micro-batch if necessary to keep micro-batch tokens bounded
+    # On 16GB accelerators (TPU v5e-1), 65,536 tokens per microbatch fits comfortably in HBM (4.5GB / 28.9%).
+    # 131,072 tokens per microbatch at seq >= 1024 causes OOM due to 32k-vocab logit tensors and optimizer states.
+    max_micro_tokens = 65536
+    if args.batch_size * args.seq_len > max_micro_tokens:
+        old_bs = args.batch_size
+        capped_bs = max(1, max_micro_tokens // args.seq_len)
+        if capped_bs >= 16:
+            capped_bs = (capped_bs // 16) * 16
+        elif capped_bs >= 8:
+            capped_bs = (capped_bs // 8) * 8
+        args.batch_size = capped_bs
+        print(f"🛡️ [HBM Safety Guard] Scaling micro batch size {old_bs} -> {args.batch_size} for sequence length {args.seq_len} (caps micro tokens at {args.batch_size * args.seq_len:,} <= {max_micro_tokens:,})")
+
+    # 7. Effective Batch Size & Target Token Budget Scheduling
+    if getattr(args, "effective_batch_size_explicit", False) and args.effective_batch_size > 0:
+        eff_target = args.effective_batch_size
+        if eff_target == 126:
+            if args.batch_size > 126:
+                args.batch_size = 126
+                args.grad_accum = 1
+            elif 126 % args.batch_size == 0:
+                args.grad_accum = 126 // args.batch_size
+            else:
+                args.batch_size = 126
+                args.grad_accum = 1
+        else:
+            if args.batch_size > eff_target:
+                args.batch_size = eff_target
+            args.grad_accum = max(1, eff_target // max(1, args.batch_size))
+        eff_bs = args.batch_size * args.grad_accum
+        print(f"⚡ [Batch Scaling] Target Effective Batch Size: {eff_bs} (Micro Batch: {args.batch_size} × Grad Accum: {args.grad_accum})")
+
+    eff_batch_size = args.batch_size * getattr(args, "grad_accum", 1)
+    tokens_per_opt_step = eff_batch_size * (args.prompt_len + args.seq_len)
+    if not getattr(args, "total_steps_explicit", False) and getattr(args, "target_tokens", None) is not None and args.target_tokens > 0:
+        calculated_steps = int(math.ceil(float(args.target_tokens) / max(1.0, float(tokens_per_opt_step))))
+        if start_step > 0 and args.total_steps <= start_step:
+            args.total_steps = start_step + calculated_steps
+            print(f"🎯 Resuming from Step {start_step:,} -> Extended campaign schedule to Step {args.total_steps:,} (+{calculated_steps:,} steps)")
+        else:
+            args.total_steps = calculated_steps
+            print(f"🎯 [Target Token Budget] {args.target_tokens/1e9:.2f} Billion Tokens -> Scheduled for {args.total_steps:,} Steps (at {tokens_per_opt_step:,} tok/step)")
+
     # 6. Spheroid Optimizer & JIT / Multi-TPU Local-SGD Train Step Engine
     grad_accum = max(1, int(getattr(args, "grad_accum", 1)))
+    oom_handler = TrainingOOMHandler(
+        initial_batch_size=args.batch_size,
+        effective_batch_size=eff_batch_size,
+        initial_grad_accum=grad_accum,
+        remat=remat_choice,
+        min_batch_size=1,
+        verbose=True,
+    )
     multi_mode = getattr(args, "multi_tpu", "auto")
     use_multi_tpu_local_sgd = (num_devices > 1) and (args.optimizer == "spheroid") and (multi_mode != "single")
+    if num_devices > 1 and args.optimizer != "spheroid":
+        print(f"ℹ️ [Multi-Device Dispatch] Multi-device pmap Local-SGD is specialized for the SPHEROID optimizer (polar NS-5 + spectral clamp). Running {args.optimizer.upper()} in standard single-accelerator JIT mode.")
     eff_num_devices = num_devices if use_multi_tpu_local_sgd else 1
-    eff_local_steps = max(1, int(getattr(args, "local_steps", 4))) if use_multi_tpu_local_sgd else 1
+    base_local_steps = max(1, int(getattr(args, "local_steps", 4)))
+    eff_local_steps = max(1, base_local_steps * grad_accum) if use_multi_tpu_local_sgd else 1
     step_stride = eff_num_devices * eff_local_steps
 
-    if use_multi_tpu_local_sgd and args.elastic_window:
-        print("ℹ️ Multi-TPU Local-SGD enforces fixed static shapes for uniform pmap shards; disabling --elastic_window.")
-        args.elastic_window = False
+    # Multi-TPU rounds select a single elastic bucket and bypass the async
+    # prefetch wrapper, which otherwise mixes shapes within a pmap scan.
+
+    param_masks = None
+    if getattr(args, "freeze_core", False):
+        from src.cortical_expansion import build_cortical_expansion_masks, count_cortical_expansion_params
+        param_masks = build_cortical_expansion_masks(params, num_frozen_shells=16, num_frozen_tracts=40, framework="jax")
+        stats = count_cortical_expansion_params(params, param_masks)
+        print("\n" + "=" * 84)
+        print("🧠 [Progressive Cortical Expansion TPU Mode Enabled]")
+        print(f"   • Total Compact Parameters  : {stats['total_params']:,} ({stats['total_params']/1e6:.2f}M)")
+        print(f"   • Frozen Core & Headers      : {stats['frozen_params']:,} ({stats['frozen_pct']:.1f}%)")
+        print(f"   • Trainable Outer Mantle     : {stats['trainable_params']:,} ({stats['trainable_pct']:.1f}%)")
+        print(f"   • Freeze Schedule Window     : Initial {getattr(args, 'freeze_until_step', 50000):,} steps (permanently unfrozen thereafter)")
+        print(f"   • Cyclical Anneal Schedule   : Freeze {args.cycle_length - args.anneal_steps} steps ➔ Anneal {args.anneal_steps} steps (every {args.cycle_length} steps)")
+        print("=" * 84 + "\n")
 
     pmap_round_fn = None
     rep_params = None
     rep_opt_state = None
+    apply_opt_step_frozen = None
+    apply_opt_step_anneal = None
+    train_step_fn_frozen = None
+    train_step_fn_anneal = None
+
     if args.optimizer == "spheroid":
-        opt_state = init_spheroid_opt_state(params)
+        if start_step > 0 and "discovered_ckpt" in locals() and discovered_ckpt and os.path.exists(discovered_ckpt):
+            from src.jax.checkpoint import restore_spheroid_opt_state
+            opt_state = restore_spheroid_opt_state(discovered_ckpt, params)
+        else:
+            opt_state = init_spheroid_opt_state(params)
         if use_multi_tpu_local_sgd:
             pmap_round_fn = build_pmap_local_sgd_step_spheroid(
                 config,
@@ -615,7 +954,7 @@ def main(args=None):
             rep_opt_state = replicate_for_pmap(opt_state, devices)
             compute_grad_step, apply_opt_step, train_step_fn = None, None, None
         elif grad_accum <= 1:
-            train_step_fn = build_train_step_spheroid(
+            train_step_fn_anneal = build_train_step_spheroid(
                 config,
                 buffers,
                 pad_id=pad_id,
@@ -623,10 +962,22 @@ def main(args=None):
                 repetition_penalty=args.repetition_penalty,
                 remat=remat_choice,
                 deliberation_mode=args.deliberation_mode,
+                param_masks=None,
             )
+            train_step_fn_frozen = build_train_step_spheroid(
+                config,
+                buffers,
+                pad_id=pad_id,
+                weight_decay=args.weight_decay,
+                repetition_penalty=args.repetition_penalty,
+                remat=remat_choice,
+                deliberation_mode=args.deliberation_mode,
+                param_masks=param_masks,
+            ) if param_masks is not None else train_step_fn_anneal
+            train_step_fn = train_step_fn_anneal
             compute_grad_step, apply_opt_step = None, None
         else:
-            compute_grad_step, apply_opt_step = build_spheroid_train_engine(
+            compute_grad_step, apply_opt_step_anneal = build_spheroid_train_engine(
                 config,
                 buffers,
                 pad_id=pad_id,
@@ -634,10 +985,29 @@ def main(args=None):
                 repetition_penalty=args.repetition_penalty,
                 remat=remat_choice,
                 deliberation_mode=args.deliberation_mode,
+                param_masks=None,
             )
+            _, apply_opt_step_frozen = build_spheroid_train_engine(
+                config,
+                buffers,
+                pad_id=pad_id,
+                weight_decay=args.weight_decay,
+                repetition_penalty=args.repetition_penalty,
+                remat=remat_choice,
+                deliberation_mode=args.deliberation_mode,
+                param_masks=param_masks,
+            ) if param_masks is not None else (None, apply_opt_step_anneal)
+            apply_opt_step = apply_opt_step_anneal
 
-            def train_step_fn(p, opt_s, q_batch, r_batch, cur_lr, feedback_tokens=None, sampling_p=1.0):
-                loss_val, grads = compute_grad_step(p, q_batch, r_batch, feedback_tokens=feedback_tokens, sampling_p=sampling_p, deliberation_mode=args.deliberation_mode)
+            def train_step_fn(p, opt_s, q_batch, r_batch, cur_lr, feedback_tokens=None, sampling_p=1.0, encephalization_alpha=1.0, target_weights=None):
+                loss_val, grads = compute_grad_step(
+                    p, q_batch, r_batch,
+                    feedback_tokens=feedback_tokens,
+                    sampling_p=sampling_p,
+                    deliberation_mode=args.deliberation_mode,
+                    encephalization_alpha=encephalization_alpha,
+                    target_weights=target_weights,
+                )
                 new_p, new_opt_s = apply_opt_step(p, opt_s, grads, cur_lr)
                 return new_p, new_opt_s, loss_val
 
@@ -646,13 +1016,25 @@ def main(args=None):
             raise ImportError("optax is required for AdamW training. Install via: pip install optax")
         optimizer = optax.chain(
             optax.clip_by_global_norm(1.0),
-            optax.adamw(learning_rate=args.lr, b1=0.9, b2=0.95, weight_decay=args.weight_decay),
+            optax.scale_by_adam(b1=0.9, b2=0.95),
+            optax.add_decayed_weights(weight_decay=args.weight_decay),
         )
-        opt_state = optimizer.init(params)
-        compute_grad_step, apply_opt_step = None, None
+        optax_init_state = optimizer.init(params)
+        opt_state = {
+            "optax": optax_init_state,
+            "diag": {
+                "grad_norm": jnp.array(0.0, dtype=jnp.float32),
+                "was_clipped": jnp.array(0.0, dtype=jnp.float32),
+                "was_skipped": jnp.array(0.0, dtype=jnp.float32),
+                "u_ratio_manifold": jnp.array(0.0, dtype=jnp.float32),
+                "u_ratio_vocab": jnp.array(0.0, dtype=jnp.float32),
+                "u_ratio_1d": jnp.array(0.0, dtype=jnp.float32),
+                "replica_drift": jnp.array(0.0, dtype=jnp.float32),
+            },
+        }
 
         @partial(jax.jit, static_argnames=("pure_tf", "deliberation_mode"))
-        def _train_step_adamw_jit(p, opt_s, q_batch, r_batch, cur_lr, feedback_tokens, sampling_p, pure_tf: bool, deliberation_mode: str):
+        def _train_step_adamw_jit(p, opt_s, q_batch, r_batch, cur_lr, feedback_tokens, sampling_p, pure_tf: bool, deliberation_mode: str, encephalization_alpha: float = 1.0, target_weights: Optional[jnp.ndarray] = None):
             def loss_fn(param_dict):
                 return training_rollout(
                     params=param_dict,
@@ -669,19 +1051,117 @@ def main(args=None):
                     remat=remat_choice,
                     pure_teacher_forcing=pure_tf,
                     deliberation_mode=deliberation_mode,
+                    encephalization_alpha=encephalization_alpha,
+                    target_weights=target_weights,
                 )
             loss_val, grads = jax.value_and_grad(loss_fn)(p)
-            updates, next_opt_s = optimizer.update(grads, opt_s, p)
+            grad_norm = optax.global_norm(grads)
+            is_grad_finite = jnp.isfinite(grad_norm)
+            raw_updates, next_optax_s = optimizer.update(grads, opt_s["optax"], p)
+            # Dynamically scale by scheduled cur_lr (negative for gradient descent in optax.apply_updates)
+            updates = jax.tree_util.tree_map(lambda u: -cur_lr * u, raw_updates)
             next_p = optax.apply_updates(p, updates)
-            return next_p, next_opt_s, loss_val
 
-        def train_step_fn(p, opt_s, q_batch, r_batch, cur_lr, feedback_tokens=None, sampling_p=1.0):
+            params_finite = jnp.all(jnp.array([jnp.all(jnp.isfinite(np_)) for np_ in jax.tree_util.tree_leaves(next_p)]))
+            is_step_valid = is_grad_finite & params_finite
+
+            # Strict non-finite skip protection: restore previous parameters and optimizer state on NaN/Inf
+            safe_p = jax.tree_util.tree_map(lambda np_, op_: jnp.where(is_step_valid, np_, op_), next_p, p)
+            safe_optax_s = jax.tree_util.tree_map(lambda ns_, os_: jnp.where(is_step_valid, ns_, os_), next_optax_s, opt_s["optax"])
+
+            sq_diff = sum(jnp.sum(jnp.square(u)) for u in jax.tree_util.tree_leaves(updates))
+            sq_norm = sum(jnp.sum(jnp.square(p_i)) for p_i in jax.tree_util.tree_leaves(p))
+            u_ratio = jnp.sqrt(sq_diff / (sq_norm + 1e-8))
+
+            adamw_diag = {
+                "grad_norm": grad_norm,
+                "was_clipped": jnp.where(grad_norm > 1.0, 1.0, 0.0),
+                "was_skipped": jnp.where(is_step_valid, 0.0, 1.0),
+                "u_ratio_manifold": jnp.where(is_step_valid, u_ratio, 0.0),
+                "u_ratio_vocab": jnp.where(is_step_valid, u_ratio, 0.0),
+                "u_ratio_1d": jnp.where(is_step_valid, u_ratio, 0.0),
+                "replica_drift": jnp.array(0.0, dtype=jnp.float32),
+            }
+            next_opt_s = {
+                "optax": safe_optax_s,
+                "diag": adamw_diag,
+            }
+            return safe_p, next_opt_s, loss_val
+
+        def train_step_fn(p, opt_s, q_batch, r_batch, cur_lr, feedback_tokens=None, sampling_p=1.0, encephalization_alpha=1.0, target_weights=None):
             pure_tf = (args.deliberation_mode in ("teacher_forcing", "pure_tf")) and (not isinstance(sampling_p, jax.Array)) and (float(sampling_p) >= 1.0)
             return _train_step_adamw_jit(
-                p, opt_s, q_batch, r_batch, cur_lr, feedback_tokens, sampling_p, pure_tf, args.deliberation_mode
+                p, opt_s, q_batch, r_batch, cur_lr, feedback_tokens, sampling_p, pure_tf, args.deliberation_mode, encephalization_alpha, target_weights
             )
 
-    # 7. Multi-Stream Ingestion & Prefetching
+        @partial(jax.jit, static_argnames=("pure_tf", "deliberation_mode"))
+        def _compute_grad_adamw_jit(p, q_batch, r_batch, feedback_tokens, sampling_p, pure_tf: bool, deliberation_mode: str, encephalization_alpha: float = 1.0, target_weights: Optional[jnp.ndarray] = None):
+            def loss_fn(param_dict):
+                return training_rollout(
+                    params=param_dict,
+                    prompts=q_batch,
+                    target_len=r_batch.shape[1],
+                    buffers=buffers,
+                    config=config,
+                    feedback_tokens=feedback_tokens,
+                    feedback_is_shifted=True,
+                    pad_id=pad_id,
+                    sampling_p=sampling_p,
+                    repetition_penalty=args.repetition_penalty,
+                    targets=r_batch,
+                    remat=remat_choice,
+                    pure_teacher_forcing=pure_tf,
+                    deliberation_mode=deliberation_mode,
+                    encephalization_alpha=encephalization_alpha,
+                    target_weights=target_weights,
+                )
+            return jax.value_and_grad(loss_fn)(p)
+
+        @jax.jit
+        def _apply_opt_adamw_jit(p, opt_s, acc_grads, cur_lr):
+            grad_norm = optax.global_norm(acc_grads)
+            is_grad_finite = jnp.isfinite(grad_norm)
+            raw_updates, next_optax_s = optimizer.update(acc_grads, opt_s["optax"], p)
+            updates = jax.tree_util.tree_map(lambda u: -cur_lr * u, raw_updates)
+            next_p = optax.apply_updates(p, updates)
+
+            params_finite = jnp.all(jnp.array([jnp.all(jnp.isfinite(np_)) for np_ in jax.tree_util.tree_leaves(next_p)]))
+            is_step_valid = is_grad_finite & params_finite
+
+            # Strict non-finite skip protection: exactly mirrors Spheroid optimizer
+            safe_p = jax.tree_util.tree_map(lambda np_, op_: jnp.where(is_step_valid, np_, op_), next_p, p)
+            safe_optax_s = jax.tree_util.tree_map(lambda ns_, os_: jnp.where(is_step_valid, ns_, os_), next_optax_s, opt_s["optax"])
+
+            sq_diff = sum(jnp.sum(jnp.square(u)) for u in jax.tree_util.tree_leaves(updates))
+            sq_norm = sum(jnp.sum(jnp.square(p_i)) for p_i in jax.tree_util.tree_leaves(p))
+            u_ratio = jnp.sqrt(sq_diff / (sq_norm + 1e-8))
+
+            adamw_diag = {
+                "grad_norm": grad_norm,
+                "was_clipped": jnp.where(grad_norm > 1.0, 1.0, 0.0),
+                "was_skipped": jnp.where(is_step_valid, 0.0, 1.0),
+                "u_ratio_manifold": jnp.where(is_step_valid, u_ratio, 0.0),
+                "u_ratio_vocab": jnp.where(is_step_valid, u_ratio, 0.0),
+                "u_ratio_1d": jnp.where(is_step_valid, u_ratio, 0.0),
+                "replica_drift": jnp.array(0.0, dtype=jnp.float32),
+            }
+            next_opt_s = {
+                "optax": safe_optax_s,
+                "diag": adamw_diag,
+            }
+            return safe_p, next_opt_s
+
+        def compute_grad_step(p, q_batch, r_batch, feedback_tokens=None, sampling_p=1.0, deliberation_mode=args.deliberation_mode, encephalization_alpha=1.0, target_weights=None):
+            pure_tf = (deliberation_mode in ("teacher_forcing", "pure_tf")) and (not isinstance(sampling_p, jax.Array)) and (float(sampling_p) >= 1.0)
+            return _compute_grad_adamw_jit(p, q_batch, r_batch, feedback_tokens, sampling_p, pure_tf, deliberation_mode, encephalization_alpha, target_weights)
+
+        apply_opt_step = _apply_opt_adamw_jit
+        apply_opt_step_anneal = _apply_opt_adamw_jit
+        apply_opt_step_frozen = _apply_opt_adamw_jit
+        train_step_fn_anneal = train_step_fn
+        train_step_fn_frozen = train_step_fn
+
+    # 9. Multi-Stream Ingestion & Prefetched Data Stream
     current_step_holder = [start_step]
     local_streamer = None
     elastic_batcher = None
@@ -702,27 +1182,37 @@ def main(args=None):
         prefetch_queue_size=max(16, eff_num_devices * eff_local_steps * 2),
         step_getter=lambda: current_step_holder[0],
         total_steps=args.total_steps,
+        prefetch=not use_multi_tpu_local_sgd,
+        dataset_config=args.dataset_config,
+        dataset_revision=args.dataset_revision,
+        retrieval_injection=args.retrieval_injection,
     )
     batcher = elastic_batcher
 
     def _unpack_batch(batch_tuple):
+        if len(batch_tuple) == 6:
+            return batch_tuple[2], batch_tuple[3], batch_tuple[4], batch_tuple[5]
         if len(batch_tuple) == 5:
-            return batch_tuple[2], batch_tuple[3], batch_tuple[4]
+            return batch_tuple[2], batch_tuple[3], batch_tuple[4], None
         if len(batch_tuple) == 4:
-            return batch_tuple[2], batch_tuple[3], None
+            if hasattr(batch_tuple[0], "shape") and hasattr(batch_tuple[1], "shape"):
+                return batch_tuple[0], batch_tuple[1], batch_tuple[2], batch_tuple[3]
+            return batch_tuple[2], batch_tuple[3], None, None
         if len(batch_tuple) == 3:
-            return batch_tuple[0], batch_tuple[1], batch_tuple[2]
-        return batch_tuple[0], batch_tuple[1], None
+            return batch_tuple[0], batch_tuple[1], batch_tuple[2], None
+        return batch_tuple[0], batch_tuple[1], None, None
 
-    # 8. XLA Ahead-Of-Time Compilation (non-mutating warmup matching real feedback signature)
+    # 10. XLA Ahead-Of-Time Compilation (non-mutating warmup matching real feedback signature)
     print("\n⚡ Compiling XLA computation graph on TPU...")
     t0_compile = time.time()
+    dummy_prompt_len = 1 if is_pretrain_source else args.prompt_len
+    dummy_target_len = args.total_window if is_pretrain_source else args.seq_len
     if use_multi_tpu_local_sgd:
-        dummy_prompts = np.zeros((eff_num_devices, eff_local_steps, args.batch_size, args.prompt_len), dtype=np.int32)
-        dummy_targets = np.zeros((eff_num_devices, eff_local_steps, args.batch_size, args.seq_len), dtype=np.int32)
+        dummy_prompts = np.zeros((eff_num_devices, eff_local_steps, args.batch_size, dummy_prompt_len), dtype=np.int32)
+        dummy_targets = np.zeros((eff_num_devices, eff_local_steps, args.batch_size, dummy_target_len), dtype=np.int32)
         dummy_feedback = (
-            np.full((eff_num_devices, eff_local_steps, args.batch_size, args.seq_len), -100, dtype=np.int32)
-            if elastic_batcher is not None
+            np.full((eff_num_devices, eff_local_steps, args.batch_size, dummy_target_len), -100, dtype=np.int32)
+            if (elastic_batcher is not None or is_pretrain_source)
             else None
         )
         _warm_p, _warm_opt, initial_loss = pmap_round_fn(
@@ -737,48 +1227,106 @@ def main(args=None):
         init_loss_val = float(initial_loss[0])
         del _warm_p, _warm_opt
     else:
-        dummy_prompts = jnp.zeros((args.batch_size, args.prompt_len), dtype=jnp.int32)
-        dummy_targets = jnp.zeros((args.batch_size, args.seq_len), dtype=jnp.int32)
-        dummy_feedback = (
-            jnp.full((args.batch_size, args.seq_len), -100, dtype=jnp.int32)
-            if elastic_batcher is not None
-            else None
-        )
-        _warm_p, _warm_opt, initial_loss = train_step_fn(
-            params,
-            opt_state,
-            dummy_prompts,
-            dummy_targets,
-            args.lr,
-            feedback_tokens=dummy_feedback,
-        )
-        jax.block_until_ready(initial_loss)
-        init_loss_val = float(initial_loss)
-        del _warm_p, _warm_opt
+        while True:
+            dummy_prompts = jnp.zeros((args.batch_size, dummy_prompt_len), dtype=jnp.int32)
+            dummy_targets = jnp.zeros((args.batch_size, dummy_target_len), dtype=jnp.int32)
+            dummy_feedback = (
+                jnp.full((args.batch_size, dummy_target_len), -100, dtype=jnp.int32)
+                if (elastic_batcher is not None or is_pretrain_source)
+                else None
+            )
+            try:
+                if compute_grad_step is not None and grad_accum > 1:
+                    _warm_loss, _warm_grads = compute_grad_step(
+                        params,
+                        dummy_prompts,
+                        dummy_targets,
+                        feedback_tokens=dummy_feedback,
+                        sampling_p=args.min_sampling_p,
+                    )
+                    jax.block_until_ready(_warm_loss)
+                    init_loss_val = float(_warm_loss)
+                    del _warm_loss, _warm_grads
+                else:
+                    _warm_p, _warm_opt, initial_loss = train_step_fn(
+                        params,
+                        opt_state,
+                        dummy_prompts,
+                        dummy_targets,
+                        args.lr,
+                        feedback_tokens=dummy_feedback,
+                    )
+                    jax.block_until_ready(initial_loss)
+                    init_loss_val = float(initial_loss)
+                    del _warm_p, _warm_opt
+                break
+            except Exception as e_warm:
+                if not is_oom_error(e_warm) or args.batch_size <= 1:
+                    raise
+                args.batch_size, grad_accum = oom_handler.handle_oom(e_warm, step=0)
+                oom_handler.update_streamer(elastic_batcher or local_streamer)
+                if grad_accum > 1 and compute_grad_step is None:
+                    compute_grad_step, apply_opt_step_anneal = build_spheroid_train_engine(
+                        config, buffers, pad_id=pad_id, weight_decay=args.weight_decay,
+                        repetition_penalty=args.repetition_penalty, remat=remat_choice,
+                        deliberation_mode=args.deliberation_mode, param_masks=None,
+                    )
+                    _, apply_opt_step_frozen = build_spheroid_train_engine(
+                        config, buffers, pad_id=pad_id, weight_decay=args.weight_decay,
+                        repetition_penalty=args.repetition_penalty, remat=remat_choice,
+                        deliberation_mode=args.deliberation_mode, param_masks=param_masks,
+                    ) if param_masks is not None else (None, apply_opt_step_anneal)
     if start_step > 0 and math.isfinite(best_eval_loss):
         print(f"✓ XLA Compilation complete in {time.time() - t0_compile:.2f}s! Baseline Restored Loss: {best_eval_loss:.4f} (Tracer init: {init_loss_val:.2f})")
     else:
         print(f"✓ XLA Compilation complete in {time.time() - t0_compile:.2f}s! Initial Loss: {init_loss_val:.4f}")
 
-    # 9. Clean Canonical Multi-Domain Held-Out Validation Split
+    # 9. Clean Multi-Domain Held-Out Validation Split
     eval_batches = []
     eval_domains = []
-    try:
-        from src.elastic_window import build_canonical_eval_split
-        eval_batches, eval_domains = build_canonical_eval_split(
-            tokenizer=tokenizer,
-            batch_size=args.batch_size,
-            prompt_len=args.prompt_len,
-            target_len=args.seq_len,
-            target_pad_id=-100,
-            pad_id=pad_id,
-        )
-        print(f"✅ Clean Benchmark Held-Out Validation: Prepared {len(eval_batches)} canonical evaluation domains:")
-        for d_name in eval_domains:
-            print(f"   ├─ Domain: {d_name}")
-    except Exception as e:
-        print(f"⚠️ Canonical validation setup notice: {e}. Falling back to active stream.")
-        eval_batches = []
+    eval_weights = []
+    is_pretrain_source = args.dataset_source in ("pretrain", "rectified", "rectified_pretrain", "clean_pretrain")
+    if is_pretrain_source:
+        try:
+            from src.elastic_window import build_pretrain_eval_split
+            # Pretraining with RectifiedContiguousPretrainStreamer trains on contiguous document sequences
+            # seeded with a single BOS token (prompt_len=1). Align evaluation 1:1 with pretraining format.
+            eval_prompt_len = 1
+            eval_batches, eval_domains, eval_weights = build_pretrain_eval_split(
+                tokenizer=tokenizer,
+                batch_size=args.batch_size,
+                prompt_len=eval_prompt_len,
+                target_len=args.seq_len,
+                target_pad_id=-100,
+                pad_id=pad_id,
+                return_weights=True,
+            )
+            print(f"✅ Pretrain Held-Out Validation: Prepared {len(eval_batches)} pretraining domains:")
+            for d_name, d_wt in zip(eval_domains, eval_weights):
+                print(f"   ├─ Domain: {d_name} (Weight: {d_wt*100:.0f}%)")
+        except Exception as e:
+            print(f"⚠️ Pretrain validation setup notice: {e}. Falling back to active stream.")
+            eval_batches = []
+    else:
+        try:
+            from src.elastic_window import build_canonical_eval_split
+            eval_batches, eval_domains = build_canonical_eval_split(
+                tokenizer=tokenizer,
+                batch_size=args.batch_size,
+                prompt_len=args.prompt_len,
+                target_len=args.seq_len,
+                target_pad_id=-100,
+                pad_id=pad_id,
+            )
+            eval_weights = [1.0 / len(eval_domains)] * len(eval_domains)
+            print(f"✅ Clean Benchmark Held-Out Validation: Prepared {len(eval_batches)} canonical evaluation domains:")
+            for d_name in eval_domains:
+                print(f"   ├─ Domain: {d_name}")
+        except Exception as e:
+            print(f"⚠️ Canonical validation setup notice: {e}. Falling back to active stream.")
+            eval_batches = []
+
+    if not eval_batches:
         try:
             if elastic_batcher is not None:
                 for _ in range(4):
@@ -788,6 +1336,10 @@ def main(args=None):
                         else elastic_batcher.next_batch()
                     )
                     eval_batches.append(_unpack_batch(b_tup))
+            elif local_streamer is not None:
+                for _ in range(4):
+                    vp, vt = local_streamer.get_batch()
+                    eval_batches.append((vp, vt, None))
             elif os.path.exists("data/tokenizer"):
                 stream_val = LinguisticDataStreamer(
                     batch_size=args.batch_size,
@@ -805,12 +1357,13 @@ def main(args=None):
                     if hasattr(stream_val, "stop"):
                         stream_val.stop()
             eval_domains = [f"Domain_{i}" for i in range(len(eval_batches))]
+            eval_weights = [1.0 / len(eval_batches)] * len(eval_batches)
             print(f"✅ Prepared {len(eval_batches)} fallback evaluation batches.")
         except Exception as e_inner:
             print(f"⚠️ Fallback validation setup notice: {e_inner}")
 
     @jax.jit
-    def eval_step_loss(p, q_b, r_b, fb_b=None):
+    def eval_step_loss(p, q_b, r_b, fb_b=None, enc_alpha: float = 1.0):
         return training_rollout(
             params=p,
             prompts=q_b,
@@ -823,6 +1376,7 @@ def main(args=None):
             targets=r_b,
             remat=False,
             pure_teacher_forcing=True,
+            encephalization_alpha=enc_alpha,
         )
 
     # 10. Learning Rate & Scheduled Sampling Schedules
@@ -888,18 +1442,44 @@ def main(args=None):
                 else elastic_batcher.next_batch()
             )
             return _unpack_batch(batch_tuple)
+        if hasattr(local_streamer, "get_batch"):
+            try:
+                prompt_b, target_b, weights_b = local_streamer.get_batch(return_weights=True)
+                return prompt_b, target_b, None, weights_b
+            except Exception:
+                prompt_b, target_b = local_streamer.get_batch()
+                return prompt_b, target_b, None, None
         prompt_b, target_b = local_streamer.get_batch()
-        return prompt_b, target_b, None
+        return prompt_b, target_b, None, None
+
+    _round_bucket_idx = 0
 
     def _next_multi_tpu_round():
+        nonlocal _round_bucket_idx
         total_shards = eff_num_devices * eff_local_steps
-        qs, rs, fbs = [], [], []
+        bucket_batcher = elastic_batcher
+        if bucket_batcher is not None and hasattr(bucket_batcher, "batcher"):
+            bucket_batcher = bucket_batcher.batcher
+        bucket_idx = None
+        if bucket_batcher is not None and hasattr(bucket_batcher, "buckets"):
+            bucket_idx = _round_bucket_idx % len(bucket_batcher.buckets)
+            _round_bucket_idx += 1
+        qs, rs, fbs, wts = [], [], [], []
         for _ in range(total_shards):
-            pb, tb, fb = _next_batch()
+            if bucket_idx is not None:
+                batch_tuple = bucket_batcher.next_batch(bucket_idx=bucket_idx)
+                b_unpack = _unpack_batch(batch_tuple)
+            else:
+                b_unpack = _next_batch()
+            pb, tb = b_unpack[0], b_unpack[1]
+            fb = b_unpack[2] if len(b_unpack) > 2 else None
+            wb = b_unpack[3] if len(b_unpack) > 3 else None
             qs.append(np.asarray(pb, dtype=np.int32))
             rs.append(np.asarray(tb, dtype=np.int32))
             if fb is not None:
                 fbs.append(np.asarray(fb, dtype=np.int32))
+            if wb is not None:
+                wts.append(np.asarray(wb, dtype=np.float32))
         b_p, l_p = qs[0].shape
         b_t, l_t = rs[0].shape
         q_arr = np.stack(qs, axis=0).reshape(eff_num_devices, eff_local_steps, b_p, l_p)
@@ -909,12 +1489,38 @@ def main(args=None):
             if len(fbs) == total_shards
             else None
         )
-        return q_arr, r_arr, fb_arr
+        wt_arr = (
+            np.stack(wts, axis=0).reshape(eff_num_devices, eff_local_steps, b_t)
+            if len(wts) == total_shards
+            else None
+        )
+        return q_arr, r_arr, fb_arr, wt_arr
 
     def _get_host_params():
         if use_multi_tpu_local_sgd:
             return jax.tree_util.tree_map(lambda x: jax.device_get(x[0]), rep_params)
         return params
+
+    def _get_host_opt_state():
+        if use_multi_tpu_local_sgd and rep_opt_state is not None:
+            return jax.tree_util.tree_map(lambda x: jax.device_get(x[0]), rep_opt_state)
+        return opt_state
+
+    def _count_real_tokens(prompts: Any, targets: Any) -> Tuple[int, int, int, int]:
+        """Count non-padding input and loss-bearing target tokens separately.
+
+        Static TPU shapes are an implementation detail, not training-data
+        volume. Reporting valid prompt and loss-bearing tokens separately ensures
+        honest token accounting.
+        """
+        p = np.asarray(prompts)
+        t = np.asarray(targets)
+        valid_prompt = int(np.count_nonzero(p != pad_id))
+        valid_loss = int(np.count_nonzero(t >= 0))
+        total_slots = int(p.size + t.size)
+        real_tokens = valid_prompt + valid_loss
+        padded_slots = total_slots - real_tokens
+        return real_tokens, valid_prompt, valid_loss, padded_slots
 
     step = start_step
     t_start = time.time()
@@ -929,11 +1535,22 @@ def main(args=None):
     loaded_ckpt = ckpt if ("ckpt" in locals() and isinstance(ckpt, dict)) else {}
     if getattr(args, "reset_step_counter", False):
         cumulative_tokens = 0
+        cumulative_prompt_tokens = 0
+        cumulative_loss_tokens = 0
+        cumulative_padded_tokens = 0
         initial_lifetime_tokens = int(loaded_ckpt.get("lifetime_tokens", 14_745_600_000))
     else:
         cumulative_tokens = int(loaded_ckpt.get("cumulative_tokens", 0))
+        cumulative_prompt_tokens = int(loaded_ckpt.get("cumulative_prompt_tokens", 0))
+        cumulative_loss_tokens = int(loaded_ckpt.get("cumulative_loss_tokens", 0))
+        cumulative_padded_tokens = int(loaded_ckpt.get("cumulative_padded_tokens", 0))
         initial_lifetime_tokens = int(loaded_ckpt.get("lifetime_tokens", 0))
     lifetime_tokens = initial_lifetime_tokens + cumulative_tokens
+
+    # Diagnostic Tracking for Optimizer Health & Stability
+    cumulative_skips = 0
+    window_clipped_count = 0
+    window_step_count = 0
 
     # Restore per-dataset token attribution if present
     if not getattr(args, "reset_step_counter", False):
@@ -949,6 +1566,42 @@ def main(args=None):
             current_step_holder[0] = step
             is_champion = False
             save_latest = False
+
+            # Context Stage Curriculum Transition Check
+            if getattr(args, "context_curriculum", False):
+                cur_stage_idx = min(len(context_stages) - 1, step // context_stage_steps)
+                if cur_stage_idx != active_stage_idx:
+                    active_stage_idx = cur_stage_idx
+                    active_window = context_stages[active_stage_idx]
+                    args.total_window = active_window
+                    if is_pretrain_source:
+                        args.seq_len = active_window
+                    new_buckets = get_default_elastic_buckets(active_window)
+                    print(
+                        f"\n🔄 [Context Curriculum Transition] Step {step:,}: Advancing to Stage {active_stage_idx} ({active_window} tokens)!\n"
+                        f"   Active Buckets: {new_buckets}\n"
+                    )
+                    if local_streamer is not None and hasattr(local_streamer, "update_block_size"):
+                        local_streamer.update_block_size(active_window)
+                    b_target = elastic_batcher
+                    if b_target is not None:
+                        if hasattr(b_target, "update_buckets"):
+                            b_target.update_buckets(new_buckets, new_total_window=active_window)
+                        elif hasattr(b_target, "batcher") and hasattr(b_target.batcher, "update_buckets"):
+                            b_target.batcher.update_buckets(new_buckets, new_total_window=active_window)
+
+            # Dynamic Sequence Length Transition Check (if seq_transition_steps > 0)
+            if target_seq_len is not None and target_seq_len > initial_seq_len and seq_trans_steps > 0:
+                elapsed_trans = max(0, step - start_step)
+                trans_frac = min(1.0, float(elapsed_trans) / float(seq_trans_steps))
+                cur_target_len = initial_seq_len + int((target_seq_len - initial_seq_len) * trans_frac)
+                cur_target_len = min(target_seq_len, max(initial_seq_len, (cur_target_len // 64) * 64))
+                if cur_target_len != args.seq_len:
+                    old_len = args.seq_len
+                    args.seq_len = cur_target_len
+                    print(f"\n🔄 [Sequence Transition] Step {step:,}: Progressing target sequence length {old_len} -> {args.seq_len} (Final Target: {target_seq_len})")
+                    if elastic_batcher is not None and hasattr(elastic_batcher, "update_target_len"):
+                        elastic_batcher.update_target_len(args.seq_len)
 
             cur_lr = get_learning_rate(step, args.total_steps, args.lr, args.min_lr, args.warmup_steps)
 
@@ -972,51 +1625,160 @@ def main(args=None):
                 cur_lr = cur_lr * (1.0 - 0.4 * alpha_gov)
 
             # Training Step
-            if use_multi_tpu_local_sgd:
-                q_shard, r_shard, fb_shard = _next_multi_tpu_round()
-                rep_params, rep_opt_state, loss_rep = pmap_round_fn(
-                    rep_params,
-                    rep_opt_state,
-                    q_shard,
-                    r_shard,
-                    cur_lr,
-                    feedback_micro=fb_shard,
-                    sampling_p=cur_sampling_p,
-                )
-                loss = float(loss_rep[0])
-                step_tokens = int(q_shard.shape[0] * q_shard.shape[1] * q_shard.shape[2] * (q_shard.shape[3] + r_shard.shape[3]))
-            elif compute_grad_step is not None and grad_accum > 1:
-                acc_grads = None
-                loss_acc = 0.0
-                step_tokens = 0
-                inv_accum = 1.0 / float(grad_accum)
-                for _ in range(grad_accum):
-                    prompt_b, target_b, feedback_b = _next_batch()
-                    g_loss, micro_grads = compute_grad_step(
-                        params, prompt_b, target_b, feedback_tokens=feedback_b, sampling_p=cur_sampling_p, deliberation_mode=args.deliberation_mode
-                    )
-                    acc_grads = (
-                        micro_grads
-                        if acc_grads is None
-                        else jax.tree_util.tree_map(lambda a, b: a + b, acc_grads, micro_grads)
-                    )
-                    loss_acc = loss_acc + g_loss
-                    step_tokens += prompt_b.shape[0] * (prompt_b.shape[1] + target_b.shape[1])
-                acc_grads = jax.tree_util.tree_map(lambda a: a * inv_accum, acc_grads)
-                loss = loss_acc * inv_accum
-                params, opt_state = apply_opt_step(params, opt_state, acc_grads, cur_lr)
+            # Progressive Encephalization Warmup Alpha
+            enc_warmup = max(1, getattr(args, "encephalization_warmup_steps", 1000))
+            if config.num_shells > 16 and (step - start_step) < enc_warmup:
+                enc_alpha = float(min(1.0, max(0.0, (step - start_step) / float(enc_warmup))))
             else:
-                prompt_b, target_b, feedback_b = _next_batch()
-                params, opt_state, loss = train_step_fn(
-                    params,
-                    opt_state,
-                    prompt_b,
-                    target_b,
-                    cur_lr,
-                    feedback_tokens=feedback_b,
-                    sampling_p=cur_sampling_p,
+                enc_alpha = 1.0
+
+            # Cyclical Core Freeze & Consolidation Anneal Schedule
+            freeze_limit = getattr(args, "freeze_until_step", 50000)
+            is_past_freeze_limit = step >= freeze_limit
+            is_frozen_active = getattr(args, "freeze_core", False) and not is_past_freeze_limit
+
+            if getattr(args, "freeze_core", False) and step == freeze_limit:
+                print(
+                    f"\n🔓 [Cortical Maturation Triggered] Step {step:,} reached freeze limit ({freeze_limit:,})!\n"
+                    f"   Subcortical core permanently unfrozen. Full end-to-end mantle+core training active across all {config.num_shells} shells!\n"
                 )
-                step_tokens = prompt_b.shape[0] * (prompt_b.shape[1] + target_b.shape[1])
+
+            is_anneal = False
+            if is_frozen_active:
+                step_in_cycle = step % args.cycle_length
+                is_anneal = step_in_cycle >= (args.cycle_length - args.anneal_steps)
+                if is_anneal:
+                    anneal_prog = (step_in_cycle - (args.cycle_length - args.anneal_steps)) / max(1, args.anneal_steps)
+                    anneal_factor = 0.5 * (1.0 + math.cos(math.pi * anneal_prog))
+                    cur_lr = 2e-6 + (cur_lr - 2e-6) * anneal_factor
+
+            step_executed = False
+            while not step_executed:
+                prompt_b, target_b, feedback_b, weights_b = None, None, None, None
+                try:
+                    if use_multi_tpu_local_sgd:
+                        q_shard, r_shard, fb_shard, wt_shard = _next_multi_tpu_round()
+                        rep_params, rep_opt_state, loss_rep = pmap_round_fn(
+                            rep_params,
+                            rep_opt_state,
+                            q_shard,
+                            r_shard,
+                            cur_lr,
+                            feedback_micro=fb_shard,
+                            sampling_p=cur_sampling_p,
+                            target_weights_micro=wt_shard,
+                        )
+                        loss = float(loss_rep[0])
+                        step_tokens, step_prompt, step_loss, step_pad = _count_real_tokens(q_shard, r_shard)
+                        step_executed = True
+                    else:
+                        consumed_micro_batches: List[Tuple[Any, ...]] = []
+                        if compute_grad_step is not None and grad_accum > 1:
+                            acc_grads = None
+                            loss_acc = 0.0
+                            step_tokens, step_prompt, step_loss, step_pad = 0, 0, 0, 0
+                            inv_accum = 1.0 / float(grad_accum)
+                            for _ in range(grad_accum):
+                                batch_data = oom_handler.slicer.get_micro_batch(args.batch_size, _next_batch)
+                                consumed_micro_batches.append(batch_data)
+                                if len(batch_data) == 4:
+                                    prompt_b, target_b, feedback_b, weights_b = batch_data
+                                else:
+                                    prompt_b, target_b, feedback_b = batch_data
+                                    weights_b = None
+                                g_loss, micro_grads = compute_grad_step(
+                                    params, prompt_b, target_b, feedback_tokens=feedback_b, sampling_p=cur_sampling_p, deliberation_mode=args.deliberation_mode, encephalization_alpha=enc_alpha, target_weights=weights_b
+                                )
+                                acc_grads = (
+                                    micro_grads
+                                    if acc_grads is None
+                                    else jax.tree_util.tree_map(lambda a, b: a + b, acc_grads, micro_grads)
+                                )
+                                loss_acc = loss_acc + g_loss
+                                m_tok, m_p, m_l, m_pad = _count_real_tokens(prompt_b, target_b)
+                                step_tokens += m_tok
+                                step_prompt += m_p
+                                step_loss += m_l
+                                step_pad += m_pad
+                            acc_grads = jax.tree_util.tree_map(lambda a: a * inv_accum, acc_grads)
+                            loss = loss_acc * inv_accum
+                            cur_apply_opt = apply_opt_step_anneal if (not is_frozen_active or is_anneal or param_masks is None) else (apply_opt_step_frozen or apply_opt_step_anneal)
+                            params, opt_state = cur_apply_opt(params, opt_state, acc_grads, cur_lr)
+                        else:
+                            batch_data = oom_handler.slicer.get_micro_batch(args.batch_size, _next_batch)
+                            consumed_micro_batches.append(batch_data)
+                            if len(batch_data) == 4:
+                                prompt_b, target_b, feedback_b, weights_b = batch_data
+                            else:
+                                prompt_b, target_b, feedback_b = batch_data
+                                weights_b = None
+                            cur_train_step = train_step_fn_anneal if (not is_frozen_active or is_anneal or param_masks is None) else (train_step_fn_frozen or train_step_fn_anneal)
+                            params, opt_state, loss = cur_train_step(
+                                params,
+                                opt_state,
+                                prompt_b,
+                                target_b,
+                                cur_lr,
+                                feedback_tokens=feedback_b,
+                                sampling_p=cur_sampling_p,
+                                encephalization_alpha=enc_alpha,
+                                target_weights=weights_b,
+                            )
+                            step_tokens, step_prompt, step_loss, step_pad = _count_real_tokens(prompt_b, target_b)
+                        # Explicitly synchronize device execution inside try block so asynchronous OOMs are caught
+                        loss_val = float(loss)
+                        step_executed = True
+                except Exception as e_step:
+                    if not is_oom_error(e_step) or (args.batch_size <= 1 and remat_choice):
+                        raise
+                    failed_batches_to_stash = consumed_micro_batches if consumed_micro_batches else (
+                        [(prompt_b, target_b, feedback_b, weights_b)] if weights_b is not None else ([(prompt_b, target_b, feedback_b)] if prompt_b is not None else None)
+                    )
+                    args.batch_size, grad_accum = oom_handler.handle_oom(
+                        e_step, step=step, failed_batch=failed_batches_to_stash, current_remat=remat_choice
+                    )
+                    remat_changed = (oom_handler.remat != remat_choice)
+                    remat_choice = oom_handler.remat
+                    oom_handler.update_streamer(elastic_batcher or local_streamer)
+                    if use_multi_tpu_local_sgd:
+                        eff_local_steps = max(1, int(getattr(args, "local_steps", 4)) * grad_accum)
+                        step_stride = eff_num_devices * eff_local_steps
+                        pmap_round_fn = build_pmap_local_sgd_step_spheroid(
+                            config,
+                            buffers,
+                            pad_id=pad_id,
+                            weight_decay=args.weight_decay,
+                            repetition_penalty=args.repetition_penalty,
+                            remat=remat_choice,
+                            local_steps=eff_local_steps,
+                            devices=devices,
+                        )
+                        host_p = _get_host_params()
+                        host_opt = _get_host_opt_state()
+                        rep_params = replicate_for_pmap(host_p, devices)
+                        if host_opt is not None:
+                            rep_opt_state = replicate_for_pmap(host_opt, devices)
+                    elif compute_grad_step is None or remat_changed:
+                        compute_grad_step, apply_opt_step_anneal = build_spheroid_train_engine(
+                            config, buffers, pad_id=pad_id, weight_decay=args.weight_decay,
+                            repetition_penalty=args.repetition_penalty, remat=remat_choice,
+                            deliberation_mode=args.deliberation_mode, param_masks=None,
+                        )
+                        _, apply_opt_step_frozen = build_spheroid_train_engine(
+                            config, buffers, pad_id=pad_id, weight_decay=args.weight_decay,
+                            repetition_penalty=args.repetition_penalty, remat=remat_choice,
+                            deliberation_mode=args.deliberation_mode, param_masks=param_masks,
+                        ) if param_masks is not None else (None, apply_opt_step_anneal)
+                        train_step_fn_anneal = build_train_step_spheroid(
+                            config, buffers, pad_id=pad_id, weight_decay=args.weight_decay,
+                            repetition_penalty=args.repetition_penalty, remat=remat_choice,
+                            deliberation_mode=args.deliberation_mode, param_masks=None,
+                        )
+                        train_step_fn_frozen = build_train_step_spheroid(
+                            config, buffers, pad_id=pad_id, weight_decay=args.weight_decay,
+                            repetition_penalty=args.repetition_penalty, remat=remat_choice,
+                            deliberation_mode=args.deliberation_mode, param_masks=param_masks,
+                        ) if param_masks is not None else train_step_fn_anneal
 
             loss_val = float(loss)
             if math.isfinite(loss_val):
@@ -1027,10 +1789,36 @@ def main(args=None):
                 ema_loss = last_eval_loss if math.isfinite(last_eval_loss) else 3.00
                 cur_lr = cur_lr * 0.75
 
+            # Extract optimizer diagnostics (grad norm, clipping, skips, update ratios, multi-TPU drift)
+            cur_diag = None
+            if use_multi_tpu_local_sgd and rep_opt_state is not None:
+                raw_diag = rep_opt_state.get("diag")
+                if raw_diag is not None:
+                    cur_diag = {k: float(jax.device_get(v[0])) for k, v in raw_diag.items()}
+            elif opt_state is not None and isinstance(opt_state, dict) and "diag" in opt_state:
+                raw_diag = opt_state["diag"]
+                cur_diag = {k: float(jax.device_get(v)) for k, v in raw_diag.items()}
+
+            if cur_diag is not None:
+                was_skip = cur_diag.get("was_skipped", 0.0)
+                if was_skip > 0.0:
+                    cumulative_skips += 1
+                    print(
+                        f"\n⚠️ [Optimizer Skip @ Step {step:,}] Step was SKIPPED by optimizer! "
+                        f"(Non-finite gradient or parameters detected. Total skips: {cumulative_skips})"
+                    )
+                was_clip = cur_diag.get("was_clipped", 0.0)
+                if was_clip > 0.0:
+                    window_clipped_count += 1
+            window_step_count += step_stride
+
             # Step & token throughput accounting
             step_window_tokens += step_tokens
             step_window_count += step_stride
             cumulative_tokens += step_tokens
+            cumulative_prompt_tokens += step_prompt
+            cumulative_loss_tokens += step_loss
+            cumulative_padded_tokens += step_pad
             lifetime_tokens = initial_lifetime_tokens + cumulative_tokens
 
             # Console Progress Logging
@@ -1042,34 +1830,69 @@ def main(args=None):
 
                 gov_str = f" | Gov: {alpha_gov:.2f}" if getattr(args, "loss_window_governor", True) and alpha_gov > 0.01 else ""
 
+                pad_ratio = (cumulative_padded_tokens / max(cumulative_tokens + cumulative_padded_tokens, 1)) * 100.0
                 tgt_tok = getattr(args, "target_tokens", 200_000_000_000)
                 if tgt_tok and tgt_tok > 0:
                     pct = (cumulative_tokens / tgt_tok) * 100.0
                     eta_sec = max(0.0, tgt_tok - cumulative_tokens) / max(tok_per_sec, 1e-6)
                     eta_h = eta_sec / 3600.0
-                    tok_str = f"Tokens: {cumulative_tokens/1e9:5.3f}B/{tgt_tok/1e9:4.2f}B ({pct:5.2f}%) | ETA: {eta_h:4.1f}h | "
+                    tok_str = (
+                        f"RealTok: {cumulative_tokens/1e9:5.3f}B/{tgt_tok/1e9:4.2f}B ({pct:5.2f}%) "
+                        f"[Loss: {cumulative_loss_tokens/1e9:5.3f}B, Prompt: {cumulative_prompt_tokens/1e9:5.3f}B | Pad: {pad_ratio:4.1f}%] | "
+                        f"ETA: {eta_h:4.1f}h | "
+                    )
                 else:
-                    tok_str = f"Tokens: {cumulative_tokens/1e9:5.3f}B | "
+                    tok_str = (
+                        f"RealTok: {cumulative_tokens/1e9:5.3f}B "
+                        f"[Loss: {cumulative_loss_tokens/1e9:5.3f}B, Prompt: {cumulative_prompt_tokens/1e9:5.3f}B | Pad: {pad_ratio:4.1f}%] | "
+                    )
+
+                if getattr(args, "freeze_core", False):
+                    phase_tag = f" [{'ALL_TRAINABLE' if is_past_freeze_limit else ('ANNEAL' if is_anneal else 'FROZEN')}]"
+                else:
+                    phase_tag = ""
+
+                clip_pct = (window_clipped_count / max(1, window_step_count)) * 100.0
+                diag_info = ""
+                if cur_diag is not None:
+                    gn = cur_diag.get("grad_norm", 0.0)
+                    u_m = cur_diag.get("u_ratio_manifold", 0.0)
+                    u_v = cur_diag.get("u_ratio_vocab", 0.0)
+                    u_1d = cur_diag.get("u_ratio_1d", 0.0)
+                    drift = cur_diag.get("replica_drift", 0.0)
+                    drift_str = f" | Drift: {drift:.2e}" if use_multi_tpu_local_sgd else ""
+                    diag_info = (
+                        f"\n       ↳ [Optimizer Diag] GradNorm: {gn:5.2f} (Clip: {clip_pct:4.1f}%) | "
+                        f"Skips: {cumulative_skips} | U/W [M: {u_m:.2e}, Vocab: {u_v:.2e}, 1D: {u_1d:.2e}]{drift_str}"
+                    )
 
                 print(
-                    f"[Step {step:6d}/{args.total_steps}] "
+                    f"[Step {step:6d}/{args.total_steps}]{phase_tag} "
                     f"{tok_str}"
                     f"Loss: {loss_val:6.4f} | "
                     f"Steps/s: {steps_per_sec:5.2f} | "
                     f"Tok/s: {tok_per_sec:7,.0f} | "
                     f"LR: {cur_lr:.2e} | "
                     f"Samp_p: {cur_sampling_p:.2f}{gov_str}"
+                    f"{diag_info}"
                 )
                 t_last_log = time.time()
                 step_window_tokens = 0
                 step_window_count = 0
+                window_clipped_count = 0
 
             # Held-Out Validation Evaluation
             crossed_eval = bool(eval_batches) and ((step // max(1, args.eval_interval)) > (prev_step // max(1, args.eval_interval)))
             if crossed_eval:
                 eval_p = jax.device_put(_get_host_params(), devices[0]) if use_multi_tpu_local_sgd else params
-                val_losses = [float(eval_step_loss(eval_p, vp, vt, vfb)) for vp, vt, vfb in eval_batches]
-                eval_loss = float(np.mean(val_losses)) if val_losses else float("inf")
+                val_losses = [
+                    float(eval_step_loss(eval_p, b[0], b[1], b[2] if len(b) > 2 else None, enc_alpha=enc_alpha))
+                    for b in eval_batches
+                ]
+                if eval_weights and len(eval_weights) == len(val_losses):
+                    eval_loss = float(sum(w * l for w, l in zip(eval_weights, val_losses)) / sum(eval_weights))
+                else:
+                    eval_loss = float(np.mean(val_losses)) if val_losses else float("inf")
                 last_eval_loss = eval_loss
                 eval_ppl = math.exp(min(eval_loss, 20.0))
                 is_champion = eval_loss < best_eval_loss
@@ -1077,9 +1900,10 @@ def main(args=None):
                 champ_tag = "🏆 (NEW CHAMPION RECORD)" if is_champion else ""
                 print(f"📊 [Eval @ Step {step:,}] Composite Held-Out Loss: {eval_loss:.4f} | PPL: {eval_ppl:.2f} {champ_tag}")
                 if len(val_losses) == len(eval_domains):
-                    for d_name, d_val in zip(eval_domains, val_losses):
+                    for idx, (d_name, d_val) in enumerate(zip(eval_domains, val_losses)):
                         d_ppl = math.exp(min(d_val, 20.0))
-                        print(f"   ├─ {d_name:<26}: Loss {d_val:.4f} (PPL: {d_ppl:.2f})")
+                        wt_str = f" ({eval_weights[idx]*100:.0f}%)" if (eval_weights and idx < len(eval_weights)) else ""
+                        print(f"   ├─ {d_name + wt_str:<44}: Loss {d_val:.4f} (PPL: {d_ppl:.2f})")
                 if hasattr(batcher, "get_tokens_by_dataset"):
                     ds_stats = batcher.get_tokens_by_dataset()
                     if ds_stats:
@@ -1127,8 +1951,13 @@ def main(args=None):
                         "ema_loss": ema_loss if ema_loss is not None else float(loss),
                         "ppl": eval_ppl,
                         "preset": args.preset,
+                        "use_rope": config.use_rope,
+                        "max_phase_steps": config.max_phase_steps,
                         "sync_model": sync_model_name,
                         "cumulative_tokens": cumulative_tokens,
+                        "cumulative_prompt_tokens": cumulative_prompt_tokens,
+                        "cumulative_loss_tokens": cumulative_loss_tokens,
+                        "cumulative_padded_tokens": cumulative_padded_tokens,
                         "lifetime_tokens": lifetime_tokens,
                         "target_tokens": getattr(args, "target_tokens", 200_000_000_000),
                         "effective_batch_size": args.batch_size * grad_accum,
@@ -1136,10 +1965,10 @@ def main(args=None):
                         "converged": bool(converged_target_met),
                         "timestamp": time.time(),
                     }
-                    ckpt_mgr.dispatch(_get_host_params(), buffers, best_fname, meta_dict=meta_best, block_if_busy=True)
+                    ckpt_mgr.dispatch(_get_host_params(), buffers, best_fname, meta_dict=meta_best, block_if_busy=True, opt_state=_get_host_opt_state())
                     if converged_target_met:
                         converged_fname = f"{args.preset}_converged_1.6.pt"
-                        ckpt_mgr.dispatch(_get_host_params(), buffers, converged_fname, meta_dict=meta_best, block_if_busy=True)
+                        ckpt_mgr.dispatch(_get_host_params(), buffers, converged_fname, meta_dict=meta_best, block_if_busy=True, opt_state=_get_host_opt_state())
 
                     if args.cloud_sync:
                         try:
@@ -1185,15 +2014,20 @@ def main(args=None):
                     "eval_loss": last_eval_loss if math.isfinite(last_eval_loss) else float(loss),
                     "best_eval_loss": best_eval_loss,
                     "preset": args.preset,
+                    "use_rope": config.use_rope,
+                    "max_phase_steps": config.max_phase_steps,
                     "sync_model": sync_model_name,
                     "cumulative_tokens": cumulative_tokens,
+                    "cumulative_prompt_tokens": cumulative_prompt_tokens,
+                    "cumulative_loss_tokens": cumulative_loss_tokens,
+                    "cumulative_padded_tokens": cumulative_padded_tokens,
                     "lifetime_tokens": lifetime_tokens,
                     "target_tokens": getattr(args, "target_tokens", 200_000_000_000),
                     "effective_batch_size": args.batch_size * grad_accum,
                     "tokens_by_dataset": batcher.get_tokens_by_dataset() if hasattr(batcher, "get_tokens_by_dataset") else {},
                     "timestamp": time.time(),
                 }
-                ckpt_mgr.dispatch(_get_host_params(), buffers, latest_fname, meta_dict=meta_latest)
+                ckpt_mgr.dispatch(_get_host_params(), buffers, latest_fname, meta_dict=meta_latest, opt_state=_get_host_opt_state())
 
                 if args.cloud_sync:
                     try:
@@ -1249,6 +2083,7 @@ def main(args=None):
                         "eval_loss": last_eval_loss if math.isfinite(last_eval_loss) else float(loss),
                         "sync_model": sync_model_name,
                     },
+                    opt_state=_get_host_opt_state(),
                 )
 
             # Sentinel file pause check
@@ -1280,8 +2115,13 @@ def main(args=None):
             "ema_loss": ema_loss if ("ema_loss" in locals() and ema_loss is not None) else (float(loss) if "loss" in locals() else 0.0),
             "eval_loss": best_eval_loss if "best_eval_loss" in locals() else float("inf"),
             "preset": args.preset,
+            "use_rope": config.use_rope,
+            "max_phase_steps": config.max_phase_steps,
             "sync_model": sync_model_name if "sync_model_name" in locals() else args.preset,
             "cumulative_tokens": cumulative_tokens if "cumulative_tokens" in locals() else 0,
+            "cumulative_prompt_tokens": cumulative_prompt_tokens if "cumulative_prompt_tokens" in locals() else 0,
+            "cumulative_loss_tokens": cumulative_loss_tokens if "cumulative_loss_tokens" in locals() else 0,
+            "cumulative_padded_tokens": cumulative_padded_tokens if "cumulative_padded_tokens" in locals() else 0,
             "lifetime_tokens": lifetime_tokens if "lifetime_tokens" in locals() else 0,
             "target_tokens": getattr(args, "target_tokens", 200_000_000_000),
             "effective_batch_size": args.batch_size * (grad_accum if "grad_accum" in locals() else 1),
@@ -1289,7 +2129,7 @@ def main(args=None):
             "timestamp": time.time(),
         }
         if "ckpt_mgr" in locals() and ckpt_mgr is not None:
-            ckpt_mgr.flush(_get_host_params(), buffers, final_fname, meta_dict=final_meta)
+            ckpt_mgr.flush(_get_host_params(), buffers, final_fname, meta_dict=final_meta, opt_state=_get_host_opt_state())
             ckpt_mgr.shutdown(wait=True)
 
         if args.cloud_sync:
@@ -1322,11 +2162,16 @@ def run_training(**kwargs):
     """Programmatic entrypoint for Jupyter / Colab notebooks."""
     args = parse_args([])
     for k, v in kwargs.items():
-        if hasattr(args, k):
+        attr = k.replace("-", "_")
+        if attr in ("effective_batch_size", "effective_batch"):
+            args.effective_batch_size_explicit = True
+        if hasattr(args, attr):
+            setattr(args, attr, v)
+        elif hasattr(args, k):
             setattr(args, k, v)
-        elif k == "drive_dir":
+        elif k in ("drive_dir", "checkpoint_dir"):
             setattr(args, "checkpoint_dir", v)
-        elif k == "max_steps":
+        elif k in ("max_steps", "total_steps"):
             setattr(args, "total_steps", v)
         elif k == "remat":
             setattr(args, "remat", str(v).lower())

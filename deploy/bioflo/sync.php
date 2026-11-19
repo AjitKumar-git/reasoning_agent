@@ -1267,7 +1267,8 @@ if ($action === 'upload_chunk') {
     $loss = isset($_POST['loss']) ? floatval($_POST['loss']) : 0.0;
     $source = isset($_POST['source']) ? preg_replace('/[^a-zA-Z0-9_\-]/', '', $_POST['source']) : 'unknown';
 
-    $part_file = $storage_dir . '/' . $target_filename . '.part';
+    $upload_id = isset($_POST['upload_id']) ? preg_replace('/[^a-zA-Z0-9_\-]/', '', $_POST['upload_id']) : (isset($_GET['upload_id']) ? preg_replace('/[^a-zA-Z0-9_\-]/', '', $_GET['upload_id']) : '');
+    $part_file = !empty($upload_id) ? ($storage_dir . '/' . $target_filename . '.' . $upload_id . '.part') : ($storage_dir . '/' . $target_filename . '.part');
     $final_file = $storage_dir . '/' . $target_filename;
 
     // Retrieve binary chunk payload
@@ -1304,6 +1305,34 @@ if ($action === 'upload_chunk') {
 
     // If final chunk, atomically replace the target checkpoint
     if ($chunk_index === $total_chunks - 1) {
+        // Integrity check: verify zip archive is not truncated/corrupted before replacing target
+        $is_valid_zip = false;
+        if (class_exists('ZipArchive')) {
+            $za = new ZipArchive();
+            $res = $za->open($part_file, ZipArchive::CHECKCONS);
+            if ($res === true) {
+                $is_valid_zip = true;
+                $za->close();
+            }
+        } else {
+            $fh = fopen($part_file, 'rb');
+            if ($fh) {
+                $head = fread($fh, 4);
+                fseek($fh, -65536, SEEK_END);
+                $tail = fread($fh, 65536);
+                fclose($fh);
+                if ($head === "PK\x03\x04" && strpos($tail, "PK\x05\x06") !== false) {
+                    $is_valid_zip = true;
+                }
+            }
+        }
+        if (!$is_valid_zip) {
+            @unlink($part_file);
+            http_response_code(400);
+            echo json_encode(['error' => 'Corrupted checkpoint upload: failed zip integrity check']);
+            exit;
+        }
+
         if (!rename($part_file, $final_file)) {
             http_response_code(500);
             echo json_encode(['error' => 'Failed to finalize atomic checkpoint write']);
@@ -1370,6 +1399,54 @@ if ($action === 'upload_chunk') {
         'type' => $type,
         'chunk_index' => $chunk_index,
         'total_chunks' => $total_chunks
+    ]);
+    exit;
+}
+
+// Action: CLEAR / RESET (Clean historical loss histories and checkpoints)
+// --------------------------------------------------------------------------------------------
+if ($action === 'clear' || $action === 'reset') {
+    header('Content-Type: application/json');
+
+    $model = isset($_REQUEST['model']) ? normalize_model_name($_REQUEST['model']) : '';
+    $clear_all = isset($_REQUEST['all']) && ($_REQUEST['all'] === 'true' || $_REQUEST['all'] === '1');
+    $clear_checkpoints = isset($_REQUEST['checkpoints']) && ($_REQUEST['checkpoints'] === 'true' || $_REQUEST['checkpoints'] === '1');
+
+    $deleted_files = [];
+    if (!empty($model) && !$clear_all) {
+        $targets = [
+            $storage_dir . '/token_tracker_' . $model . '.json',
+            $storage_dir . '/loss_history_' . $model . '.json',
+            $storage_dir . '/active_session_' . $model . '.json',
+        ];
+        if ($clear_checkpoints) {
+            $targets[] = $storage_dir . '/' . $model . '_latest.pt';
+            $targets[] = $storage_dir . '/' . $model . '_best.pt';
+        }
+        foreach ($targets as $f) {
+            if (file_exists($f)) {
+                unlink($f);
+                $deleted_files[] = basename($f);
+            }
+        }
+        $manifest_file = $storage_dir . '/manifest.json';
+        if (file_exists($manifest_file)) {
+            $manifest = json_decode(file_get_contents($manifest_file), true);
+            if (is_array($manifest)) {
+                unset($manifest[$model . '_latest']);
+                unset($manifest[$model . '_best']);
+                unset($manifest['active_session_' . $model]);
+                file_put_contents($manifest_file, json_encode($manifest, JSON_PRETTY_PRINT));
+            }
+        }
+    }
+
+    echo json_encode([
+        'success' => true,
+        'status' => 'cleared',
+        'model' => $model ?: 'all',
+        'deleted' => $deleted_files,
+        'server_time' => date('c'),
     ]);
     exit;
 }
